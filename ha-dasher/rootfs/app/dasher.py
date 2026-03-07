@@ -342,9 +342,13 @@ async def _process_server_message(data, ws_client, client_ip):  # noqa: C901
             client_state.subscribe_entities_id = None
             modified_messages.append(msg)
 
-        # Filter 'event' messages ONLY IF the client's Lovelace entities list is populated
         elif "type" in msg and msg["type"] == "event":
+            # Filter 'event' messages when the client's Lovelace entities list is populated
             if client_entities:
+                # Skip state_changed events, they duplicate compressed state updates
+                if msg.get("event", {}).get("event_type") == "state_changed":
+                    continue
+
                 compressed_updates = msg.get("event", {}).get("c")
                 if isinstance(compressed_updates, dict):
                     include_pattern = re.compile(r"^(update|event)\.")
