@@ -1,5 +1,5 @@
 name: Dasher
-version: 0.1.0
+version: 0.1.1
 slug: ha_dasher
 description: Filter websocket updates for dashboard entities
 url: https://github.com/genehand/ha-dasher
