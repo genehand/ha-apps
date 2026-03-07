@@ -386,7 +386,7 @@ async def _process_server_message(data, ws_client, client_ip):  # noqa: C901
 
 async def proxy_websocket_filtered(request, client_ip):
     session = request.app["client_session"]
-    ws_client = aiohttp.web.WebSocketResponse()
+    ws_client = web.WebSocketResponse()
     await ws_client.prepare(request)
 
     headers = {
@@ -409,7 +409,8 @@ async def proxy_websocket_filtered(request, client_ip):
             )
 
             logger.debug(
-                f"Filtered WebSocket proxy established to {request.path_qs} from {client_ip}"
+                f"Filtered WebSocket proxy established to {request.path_qs} from {client_ip} "
+                f"(conn_id={id(ws_client)}, total_clients={len(CLIENT_STATES)})"
             )
 
             done, pending = await asyncio.wait(
@@ -526,7 +527,7 @@ async def _server_to_client_proxy(ws_server, ws_client, client_ip, close_signal)
 
 
 async def proxy_websocket_transparent(request, client_ip):
-    ws_client = aiohttp.web.WebSocketResponse()
+    ws_client = web.WebSocketResponse()
     await ws_client.prepare(request)
     session = request.app["client_session"]
 
