@@ -323,7 +323,7 @@ async def _process_server_message(data, ws_client, client_ip):  # noqa: C901
                         )
                         client_state.all_states = None
                 logger.info(
-                    f"{len(client_entities)} entities with {len(client_rules)} auto-entities rules tracked for {client_ip}"
+                    f"{len(client_entities)} entities with {len(client_rules)} auto-entities rules tracked for {client_ip}, conn_id={id(ws_client)}"
                 )
                 # Once config is parsed, we no longer need to track the ID
                 client_state.lovelace_config_id = None
