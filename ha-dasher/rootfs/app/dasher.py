@@ -14,6 +14,15 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Dict, Set, List, Optional
 
+# Load the addon configuration
+config = {}
+CONFIG_FILE_PATH = "/data/options.json"
+try:
+    with open(CONFIG_FILE_PATH, "r") as f:
+        config = json.load(f)
+except FileNotFoundError:
+    pass  # Will log error after logger is set up
+
 # Setup Logging
 handler = colorlog.StreamHandler()
 handler.setFormatter(
@@ -24,15 +33,10 @@ handler.setFormatter(
 )
 logger = colorlog.getLogger(__name__)
 logger.addHandler(handler)
-logger.setLevel("INFO")
+logger.setLevel(config.get("log_level", "INFO"))
 
-# Load the addon configuration
-config = {}
-CONFIG_FILE_PATH = "/data/options.json"
-try:
-    with open(CONFIG_FILE_PATH, "r") as f:
-        config = json.load(f)
-except FileNotFoundError:
+# Log config file error now that logger is set up
+if not config:
     logger.error(
         "Home Assistant add-on configuration file not found: /data/options.json"
     )
@@ -737,13 +741,19 @@ if __name__ == "__main__":
                 logger.error(
                     "Configuration file 'proxy-config.yaml' not found, creating a default one"
                 )
-                default_config = {"ha_host": HA_HOST, "proxy_port": PROXY_PORT}
+                default_config = {
+                    "ha_host": HA_HOST,
+                    "proxy_port": PROXY_PORT,
+                    "transparent": True,
+                    "log_level": "INFO",
+                }
                 with open("proxy-config.yaml", "w") as f:
                     yaml.dump(default_config, f)
                 config_local = default_config
 
             HA_HOST = config_local["ha_host"]
             PROXY_PORT = config_local["proxy_port"]
+            logger.setLevel(config_local.get("log_level", "INFO"))
             asyncio.run(main())
 
     except KeyboardInterrupt:
