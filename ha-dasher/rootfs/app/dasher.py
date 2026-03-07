@@ -40,6 +40,7 @@ except FileNotFoundError:
 
 # Use config or set default values
 HA_HOST = config.get("ha_host", "homeassistant:8123")
+TRANSPARENT = config.get("transparent", True)
 PROXY_PORT = 8124
 
 
@@ -598,13 +599,16 @@ async def proxy_http(request):
         if key.lower() not in ("host",)
     }
 
-    requester_ip = request.remote
-    x_forwarded_for = headers.get("X-Forwarded-For")
-
-    if x_forwarded_for:
-        headers["X-Forwarded-For"] = f"{x_forwarded_for}, {requester_ip}"
+    if TRANSPARENT:
+        headers.pop("X-Forwarded-For", None)
     else:
-        headers["X-Forwarded-For"] = requester_ip
+        requester_ip = request.remote
+        x_forwarded_for = headers.get("X-Forwarded-For")
+
+        if x_forwarded_for:
+            headers["X-Forwarded-For"] = f"{x_forwarded_for}, {requester_ip}"
+        else:
+            headers["X-Forwarded-For"] = requester_ip
 
     request_body = await request.read()
 

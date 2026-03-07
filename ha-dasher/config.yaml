@@ -1,5 +1,5 @@
 name: Dasher
-version: 0.0.5
+version: 0.1.0
 slug: ha_dasher
 description: Filter websocket updates for dashboard entities
 url: https://github.com/genehand/ha-dasher
@@ -15,9 +15,7 @@ ports_description:
   8124/tcp: Port for the proxy server
 options:
   ha_host: homeassistant:8123
-  entity_filters: []
+  transparent: true
 schema:
   ha_host: str
-  entity_filters:
-    - str
-#image:
+  transparent: bool
