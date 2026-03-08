@@ -1,6 +1,6 @@
 # AGENTS.md - Coding Guidelines for HA Dasher
 
-Home Assistant add-on that filters WebSocket updates for dashboard entities.
+Home Assistant aapp that filters WebSocket events for dashboard entities.
 
 ## Build Commands
 
@@ -10,10 +10,10 @@ This project uses Home Assistant's build system. No traditional build commands a
 
 ```bash
 # Install dependencies locally (for IDE support)
-pip3 install -r ha-dasher/rootfs/app/requirements.txt
+pip3 install -r app-dasher/rootfs/app/requirements.txt
 
 # Run the proxy locally for development
-cd ha-dasher/rootfs/app && python3 dasher.py
+cd app-dasher/rootfs/app && python3 dasher.py
 ```
 
 ### Testing
@@ -27,16 +27,16 @@ No test suite is currently configured. Tests could be added using pytest.
 pip3 install flake8 black isort mypy
 
 # Run flake8
-flake8 ha-dasher/rootfs/app/dasher.py
+flake8 app-dasher/rootfs/app/dasher.py
 
 # Format with black
-black ha-dasher/rootfs/app/dasher.py
+black app-dasher/rootfs/app/dasher.py
 
 # Sort imports
-isort ha-dasher/rootfs/app/dasher.py
+isort app-dasher/rootfs/app/dasher.py
 
 # Type check
-mypy ha-dasher/rootfs/app/dasher.py
+mypy app-dasher/rootfs/app/dasher.py
 ```
 
 ## Code Style Guidelines
@@ -128,7 +128,7 @@ messages_to_process = data if isinstance(data, list) else [data]
 
 ```bash
 # Stage changes
-git add ha-dasher/
+git add app-dasher/
 
 # Commit with descriptive message
 git commit -m "feat: add support for custom filter rules"
@@ -138,8 +138,8 @@ git commit -m "feat: add support for custom filter rules"
 
 ## Common Tasks
 
-**Add a New Dependency**: Add to `ha-dasher/rootfs/app/requirements.txt`, then rebuild Docker image.
+**Add a New Dependency**: Add to `app-dasher/rootfs/app/requirements.txt`, then rebuild Docker image.
 
-**Update Add-on Version**: Edit `ha-dasher/config.yaml`, increment `version`, commit and tag.
+**Update App Version**: Edit `app-dasher/config.yaml`, increment `version`, commit and tag.
 
-**Local Testing**: Copy `proxy-config.yaml`, modify for environment, run `cd ha-dasher/rootfs/app && python3 dasher.py`, access at `http://localhost:8124`.
+**Local Testing**: Copy `proxy-config.yaml`, modify for environment, run `cd app-dasher/rootfs/app && python3 dasher.py`, access at `http://localhost:8124`.

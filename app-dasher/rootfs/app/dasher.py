@@ -21,7 +21,7 @@ try:
     with open(CONFIG_FILE_PATH, "r") as f:
         config = json.load(f)
 except FileNotFoundError:
-    pass  # Will log error after logger is set up
+    pass
 
 # Setup Logging
 handler = colorlog.StreamHandler()
@@ -34,13 +34,6 @@ handler.setFormatter(
 logger = colorlog.getLogger(__name__)
 logger.addHandler(handler)
 logger.setLevel(config.get("log_level", "INFO"))
-
-# Log config file error now that logger is set up
-if not config:
-    logger.error(
-        "Home Assistant add-on configuration file not found: /data/options.json"
-    )
-
 
 # Use config or set default values
 HA_HOST = config.get("ha_host", "homeassistant:8123")
