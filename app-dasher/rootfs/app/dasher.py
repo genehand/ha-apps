@@ -329,7 +329,12 @@ async def _process_server_message(data, ws_client, client_ip):  # noqa: C901
             and msg["id"] == subscribe_entities_id
             and msg.get("type") == "event"
         ):
-            compressed_states = msg.get("event", {}).get("a")
+            # Check if event is not a dict
+            event = msg.get("event", {})
+            if not isinstance(event, dict):
+                modified_messages.append(msg)
+                continue
+            compressed_states = event.get("a")
             client_state.all_states = compressed_states
             # We've processed the rules, so we can remove the subscription ID
             client_state.subscribe_entities_id = None
@@ -337,12 +342,17 @@ async def _process_server_message(data, ws_client, client_ip):  # noqa: C901
 
         elif "type" in msg and msg["type"] == "event":
             # Filter 'event' messages when the client's Lovelace entities list is populated
+            event = msg.get("event", {})
+            if not isinstance(event, dict):
+                modified_messages.append(msg)
+                continue
+
             if client_entities:
                 # Skip state_changed events, they duplicate compressed state updates
-                if msg.get("event", {}).get("event_type") == "state_changed":
+                if event.get("event_type") == "state_changed":
                     continue
 
-                compressed_updates = msg.get("event", {}).get("c")
+                compressed_updates = event.get("c")
                 if isinstance(compressed_updates, dict):
                     include_pattern = re.compile(r"^(update|event)\.")
                     # Filter updates to include only entities relevant to this client
