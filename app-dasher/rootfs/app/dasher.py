@@ -127,7 +127,7 @@ def parse_lovelace_entities(data, entities_set, filter_rules_list):
                             filter_rules_list.append(condition)
 
         for key, value in data.items():
-            if key == "entity":
+            if key == "entity" or key == "entity_id":
                 validate_and_add(value)
             elif key == "entities" and isinstance(value, list):
                 for item in value:
