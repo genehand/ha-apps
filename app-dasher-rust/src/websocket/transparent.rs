@@ -17,7 +17,7 @@ pub async fn handle(
         path.to_string()
     };
     let ha_url = format!("ws://{}{}", config.ha_host, path_qs);
-    
+
     // Build the request with original headers
     let mut ws_request = tokio_tungstenite::tungstenite::handshake::client::Request::builder()
         .method("GET")
@@ -25,11 +25,14 @@ pub async fn handle(
         .body(())
         .unwrap();
 
-    // Copy headers from original request, excluding Host
+    // Copy headers from original request, excluding Host and WebSocket extensions
+    // (we don't support extensions like permessage-deflate)
     for (key, value) in req.headers() {
-        if !key.as_str().eq_ignore_ascii_case("host") {
-            ws_request.headers_mut().insert(key.clone(), value.clone());
+        let key_str = key.as_str();
+        if key_str.eq_ignore_ascii_case("host") || key_str.eq_ignore_ascii_case("sec-websocket-extensions") {
+            continue;
         }
+        ws_request.headers_mut().insert(key.clone(), value.clone());
     }
 
     // Set Host header from HA URL (tungstenite doesn't auto-add it for custom requests)
@@ -48,70 +51,86 @@ pub async fn handle(
             return;
         }
     };
-    
+
     let log_url = ha_url.split('?').next().unwrap_or(&ha_url);
     info!("Transparent WebSocket proxy established to {} for {}", log_url, client_ip);
-    
+
     let (mut ha_sink, mut ha_stream) = ha_socket.split();
     let (mut client_sink, mut client_stream) = client_socket.split();
-    
+
     // Client to HA
     let c2h = async {
-        while let Some(Ok(msg)) = client_stream.next().await {
-            let tungstenite_msg = match msg {
-                Message::Text(text) => {
-                    tokio_tungstenite::tungstenite::Message::Text(text.to_string().into())
+        while let Some(result) = client_stream.next().await {
+            match result {
+                Ok(msg) => {
+                    let tungstenite_msg = match msg {
+                        Message::Text(text) => {
+                            tokio_tungstenite::tungstenite::Message::Text(text.to_string().into())
+                        }
+                        Message::Binary(bin) => tokio_tungstenite::tungstenite::Message::Binary(bin),
+                        Message::Close(close) => {
+                            let close_frame = close.map(|c| tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                code: c.code.into(),
+                                reason: c.reason.to_string().into(),
+                            });
+                            let _ = ha_sink.send(tokio_tungstenite::tungstenite::Message::Close(close_frame)).await;
+                            break;
+                        }
+                        _ => continue,
+                    };
+
+                    if let Err(e) = ha_sink.send(tungstenite_msg).await {
+                        error!("Error forwarding client to HA: {}", e);
+                        break;
+                    }
                 }
-                Message::Binary(bin) => tokio_tungstenite::tungstenite::Message::Binary(bin),
-                Message::Close(close) => {
-                    let close_frame = close.map(|c| tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                        code: c.code.into(),
-                        reason: c.reason.to_string().into(),
-                    });
-                    let _ = ha_sink.send(tokio_tungstenite::tungstenite::Message::Close(close_frame)).await;
+                Err(e) => {
+                    error!("Client stream error: {}", e);
                     break;
                 }
-                _ => continue,
-            };
-            
-            if let Err(e) = ha_sink.send(tungstenite_msg).await {
-                error!("Error forwarding client to HA: {}", e);
-                break;
             }
         }
     };
-    
+
     // HA to Client
     let h2c = async {
-        while let Some(Ok(msg)) = ha_stream.next().await {
-            let axum_msg = match msg {
-                tokio_tungstenite::tungstenite::Message::Text(text) => {
-                    Message::Text(text.to_string().into())
+        while let Some(result) = ha_stream.next().await {
+            match result {
+                Ok(msg) => {
+                    let axum_msg = match msg {
+                        tokio_tungstenite::tungstenite::Message::Text(text) => {
+                            Message::Text(text.to_string().into())
+                        }
+                        tokio_tungstenite::tungstenite::Message::Binary(bin) => Message::Binary(bin),
+                        tokio_tungstenite::tungstenite::Message::Close(close) => {
+                            let axum_close = close.map(|c| axum::extract::ws::CloseFrame {
+                                code: c.code.into(),
+                                reason: c.reason.to_string().into(),
+                            });
+                            let _ = client_sink.send(Message::Close(axum_close)).await;
+                            break;
+                        }
+                        _ => continue,
+                    };
+
+                    if let Err(e) = client_sink.send(axum_msg).await {
+                        error!("Error forwarding HA to client: {}", e);
+                        break;
+                    }
                 }
-                tokio_tungstenite::tungstenite::Message::Binary(bin) => Message::Binary(bin),
-                tokio_tungstenite::tungstenite::Message::Close(close) => {
-                    let axum_close = close.map(|c| axum::extract::ws::CloseFrame {
-                        code: c.code.into(),
-                        reason: c.reason.to_string().into(),
-                    });
-                    let _ = client_sink.send(Message::Close(axum_close)).await;
+                Err(e) => {
+                    error!("HA stream error: {}", e);
                     break;
                 }
-                _ => continue,
-            };
-            
-            if let Err(e) = client_sink.send(axum_msg).await {
-                error!("Error forwarding HA to client: {}", e);
-                break;
             }
         }
     };
-    
+
     // Run both directions concurrently
     tokio::select! {
         _ = c2h => {},
         _ = h2c => {},
     }
-    
+
     info!("Transparent WebSocket connection closed for {}", client_ip);
 }
