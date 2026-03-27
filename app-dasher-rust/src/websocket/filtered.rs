@@ -1,123 +1,126 @@
-use axum::extract::ws::{Message, WebSocket};
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde_json::Value;
 use tracing::{debug, error, info};
+use yawc::{CompressionLevel, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
 
 use crate::state::ClientStates;
 use crate::websocket::entities::{parse_lovelace_entities, resolve_rules_and_update_entities};
 
-fn convert_axum_to_tungstenite(msg: Message) -> Option<tokio_tungstenite::tungstenite::Message> {
-    match msg {
-        Message::Text(text) => {
-            let text_str: String = text.to_string();
-            Some(tokio_tungstenite::tungstenite::Message::Text(text_str.into()))
-        }
-        Message::Binary(bin) => Some(tokio_tungstenite::tungstenite::Message::Binary(bin)),
-        Message::Close(close) => Some(tokio_tungstenite::tungstenite::Message::Close(
-            close.map(|c| tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                code: c.code.into(),
-                reason: c.reason.to_string().into(),
-            })
-        )),
-        _ => None,
-    }
-}
-
-fn convert_tungstenite_to_axum(msg: tokio_tungstenite::tungstenite::Message) -> Option<Message> {
-    match msg {
-        tokio_tungstenite::tungstenite::Message::Text(text) => {
-            let text_str: String = text.to_string();
-            Some(Message::Text(text_str.into()))
-        }
-        tokio_tungstenite::tungstenite::Message::Binary(bin) => Some(Message::Binary(bin)),
-        tokio_tungstenite::tungstenite::Message::Close(_) => Some(Message::Close(None)),
-        _ => None,
-    }
-}
-
-pub async fn handle(
-    client_socket: WebSocket,
-    state: crate::AppState,
-    client_ip: String,
-) {
+pub async fn handle(client_socket: yawc::HttpWebSocket, state: crate::AppState, client_ip: String, use_compression: bool) {
     let config = state.config;
     let client_states = state.client_states;
     let conn_id = format!("{:p}", &client_socket);
-    
+
     // Create client state
     {
         let mut client_state = client_states.get_or_insert(conn_id.clone(), client_ip.clone());
         client_state.client_ip = client_ip.clone();
     }
-    
-    let ha_url = format!("ws://{}/api/websocket", config.ha_host);
-    
-    // Connect to Home Assistant
-    let (ha_socket, _) = match tokio_tungstenite::connect_async(&ha_url).await {
+
+    let ha_url_str = format!("ws://{}/api/websocket", config.ha_host);
+
+    // Parse URL
+    let url = match ha_url_str.parse() {
+        Ok(url) => url,
+        Err(e) => {
+            error!("Failed to parse HA URL: {}", e);
+            return;
+        }
+    };
+
+    // Build custom HTTP request with Host header
+    let mut request_builder = yawc::HttpRequest::builder()
+        .method("GET")
+        .uri(&ha_url_str);
+
+    // Set Host header from HA URL
+    if let Some(host) = config.ha_host.split(':').next() {
+        request_builder = request_builder.header(http::header::HOST, host);
+    }
+
+    // Connect to Home Assistant with compression only if client requested it
+    let options = if use_compression {
+        Options::default().with_compression_level(CompressionLevel::default())
+    } else {
+        Options::default()
+    };
+
+    let ha_socket = match WebSocket::connect(url)
+        .with_request(request_builder)
+        .with_options(options)
+        .await
+    {
         Ok(conn) => conn,
         Err(e) => {
             error!("Failed to connect to Home Assistant WebSocket: {}", e);
             return;
         }
     };
-    
-    info!(
+
+    debug!(
         "Filtered WebSocket proxy established to {} from {} (conn_id={}, total_clients={})",
-        ha_url,
+        ha_url_str,
         client_ip,
         conn_id,
         client_states.len()
     );
-    
-    let (mut ha_sink, mut ha_stream) = ha_socket.split();
+
+    // Split sockets into sink and stream
     let (mut client_sink, mut client_stream) = client_socket.split();
-    
+    let (mut ha_sink, mut ha_stream) = ha_socket.split();
+
     // Client to HA task
     let conn_id_clone = conn_id.clone();
     let client_states_clone = client_states.clone();
     let client_ip_clone = client_ip.clone();
     let c2h_handle = tokio::spawn(async move {
-        while let Some(Ok(msg)) = client_stream.next().await {
-            match msg {
-                Message::Text(text) => {
+        while let Some(frame) = client_stream.next().await {
+            match frame.opcode() {
+                OpCode::Text => {
+                    let text = frame.as_str();
                     // Process client message to track subscription IDs
-                    if let Ok(data) = serde_json::from_str::<Value>(&text) {
-                        process_client_message(data, &conn_id_clone, &client_states_clone, &client_ip_clone).await;
+                    if let Ok(data) = serde_json::from_str::<Value>(text) {
+                        process_client_message(
+                            data,
+                            &conn_id_clone,
+                            &client_states_clone,
+                            &client_ip_clone,
+                        )
+                        .await;
                     }
-                    
-                    if let Some(tungstenite_msg) = convert_axum_to_tungstenite(Message::Text(text)) {
-                        if let Err(e) = ha_sink.send(tungstenite_msg).await {
-                            error!("Error forwarding client to HA: {}", e);
-                            break;
-                        }
-                    }
-                }
-                Message::Binary(bin) => {
-                    if let Some(tungstenite_msg) = convert_axum_to_tungstenite(Message::Binary(bin)) {
-                        if let Err(e) = ha_sink.send(tungstenite_msg).await {
-                            error!("Error forwarding client to HA: {}", e);
-                            break;
-                        }
+
+                    let ha_frame = Frame::text(text.to_string());
+                    if let Err(e) = ha_sink.send(ha_frame).await {
+                        error!("Error forwarding client to HA: {}", e);
+                        break;
                     }
                 }
-                Message::Close(_) => {
-                    let _ = ha_sink.send(tokio_tungstenite::tungstenite::Message::Close(None)).await;
+                OpCode::Binary => {
+                    let payload = frame.payload().to_vec();
+                    let ha_frame = Frame::binary(payload);
+                    if let Err(e) = ha_sink.send(ha_frame).await {
+                        error!("Error forwarding client to HA: {}", e);
+                        break;
+                    }
+                }
+                OpCode::Close => {
+                    let _ = ha_sink.send(Frame::close(CloseCode::Normal, "")).await;
                     break;
                 }
                 _ => {}
             }
         }
     });
-    
+
     // HA to Client task
     let conn_id_clone2 = conn_id.clone();
     let client_states_clone2 = client_states.clone();
     let client_ip_clone = client_ip.clone();
     let h2c_handle = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ha_stream.next().await {
-            if let Some(axum_msg) = convert_tungstenite_to_axum(msg) {
-                // Process and filter message
-                if let Message::Text(text) = &axum_msg {
+        while let Some(frame) = ha_stream.next().await {
+            match frame.opcode() {
+                OpCode::Text => {
+                    let text = frame.as_str();
                     match serde_json::from_str::<Value>(text) {
                         Ok(data) => {
                             let processed = process_server_message(
@@ -125,10 +128,12 @@ pub async fn handle(
                                 &conn_id_clone2,
                                 &client_states_clone2,
                                 &client_ip_clone,
-                            ).await;
-                            
+                            )
+                            .await;
+
                             if let Some(response) = processed {
-                                if let Err(e) = client_sink.send(Message::Text(response.into())).await {
+                                let client_frame = Frame::text(response.to_string());
+                                if let Err(e) = client_sink.send(client_frame).await {
                                     error!("Error sending to client: {}", e);
                                     break;
                                 }
@@ -136,28 +141,37 @@ pub async fn handle(
                         }
                         Err(_) => {
                             // Pass through non-JSON messages
-                            if let Err(e) = client_sink.send(axum_msg).await {
+                            let client_frame = Frame::text(text.to_string());
+                            if let Err(e) = client_sink.send(client_frame).await {
                                 error!("Error sending to client: {}", e);
                                 break;
                             }
                         }
                     }
-                } else {
-                    if let Err(e) = client_sink.send(axum_msg).await {
+                }
+                OpCode::Binary => {
+                    let payload = frame.payload().to_vec();
+                    let client_frame = Frame::binary(payload);
+                    if let Err(e) = client_sink.send(client_frame).await {
                         error!("Error sending to client: {}", e);
                         break;
                     }
                 }
+                OpCode::Close => {
+                    let _ = client_sink.send(Frame::close(CloseCode::Normal, "")).await;
+                    break;
+                }
+                _ => {}
             }
         }
     });
-    
+
     // Wait for either task to complete
     tokio::select! {
         _ = c2h_handle => {},
         _ = h2c_handle => {},
     }
-    
+
     // Cleanup
     client_states.remove(&conn_id);
     info!("WebSocket connection closed for {}", client_ip);
@@ -172,15 +186,20 @@ async fn process_client_message(
     if let Some(msg_type) = data.get("type").and_then(|v| v.as_str()) {
         if msg_type == "lovelace/config" {
             if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
-                let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+                let mut state =
+                    client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
                 state.lovelace_config_id = Some(id);
                 debug!("lovelace/config request with ID: {} for {}", id, client_ip);
             }
         } else if msg_type == "subscribe_entities" {
             if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
-                let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+                let mut state =
+                    client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
                 state.subscribe_entities_id = Some(id);
-                debug!("subscribe_entities request with ID: {} for {}", id, client_ip);
+                debug!(
+                    "subscribe_entities request with ID: {} for {}",
+                    id, client_ip
+                );
             }
         }
     }
@@ -191,40 +210,36 @@ async fn process_server_message(
     conn_id: &str,
     client_states: &ClientStates,
     client_ip: &str,
-) -> Option<String> {
+) -> Option<Value> {
     // Get client state
     let mut client_state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
-    
+
     let lovelace_config_id = client_state.lovelace_config_id;
     let subscribe_entities_id = client_state.subscribe_entities_id;
-    
+
     // Handle lovelace/config response
     if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
         if Some(id) == lovelace_config_id {
-            if data.get("type").and_then(|v| v.as_str()) == Some("result") 
-                && data.get("success").and_then(|v| v.as_bool()) == Some(true) {
-                
+            if data.get("type").and_then(|v| v.as_str()) == Some("result")
+                && data.get("success").and_then(|v| v.as_bool()) == Some(true)
+            {
                 if let Some(result) = data.get("result") {
                     // Parse entities and rules
                     let mut entities = std::collections::HashSet::new();
                     let mut rules = Vec::new();
                     parse_lovelace_entities(result, &mut entities, &mut rules);
-                    
+
                     client_state.lovelace_entities = entities.clone();
                     client_state.filter_rules = rules.clone();
-                    
+
                     if !rules.is_empty() {
                         debug!("Auto-entities rules: {:?}", rules);
                         if let Some(ref all_states) = client_state.all_states {
-                            resolve_rules_and_update_entities(
-                                all_states,
-                                &rules,
-                                &mut entities,
-                            );
+                            resolve_rules_and_update_entities(all_states, &rules, &mut entities);
                             client_state.lovelace_entities = entities.clone();
                         }
                     }
-                    
+
                     info!(
                         "{} entities with {} auto-entities rules tracked for {}, conn_id={}",
                         client_state.lovelace_entities.len(),
@@ -232,16 +247,16 @@ async fn process_server_message(
                         client_ip,
                         conn_id
                     );
-                    
+
                     // Clear the config ID since we've processed it
                     client_state.lovelace_config_id = None;
                 }
             }
-            
-            return Some(data.to_string());
+
+            return Some(data);
         }
     }
-    
+
     // Handle subscribe_entities response
     if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
         if Some(id) == subscribe_entities_id {
@@ -249,7 +264,7 @@ async fn process_server_message(
                 if let Some(event) = data.get("event") {
                     if let Some(compressed_states) = event.get("a") {
                         client_state.all_states = Some(compressed_states.clone());
-                        
+
                         // Process rules if we have them
                         if !client_state.filter_rules.is_empty() {
                             let mut entities = client_state.lovelace_entities.clone();
@@ -260,17 +275,17 @@ async fn process_server_message(
                             );
                             client_state.lovelace_entities = entities;
                         }
-                        
+
                         // Clear subscription ID
                         client_state.subscribe_entities_id = None;
                     }
                 }
             }
-            
-            return Some(data.to_string());
+
+            return Some(data);
         }
     }
-    
+
     // Handle event messages
     if data.get("type").and_then(|v| v.as_str()) == Some("event") {
         if !client_state.lovelace_entities.is_empty() {
@@ -279,12 +294,12 @@ async fn process_server_message(
                 if event.get("event_type").and_then(|v| v.as_str()) == Some("state_changed") {
                     return None;
                 }
-                
+
                 // Filter compressed updates
                 if let Some(updates) = event.get("c").and_then(|v| v.as_object()) {
                     use regex::Regex;
                     let include_pattern = Regex::new(r"^(update|event)\..*").unwrap();
-                    
+
                     let filtered_updates: serde_json::Map<String, Value> = updates
                         .iter()
                         .filter(|(entity_id, _)| {
@@ -293,7 +308,7 @@ async fn process_server_message(
                         })
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
-                    
+
                     if !filtered_updates.is_empty() {
                         let mut modified = data.clone();
                         if let Some(event_obj) = modified.get_mut("event") {
@@ -301,7 +316,7 @@ async fn process_server_message(
                                 event_map.insert("c".to_string(), Value::Object(filtered_updates));
                             }
                         }
-                        return Some(modified.to_string());
+                        return Some(modified);
                     } else {
                         // No matching entities, filter out this message
                         return None;
@@ -310,7 +325,7 @@ async fn process_server_message(
             }
         }
     }
-    
+
     // Pass through all other messages
-    Some(data.to_string())
+    Some(data)
 }

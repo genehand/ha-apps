@@ -9,24 +9,24 @@ use tracing::{debug, error};
 
 use crate::AppState;
 
-pub async fn handle(
-    req: Request,
-    state: AppState,
-    client_ip: String,
-) -> Response {
+pub async fn handle(req: Request, state: AppState, client_ip: String) -> Response {
     let config = state.config;
     let client = state.http_client;
-    
+
     let method = req.method().clone();
     let path = req.uri().path();
-    let query = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
     let url = format!("http://{}{}{}", config.ha_host, path, query);
-    
+
     let timeout = get_timeout_for_path(path);
     if timeout != Some(5) {
         debug!("Timeout set to {:?} for {}", timeout, path);
     }
-    
+
     // Build headers
     let mut headers = reqwest::header::HeaderMap::new();
     for (key, value) in req.headers() {
@@ -40,25 +40,26 @@ pub async fn handle(
             }
         }
     }
-    
+
     // Handle X-Forwarded-For
     if config.transparent {
         headers.remove("X-Forwarded-For");
     } else {
-        let existing = headers.get("X-Forwarded-For")
+        let existing = headers
+            .get("X-Forwarded-For")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        
+
         let new_value = match existing {
             Some(existing) => format!("{}, {}", existing, client_ip),
             None => client_ip,
         };
-        
+
         if let Ok(val) = reqwest::header::HeaderValue::from_str(&new_value) {
             headers.insert("X-Forwarded-For", val);
         }
     }
-    
+
     // Read body
     let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
         Ok(bytes) => bytes,
@@ -67,7 +68,7 @@ pub async fn handle(
             return (StatusCode::BAD_REQUEST, "Bad Request").into_response();
         }
     };
-    
+
     // Convert axum Method to reqwest Method
     let reqwest_method = match method.as_str() {
         "GET" => reqwest::Method::GET,
@@ -81,18 +82,18 @@ pub async fn handle(
         "CONNECT" => reqwest::Method::CONNECT,
         _ => reqwest::Method::GET,
     };
-    
+
     // Build and send request
     let request_builder = client
         .request(reqwest_method, &url)
         .headers(headers)
         .body(body_bytes);
-    
+
     let request_builder = match timeout {
         Some(secs) => request_builder.timeout(Duration::from_secs(secs)),
         None => request_builder,
     };
-    
+
     let upstream_response = match request_builder.send().await {
         Ok(resp) => resp,
         Err(e) => {
@@ -103,11 +104,11 @@ pub async fn handle(
             return (StatusCode::BAD_GATEWAY, "Proxy Error").into_response();
         }
     };
-    
+
     // Build response
-    let status = StatusCode::from_u16(upstream_response.status().as_u16())
-        .unwrap_or(StatusCode::OK);
-    
+    let status =
+        StatusCode::from_u16(upstream_response.status().as_u16()).unwrap_or(StatusCode::OK);
+
     // Extract response headers
     let mut response_builder = axum::response::Response::builder().status(status);
     for (key, value) in upstream_response.headers() {
@@ -117,11 +118,11 @@ pub async fn handle(
             }
         }
     }
-    
+
     // Stream the response body
     let stream = upstream_response.bytes_stream();
     let body = Body::from_stream(stream);
-    
+
     match response_builder.body(body) {
         Ok(response) => response,
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Response Error").into_response(),

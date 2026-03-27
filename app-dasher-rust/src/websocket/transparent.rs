@@ -1,13 +1,14 @@
-use axum::extract::ws::{Message, WebSocket};
 use axum::extract::Request;
 use futures::{sink::SinkExt, stream::StreamExt};
-use tracing::{error, info};
+use tracing::{debug, error, info};
+use yawc::{CompressionLevel, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
 
 pub async fn handle(
-    client_socket: WebSocket,
+    client_socket: yawc::HttpWebSocket,
     state: crate::AppState,
     client_ip: String,
     req: Request,
+    use_compression: bool,
 ) {
     let config = state.config;
     let path = req.uri().path();
@@ -18,33 +19,55 @@ pub async fn handle(
     };
     let ha_url = format!("ws://{}{}", config.ha_host, path_qs);
 
-    // Build the request with original headers
-    let mut ws_request = tokio_tungstenite::tungstenite::handshake::client::Request::builder()
-        .method("GET")
-        .uri(&ha_url)
-        .body(())
-        .unwrap();
+    // Parse URL
+    let url = match ha_url.parse() {
+        Ok(url) => url,
+        Err(e) => {
+            error!("Failed to parse HA URL: {}", e);
+            return;
+        }
+    };
 
-    // Copy headers from original request, excluding Host and WebSocket extensions
-    // (we don't support extensions like permessage-deflate)
+    // Build custom HTTP request with original headers
+    let mut request_builder = yawc::HttpRequest::builder()
+        .method("GET")
+        .uri(&ha_url);
+
+    // Copy headers from original request, excluding Host and WebSocket-specific headers
     for (key, value) in req.headers() {
-        let key_str = key.as_str();
-        if key_str.eq_ignore_ascii_case("host") || key_str.eq_ignore_ascii_case("sec-websocket-extensions") {
+        let key_str = key.as_str().to_lowercase();
+        // Skip Host and WebSocket-specific headers (yawc sets these)
+        if key_str == "host" 
+            || key_str == "upgrade"
+            || key_str == "connection"
+            || key_str == "sec-websocket-key"
+            || key_str == "sec-websocket-version" {
             continue;
         }
-        ws_request.headers_mut().insert(key.clone(), value.clone());
+        if let Ok(name) = http::header::HeaderName::from_bytes(key.as_ref()) {
+            if let Ok(val) = http::header::HeaderValue::from_bytes(value.as_bytes()) {
+                request_builder = request_builder.header(name, val);
+            }
+        }
     }
 
-    // Set Host header from HA URL (tungstenite doesn't auto-add it for custom requests)
+    // Set Host header from HA URL
     if let Some(host) = config.ha_host.split(':').next() {
-        ws_request.headers_mut().insert(
-            http::header::HOST,
-            http::HeaderValue::from_str(host).unwrap(),
-        );
+        request_builder = request_builder.header(http::header::HOST, host);
     }
 
-    // Connect to Home Assistant
-    let (ha_socket, _) = match tokio_tungstenite::connect_async(ws_request).await {
+    // Connect to Home Assistant with compression only if client requested it
+    let options = if use_compression {
+        Options::default().with_compression_level(CompressionLevel::default())
+    } else {
+        Options::default()
+    };
+
+    let ha_socket = match WebSocket::connect(url)
+        .with_request(request_builder)
+        .with_options(options)
+        .await
+    {
         Ok(conn) => conn,
         Err(e) => {
             error!("Failed to connect to Home Assistant WebSocket: {}", e);
@@ -53,75 +76,69 @@ pub async fn handle(
     };
 
     let log_url = ha_url.split('?').next().unwrap_or(&ha_url);
-    info!("Transparent WebSocket proxy established to {} for {}", log_url, client_ip);
+    debug!(
+        "Transparent WebSocket proxy established to {} for {}",
+        log_url, client_ip
+    );
 
-    let (mut ha_sink, mut ha_stream) = ha_socket.split();
+    // Split sockets into sink and stream
     let (mut client_sink, mut client_stream) = client_socket.split();
+    let (mut ha_sink, mut ha_stream) = ha_socket.split();
 
     // Client to HA
     let c2h = async {
-        while let Some(result) = client_stream.next().await {
-            match result {
-                Ok(msg) => {
-                    let tungstenite_msg = match msg {
-                        Message::Text(text) => {
-                            tokio_tungstenite::tungstenite::Message::Text(text.to_string().into())
-                        }
-                        Message::Binary(bin) => tokio_tungstenite::tungstenite::Message::Binary(bin),
-                        Message::Close(close) => {
-                            let close_frame = close.map(|c| tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                                code: c.code.into(),
-                                reason: c.reason.to_string().into(),
-                            });
-                            let _ = ha_sink.send(tokio_tungstenite::tungstenite::Message::Close(close_frame)).await;
-                            break;
-                        }
-                        _ => continue,
-                    };
-
-                    if let Err(e) = ha_sink.send(tungstenite_msg).await {
+        while let Some(frame) = client_stream.next().await {
+            match frame.opcode() {
+                OpCode::Text => {
+                    let text = frame.as_str().to_string();
+                    let ha_frame = Frame::text(text);
+                    if let Err(e) = ha_sink.send(ha_frame).await {
                         error!("Error forwarding client to HA: {}", e);
                         break;
                     }
                 }
-                Err(e) => {
-                    error!("Client stream error: {}", e);
+                OpCode::Binary => {
+                    let payload = frame.payload().to_vec();
+                    let ha_frame = Frame::binary(payload);
+                    if let Err(e) = ha_sink.send(ha_frame).await {
+                        error!("Error forwarding client to HA: {}", e);
+                        break;
+                    }
+                }
+                OpCode::Close => {
+                    let _ = ha_sink.send(Frame::close(CloseCode::Normal, "")).await;
                     break;
                 }
+                _ => {}
             }
         }
     };
 
     // HA to Client
     let h2c = async {
-        while let Some(result) = ha_stream.next().await {
-            match result {
-                Ok(msg) => {
-                    let axum_msg = match msg {
-                        tokio_tungstenite::tungstenite::Message::Text(text) => {
-                            Message::Text(text.to_string().into())
-                        }
-                        tokio_tungstenite::tungstenite::Message::Binary(bin) => Message::Binary(bin),
-                        tokio_tungstenite::tungstenite::Message::Close(close) => {
-                            let axum_close = close.map(|c| axum::extract::ws::CloseFrame {
-                                code: c.code.into(),
-                                reason: c.reason.to_string().into(),
-                            });
-                            let _ = client_sink.send(Message::Close(axum_close)).await;
-                            break;
-                        }
-                        _ => continue,
-                    };
-
-                    if let Err(e) = client_sink.send(axum_msg).await {
+        while let Some(frame) = ha_stream.next().await {
+            match frame.opcode() {
+                OpCode::Text => {
+                    let text = frame.as_str().to_string();
+                    let client_frame = Frame::text(text);
+                    if let Err(e) = client_sink.send(client_frame).await {
                         error!("Error forwarding HA to client: {}", e);
                         break;
                     }
                 }
-                Err(e) => {
-                    error!("HA stream error: {}", e);
+                OpCode::Binary => {
+                    let payload = frame.payload().to_vec();
+                    let client_frame = Frame::binary(payload);
+                    if let Err(e) = client_sink.send(client_frame).await {
+                        error!("Error forwarding HA to client: {}", e);
+                        break;
+                    }
+                }
+                OpCode::Close => {
+                    let _ = client_sink.send(Frame::close(CloseCode::Normal, "")).await;
                     break;
                 }
+                _ => {}
             }
         }
     };
