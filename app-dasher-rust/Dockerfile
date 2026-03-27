@@ -1,6 +1,6 @@
 # Multi-stage build for Rust add-on
 
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:trixie
+ARG BUILD_FROM
 
 # Build stage - use Rust to compile the binary
 FROM rust:trixie AS builder
