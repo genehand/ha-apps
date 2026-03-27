@@ -26,7 +26,7 @@ fn default_transparent() -> bool {
 }
 
 fn default_proxy_port() -> u16 {
-    8124
+    8125
 }
 
 fn default_log_level() -> String {

@@ -1,5 +1,5 @@
 name: Dasher-rust
-version: 0.4.3
+version: 0.4.4
 slug: dasher-rust
 description: Filter websocket events for dashboard entities
 url: https://github.com/genehand/ha-apps
