@@ -18,8 +18,30 @@ pub async fn handle(
     };
     let ha_url = format!("ws://{}{}", config.ha_host, path_qs);
     
+    // Build the request with original headers
+    let mut ws_request = tokio_tungstenite::tungstenite::handshake::client::Request::builder()
+        .method("GET")
+        .uri(&ha_url)
+        .body(())
+        .unwrap();
+
+    // Copy headers from original request, excluding Host
+    for (key, value) in req.headers() {
+        if !key.as_str().eq_ignore_ascii_case("host") {
+            ws_request.headers_mut().insert(key.clone(), value.clone());
+        }
+    }
+
+    // Set Host header from HA URL (tungstenite doesn't auto-add it for custom requests)
+    if let Some(host) = config.ha_host.split(':').next() {
+        ws_request.headers_mut().insert(
+            http::header::HOST,
+            http::HeaderValue::from_str(host).unwrap(),
+        );
+    }
+
     // Connect to Home Assistant
-    let (ha_socket, _) = match tokio_tungstenite::connect_async(&ha_url).await {
+    let (ha_socket, _) = match tokio_tungstenite::connect_async(ws_request).await {
         Ok(conn) => conn,
         Err(e) => {
             error!("Failed to connect to Home Assistant WebSocket: {}", e);
