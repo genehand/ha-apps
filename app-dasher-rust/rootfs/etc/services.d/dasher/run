@@ -1,0 +1,10 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community Add-on: Dasher
+# Starts Dasher
+# ==============================================================================
+
+bashio::log.info "Starting Dasher..."
+
+exec /usr/local/bin/dasher

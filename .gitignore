@@ -1,2 +1,17 @@
 .DS_Store
-__pycache__
+
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+proxy-config.yaml
+!proxy-config.yaml.example
