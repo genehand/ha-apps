@@ -1,10 +1,165 @@
-use futures::{sink::SinkExt, stream::StreamExt};
+use axum::{
+    body::Body,
+    extract::{ConnectInfo, Request, State},
+    response::Response,
+};
+use futures::{Sink, Stream, sink::SinkExt, stream::StreamExt};
 use serde_json::Value;
 use tracing::{debug, error, info};
-use yawc::{CompressionLevel, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
+use yawc::{CompressionLevel, IncomingUpgrade, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
 
-use crate::state::ClientStates;
+use crate::state::{AppState, ClientStates};
+use crate::utils;
 use crate::websocket::entities::{parse_lovelace_entities, resolve_rules_and_update_entities};
+
+/// Process and forward frames from client to HA, tracking subscription IDs
+async fn forward_client_to_ha<S, D>(
+    mut source: S,
+    mut destination: D,
+    conn_id: &str,
+    client_states: &ClientStates,
+    client_ip: &str,
+) where
+    S: Stream<Item = Frame> + Unpin,
+    D: Sink<Frame> + Unpin,
+    D::Error: std::fmt::Display,
+{
+    while let Some(frame) = source.next().await {
+        match frame.opcode() {
+            OpCode::Text => {
+                let text = frame.as_str();
+                // Process client message to track subscription IDs
+                if let Ok(data) = serde_json::from_str::<Value>(text) {
+                    process_client_message(data, conn_id, client_states, client_ip).await;
+                }
+
+                if let Err(e) = destination.send(frame).await {
+                    error!("Error forwarding client to HA: {}", e);
+                    break;
+                }
+            }
+            OpCode::Binary => {
+                if let Err(e) = destination.send(frame).await {
+                    error!("Error forwarding client to HA: {}", e);
+                    break;
+                }
+            }
+            OpCode::Close => {
+                let _ = destination.send(Frame::close(CloseCode::Normal, "")).await;
+                break;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Process and filter frames from HA to client based on entity subscriptions
+async fn forward_ha_to_client<S, D>(
+    mut source: S,
+    mut destination: D,
+    conn_id: &str,
+    client_states: &ClientStates,
+    client_ip: &str,
+) where
+    S: Stream<Item = Frame> + Unpin,
+    D: Sink<Frame> + Unpin,
+    D::Error: std::fmt::Display,
+{
+    while let Some(frame) = source.next().await {
+        match frame.opcode() {
+            OpCode::Text => {
+                let text = frame.as_str();
+                match serde_json::from_str::<Value>(text) {
+                    Ok(data) => {
+                        let processed = process_server_message(
+                            data,
+                            conn_id,
+                            client_states,
+                            client_ip,
+                        )
+                        .await;
+
+                        if let Some(response) = processed {
+                            let response_frame = Frame::text(response.to_string());
+                            if let Err(e) = destination.send(response_frame).await {
+                                error!("Error sending to client: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Pass through non-JSON messages
+                        if let Err(e) = destination.send(frame).await {
+                            error!("Error sending to client: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            OpCode::Binary => {
+                if let Err(e) = destination.send(frame).await {
+                    error!("Error sending to client: {}", e);
+                    break;
+                }
+            }
+            OpCode::Close => {
+                let _ = destination.send(Frame::close(CloseCode::Normal, "")).await;
+                break;
+            }
+            _ => {}
+        }
+    }
+}
+
+pub async fn handler(
+    upgrade: IncomingUpgrade,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    State(state): State<AppState>,
+    req: Request,
+) -> Response {
+    let client_ip = utils::get_client_ip(&req, addr);
+    let path = req.uri().path();
+
+    info!(
+        "Filtered WebSocket connection for {} from {}",
+        path, client_ip
+    );
+
+    // Check if client requested compression via Sec-WebSocket-Extensions header
+    let client_requested_compression = req
+        .headers()
+        .get("sec-websocket-extensions")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("permessage-deflate"))
+        .unwrap_or(false);
+
+    let options = if client_requested_compression {
+        Options::default().with_compression_level(CompressionLevel::default())
+    } else {
+        Options::default()
+    };
+
+    let (response, ws_future) = upgrade.upgrade(options).unwrap();
+
+    // Check what compression was actually negotiated in the response
+    let compression_negotiated = utils::is_compression_negotiated(response.headers());
+
+    // Convert response body type
+    let response = response.map(|_| Body::empty());
+
+    tokio::spawn(async move {
+        match ws_future.await {
+            Ok(socket) => {
+                handle(socket, state, client_ip, compression_negotiated).await;
+            }
+            Err(e) => {
+                error!("WebSocket upgrade failed for {}: {}", client_ip, e);
+            }
+        }
+    });
+
+    response
+}
 
 pub async fn handle(client_socket: yawc::HttpWebSocket, state: crate::AppState, client_ip: String, use_compression: bool) {
     let config = state.config;
@@ -66,50 +221,22 @@ pub async fn handle(client_socket: yawc::HttpWebSocket, state: crate::AppState, 
     );
 
     // Split sockets into sink and stream
-    let (mut client_sink, mut client_stream) = client_socket.split();
-    let (mut ha_sink, mut ha_stream) = ha_socket.split();
+    let (client_sink, client_stream) = client_socket.split();
+    let (ha_sink, ha_stream) = ha_socket.split();
 
     // Client to HA task
     let conn_id_clone = conn_id.clone();
     let client_states_clone = client_states.clone();
     let client_ip_clone = client_ip.clone();
     let c2h_handle = tokio::spawn(async move {
-        while let Some(frame) = client_stream.next().await {
-            match frame.opcode() {
-                OpCode::Text => {
-                    let text = frame.as_str();
-                    // Process client message to track subscription IDs
-                    if let Ok(data) = serde_json::from_str::<Value>(text) {
-                        process_client_message(
-                            data,
-                            &conn_id_clone,
-                            &client_states_clone,
-                            &client_ip_clone,
-                        )
-                        .await;
-                    }
-
-                    let ha_frame = Frame::text(text.to_string());
-                    if let Err(e) = ha_sink.send(ha_frame).await {
-                        error!("Error forwarding client to HA: {}", e);
-                        break;
-                    }
-                }
-                OpCode::Binary => {
-                    let payload = frame.payload().to_vec();
-                    let ha_frame = Frame::binary(payload);
-                    if let Err(e) = ha_sink.send(ha_frame).await {
-                        error!("Error forwarding client to HA: {}", e);
-                        break;
-                    }
-                }
-                OpCode::Close => {
-                    let _ = ha_sink.send(Frame::close(CloseCode::Normal, "")).await;
-                    break;
-                }
-                _ => {}
-            }
-        }
+        forward_client_to_ha(
+            client_stream,
+            ha_sink,
+            &conn_id_clone,
+            &client_states_clone,
+            &client_ip_clone,
+        )
+        .await;
     });
 
     // HA to Client task
@@ -117,53 +244,14 @@ pub async fn handle(client_socket: yawc::HttpWebSocket, state: crate::AppState, 
     let client_states_clone2 = client_states.clone();
     let client_ip_clone = client_ip.clone();
     let h2c_handle = tokio::spawn(async move {
-        while let Some(frame) = ha_stream.next().await {
-            match frame.opcode() {
-                OpCode::Text => {
-                    let text = frame.as_str();
-                    match serde_json::from_str::<Value>(text) {
-                        Ok(data) => {
-                            let processed = process_server_message(
-                                data,
-                                &conn_id_clone2,
-                                &client_states_clone2,
-                                &client_ip_clone,
-                            )
-                            .await;
-
-                            if let Some(response) = processed {
-                                let client_frame = Frame::text(response.to_string());
-                                if let Err(e) = client_sink.send(client_frame).await {
-                                    error!("Error sending to client: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // Pass through non-JSON messages
-                            let client_frame = Frame::text(text.to_string());
-                            if let Err(e) = client_sink.send(client_frame).await {
-                                error!("Error sending to client: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                }
-                OpCode::Binary => {
-                    let payload = frame.payload().to_vec();
-                    let client_frame = Frame::binary(payload);
-                    if let Err(e) = client_sink.send(client_frame).await {
-                        error!("Error sending to client: {}", e);
-                        break;
-                    }
-                }
-                OpCode::Close => {
-                    let _ = client_sink.send(Frame::close(CloseCode::Normal, "")).await;
-                    break;
-                }
-                _ => {}
-            }
-        }
+        forward_ha_to_client(
+            ha_stream,
+            client_sink,
+            &conn_id_clone2,
+            &client_states_clone2,
+            &client_ip_clone,
+        )
+        .await;
     });
 
     // Wait for either task to complete
@@ -328,4 +416,142 @@ async fn process_server_message(
 
     // Pass through all other messages
     Some(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::channel::mpsc;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_text() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-conn-1";
+        let client_ip = "127.0.0.1";
+
+        // Send a text frame
+        tx.send(Frame::text("Hello, HA!")).await.unwrap();
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().as_str(), "Hello, HA!");
+    }
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_tracks_subscriptions() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-conn-2";
+        let client_ip = "127.0.0.1";
+
+        // Send subscribe_entities message
+        let subscribe_msg = r#"{"type":"subscribe_entities","id":42}"#;
+        tx.send(Frame::text(subscribe_msg)).await.unwrap();
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Verify message was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+
+        // Verify state was updated
+        let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+        assert_eq!(state.subscribe_entities_id, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_binary() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        let data = vec![0x01, 0x02, 0x03];
+        tx.send(Frame::binary(data.clone())).await.unwrap();
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().payload().to_vec(), data);
+    }
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_close() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        tx.send(Frame::close(CloseCode::Normal, "")).await.unwrap();
+
+        forward_client_to_ha(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().opcode(), OpCode::Close);
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_passthrough() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        // Send a simple text message that should pass through
+        tx.send(Frame::text("Hello, Client!")).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().as_str(), "Hello, Client!");
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_binary_passthrough() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        let data = vec![0xAB, 0xCD, 0xEF];
+        tx.send(Frame::binary(data.clone())).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().payload().to_vec(), data);
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_close() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        tx.send(Frame::close(CloseCode::Normal, "")).await.unwrap();
+
+        forward_ha_to_client(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().opcode(), OpCode::Close);
+    }
 }

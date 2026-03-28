@@ -138,3 +138,44 @@ fn get_timeout_for_path(path: &str) -> Option<u64> {
         Some(5) // Default timeout
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_timeout_for_path_m3u8() {
+        assert_eq!(get_timeout_for_path("/api/stream/playlist.m3u8"), Some(15));
+        assert_eq!(get_timeout_for_path("/test.m3u8"), Some(15));
+        assert_eq!(get_timeout_for_path("/path/to/video.m3u8"), Some(15));
+    }
+
+    #[test]
+    fn test_get_timeout_for_path_logs_follow() {
+        assert_eq!(get_timeout_for_path("/api/logs/follow"), None);
+        assert_eq!(get_timeout_for_path("/config/logs/follow"), None);
+    }
+
+    #[test]
+    fn test_get_timeout_for_path_default() {
+        assert_eq!(get_timeout_for_path("/api/states"), Some(5));
+        assert_eq!(get_timeout_for_path("/"), Some(5));
+        assert_eq!(get_timeout_for_path("/websocket"), Some(5));
+        assert_eq!(get_timeout_for_path("/api/config"), Some(5));
+    }
+
+    #[test]
+    fn test_get_timeout_for_path_edge_cases() {
+        // Case sensitivity
+        assert_eq!(get_timeout_for_path("/test.M3U8"), Some(5));
+        assert_eq!(get_timeout_for_path("/test.M3u8"), Some(5));
+
+        // Partial matches
+        assert_eq!(get_timeout_for_path("/logs/follow/extra"), Some(5));
+        assert_eq!(get_timeout_for_path("/logs/followother"), Some(5));
+        assert_eq!(get_timeout_for_path("/test.m3u8.backup"), Some(5));
+
+        // Empty path
+        assert_eq!(get_timeout_for_path(""), Some(5));
+    }
+}

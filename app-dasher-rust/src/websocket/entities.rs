@@ -269,3 +269,252 @@ fn check_attribute_match(
 
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_parse_lovelace_entities_simple() {
+        let data = json!({
+            "type": "entities",
+            "entities": ["light.living_room", "switch.kitchen"]
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("light.living_room"));
+        assert!(entities.contains("switch.kitchen"));
+        assert_eq!(entities.len(), 2);
+        assert!(filter_rules.is_empty());
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_with_entity_key() {
+        let data = json!({
+            "type": "custom:bubble-card",
+            "entity": "climate.living_room"
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("climate.living_room"));
+        assert_eq!(entities.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_bubble_card_pattern() {
+        let data = json!({
+            "1_entity": "light.bedroom",
+            "2_entity": "switch.office"
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("light.bedroom"));
+        assert!(entities.contains("switch.office"));
+        assert_eq!(entities.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_from_template() {
+        let data = json!({
+            "template": "{{ states['light.kitchen'].state }} and {{ states['sensor.temperature'].state }}"
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("light.kitchen"));
+        assert!(entities.contains("sensor.temperature"));
+        assert_eq!(entities.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_with_auto_entities() {
+        let data = json!({
+            "type": "custom:auto-entities",
+            "filter": {
+                "include": [
+                    {
+                        "domain": "light",
+                        "attributes": {"brightness": ">0"}
+                    },
+                    "light.living_room_*"
+                ]
+            }
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        // The entity_id pattern should be extracted
+        assert!(entities.contains("light.living_room_*"));
+        // Complex filters should be added to filter_rules
+        assert_eq!(filter_rules.len(), 1);
+        let rule = filter_rules[0].as_object().unwrap();
+        assert!(rule.contains_key("domain"));
+        assert!(rule.contains_key("attributes"));
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_nested() {
+        let data = json!({
+            "cards": [
+                {
+                    "entity": "sensor.nested"
+                }
+            ]
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("sensor.nested"));
+        assert_eq!(entities.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_invalid_entity_id() {
+        let data = json!({
+            "entities": ["invalid_entity", "also.invalid.still"]
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        // Invalid entity IDs should not be added
+        assert!(!entities.contains("invalid_entity"));
+        assert!(!entities.contains("also.invalid.still"));
+        assert!(entities.is_empty());
+    }
+
+    #[test]
+    fn test_matches_filter_exact_match() {
+        assert!(matches_filter("light.kitchen", "light.kitchen"));
+        assert!(!matches_filter("light.kitchen", "light.living_room"));
+    }
+
+    #[test]
+    fn test_matches_filter_wildcard() {
+        assert!(matches_filter("light.kitchen_main", "light.kitchen_*"));
+        assert!(matches_filter("light.kitchen_ceiling", "light.kitchen_*"));
+        assert!(!matches_filter("light.living_room", "light.kitchen_*"));
+
+        // Multiple wildcards
+        assert!(matches_filter("light.kitchen_main_top", "light.*_*"));
+
+        // Single character wildcard
+        assert!(matches_filter("light.kitchen1", "light.kitchen?"));
+        assert!(!matches_filter("light.kitchen12", "light.kitchen?"));
+    }
+
+    #[test]
+    fn test_matches_filter_regex() {
+        assert!(matches_filter("light.kitchen", "/light\\..*/"));
+        assert!(matches_filter("sensor.temperature", "/sensor\\..*/"));
+        assert!(!matches_filter("light.kitchen", "/switch\\..*/"));
+    }
+
+    #[test]
+    fn test_check_attribute_match_exact() {
+        let state_attrs = serde_json::Map::from_iter([("brightness".to_string(), json!(255))]);
+        let rule_attrs = json!({"brightness": 255});
+
+        assert!(check_attribute_match(Some(&state_attrs), &rule_attrs));
+    }
+
+    #[test]
+    fn test_check_attribute_match_wildcard() {
+        // Note: to_string() on JSON strings includes quotes, so we need to account for that
+        let state_attrs =
+            serde_json::Map::from_iter([("friendly_name".to_string(), json!("Living Room Light"))]);
+        // The pattern needs to match "Living Room Light" (with quotes)
+        let rule_attrs = json!({"friendly_name": "\"Living Room*\""});
+
+        assert!(check_attribute_match(Some(&state_attrs), &rule_attrs));
+    }
+
+    #[test]
+    fn test_check_attribute_match_missing() {
+        let state_attrs = serde_json::Map::from_iter([("brightness".to_string(), json!(255))]);
+        let rule_attrs = json!({"color_temp": 300});
+
+        assert!(!check_attribute_match(Some(&state_attrs), &rule_attrs));
+    }
+
+    #[test]
+    fn test_check_attribute_match_none() {
+        let rule_attrs = json!({"brightness": 255});
+
+        assert!(!check_attribute_match(None, &rule_attrs));
+    }
+
+    #[test]
+    fn test_resolve_rules_and_update_entities() {
+        let all_states = json!({
+            "light.kitchen": {
+                "s": "on",
+                "a": {"brightness": 255}
+            },
+            "light.bedroom": {
+                "s": "off",
+                "a": {"brightness": 0}
+            },
+            "switch.lamp": {
+                "s": "on",
+                "a": {}
+            }
+        });
+
+        let rules = vec![json!({"domain": "light"})];
+
+        let mut entities = HashSet::new();
+
+        resolve_rules_and_update_entities(&all_states, &rules, &mut entities);
+
+        // Should add light entities but not switch
+        assert!(entities.contains("light.kitchen"));
+        assert!(entities.contains("light.bedroom"));
+        assert!(!entities.contains("switch.lamp"));
+    }
+
+    #[test]
+    fn test_resolve_rules_with_entity_filter() {
+        let all_states = json!({
+            "light.living_room_main": {
+                "s": "on",
+                "a": {}
+            },
+            "light.living_room_side": {
+                "s": "off",
+                "a": {}
+            },
+            "light.kitchen": {
+                "s": "on",
+                "a": {}
+            }
+        });
+
+        let rules = vec![json!({"entity_id": "light.living_room_*"})];
+
+        let mut entities = HashSet::new();
+
+        resolve_rules_and_update_entities(&all_states, &rules, &mut entities);
+
+        assert!(entities.contains("light.living_room_main"));
+        assert!(entities.contains("light.living_room_side"));
+        assert!(!entities.contains("light.kitchen"));
+    }
+}

@@ -1,7 +1,86 @@
-use axum::extract::Request;
-use futures::{sink::SinkExt, stream::StreamExt};
+use axum::{
+    body::Body,
+    extract::{ConnectInfo, Request, State},
+    response::Response,
+};
+use futures::{Sink, Stream, sink::SinkExt, stream::StreamExt};
 use tracing::{debug, error, info};
-use yawc::{CompressionLevel, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
+use yawc::{CompressionLevel, IncomingUpgrade, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
+
+use crate::state::AppState;
+use crate::utils;
+
+/// Forward WebSocket frames from source to destination
+async fn forward_frames<S, D>(
+    mut source: S,
+    mut destination: D,
+    direction: &str,
+) where
+    S: Stream<Item = Frame> + Unpin,
+    D: Sink<Frame> + Unpin,
+    D::Error: std::fmt::Display,
+{
+    while let Some(frame) = source.next().await {
+        match frame.opcode() {
+            OpCode::Text | OpCode::Binary => {
+                if let Err(e) = destination.send(frame).await {
+                    error!("Error forwarding {}: {}", direction, e);
+                    break;
+                }
+            }
+            OpCode::Close => {
+                let _ = destination.send(Frame::close(CloseCode::Normal, "")).await;
+                break;
+            }
+            _ => {}
+        }
+    }
+}
+
+pub async fn handler(
+    upgrade: IncomingUpgrade,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    State(state): State<AppState>,
+    req: Request,
+) -> Response {
+    let client_ip = utils::get_client_ip(&req, addr);
+
+    info!(
+        "Transparent WebSocket connection for {} from {}",
+        req.uri().path(),
+        client_ip
+    );
+
+    // Check if client requested compression via Sec-WebSocket-Extensions header
+    let client_requested_compression = utils::is_compression_negotiated(req.headers());
+
+    let options = if client_requested_compression {
+        Options::default().with_compression_level(CompressionLevel::default())
+    } else {
+        Options::default()
+    };
+
+    let (response, ws_future) = upgrade.upgrade(options).unwrap();
+
+    // Check what compression was actually negotiated in the response
+    let compression_negotiated = utils::is_compression_negotiated(response.headers());
+
+    // Convert response body type
+    let response = response.map(|_| Body::empty());
+
+    tokio::spawn(async move {
+        match ws_future.await {
+            Ok(socket) => {
+                handle(socket, state, client_ip, req, compression_negotiated).await;
+            }
+            Err(e) => {
+                error!("WebSocket upgrade failed for {}: {}", client_ip, e);
+            }
+        }
+    });
+
+    response
+}
 
 pub async fn handle(
     client_socket: yawc::HttpWebSocket,
@@ -82,66 +161,14 @@ pub async fn handle(
     );
 
     // Split sockets into sink and stream
-    let (mut client_sink, mut client_stream) = client_socket.split();
-    let (mut ha_sink, mut ha_stream) = ha_socket.split();
+    let (client_sink, client_stream) = client_socket.split();
+    let (ha_sink, ha_stream) = ha_socket.split();
 
     // Client to HA
-    let c2h = async {
-        while let Some(frame) = client_stream.next().await {
-            match frame.opcode() {
-                OpCode::Text => {
-                    let text = frame.as_str().to_string();
-                    let ha_frame = Frame::text(text);
-                    if let Err(e) = ha_sink.send(ha_frame).await {
-                        error!("Error forwarding client to HA: {}", e);
-                        break;
-                    }
-                }
-                OpCode::Binary => {
-                    let payload = frame.payload().to_vec();
-                    let ha_frame = Frame::binary(payload);
-                    if let Err(e) = ha_sink.send(ha_frame).await {
-                        error!("Error forwarding client to HA: {}", e);
-                        break;
-                    }
-                }
-                OpCode::Close => {
-                    let _ = ha_sink.send(Frame::close(CloseCode::Normal, "")).await;
-                    break;
-                }
-                _ => {}
-            }
-        }
-    };
+    let c2h = forward_frames(client_stream, ha_sink, "client to HA");
 
     // HA to Client
-    let h2c = async {
-        while let Some(frame) = ha_stream.next().await {
-            match frame.opcode() {
-                OpCode::Text => {
-                    let text = frame.as_str().to_string();
-                    let client_frame = Frame::text(text);
-                    if let Err(e) = client_sink.send(client_frame).await {
-                        error!("Error forwarding HA to client: {}", e);
-                        break;
-                    }
-                }
-                OpCode::Binary => {
-                    let payload = frame.payload().to_vec();
-                    let client_frame = Frame::binary(payload);
-                    if let Err(e) = client_sink.send(client_frame).await {
-                        error!("Error forwarding HA to client: {}", e);
-                        break;
-                    }
-                }
-                OpCode::Close => {
-                    let _ = client_sink.send(Frame::close(CloseCode::Normal, "")).await;
-                    break;
-                }
-                _ => {}
-            }
-        }
-    };
+    let h2c = forward_frames(ha_stream, client_sink, "HA to client");
 
     // Run both directions concurrently
     tokio::select! {
@@ -150,4 +177,90 @@ pub async fn handle(
     }
 
     info!("Transparent WebSocket connection closed for {}", client_ip);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::channel::mpsc;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn test_forward_frames_text() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        // Send a text frame
+        let text_frame = Frame::text("Hello, World!");
+        tx.send(text_frame).await.unwrap();
+        drop(tx); // Close the stream
+
+        forward_frames(rx, sink_tx, "test").await;
+
+        // Verify the frame was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Text);
+        assert_eq!(frame.as_str(), "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn test_forward_frames_binary() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        // Send a binary frame
+        let binary_data = vec![0x01, 0x02, 0x03, 0x04];
+        let binary_frame = Frame::binary(binary_data.clone());
+        tx.send(binary_frame).await.unwrap();
+        drop(tx);
+
+        forward_frames(rx, sink_tx, "test").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Binary);
+        assert_eq!(frame.payload().to_vec(), binary_data);
+    }
+
+    #[tokio::test]
+    async fn test_forward_frames_close() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        // Send a close frame
+        let close_frame = Frame::close(CloseCode::Normal, "Goodbye");
+        tx.send(close_frame).await.unwrap();
+
+        forward_frames(rx, sink_tx, "test").await;
+
+        // Verify close frame was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+    }
+
+    #[tokio::test]
+    async fn test_forward_frames_multiple() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        // Send multiple frames
+        tx.send(Frame::text("Message 1")).await.unwrap();
+        tx.send(Frame::text("Message 2")).await.unwrap();
+        tx.send(Frame::binary(vec![0xAB, 0xCD])).await.unwrap();
+        drop(tx);
+
+        forward_frames(rx, sink_tx, "test").await;
+
+        // Verify all frames were forwarded
+        assert_eq!(sink_rx.next().await.unwrap().as_str(), "Message 1");
+        assert_eq!(sink_rx.next().await.unwrap().as_str(), "Message 2");
+        let binary = sink_rx.next().await.unwrap();
+        assert_eq!(binary.opcode(), OpCode::Binary);
+        assert!(sink_rx.next().await.is_none());
+    }
 }

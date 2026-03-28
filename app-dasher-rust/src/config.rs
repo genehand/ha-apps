@@ -66,3 +66,63 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = Config::default();
+        assert_eq!(config.ha_host, "homeassistant:8123");
+        assert!(config.transparent);
+        assert_eq!(config.proxy_port, 8125);
+        assert_eq!(config.log_level, "INFO");
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = Config {
+            ha_host: "test:8080".to_string(),
+            transparent: false,
+            proxy_port: 9000,
+            log_level: "DEBUG".to_string(),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(config.ha_host, deserialized.ha_host);
+        assert_eq!(config.transparent, deserialized.transparent);
+        assert_eq!(config.proxy_port, deserialized.proxy_port);
+        assert_eq!(config.log_level, deserialized.log_level);
+    }
+
+    #[test]
+    fn test_config_deserialization_with_defaults() {
+        let json = r#"{"ha_host": "custom:8123"}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.ha_host, "custom:8123");
+        // Check defaults are used for missing fields
+        assert!(config.transparent);
+        assert_eq!(config.proxy_port, 8125);
+        assert_eq!(config.log_level, "INFO");
+    }
+
+    #[test]
+    fn test_config_yaml_serialization() {
+        let config = Config {
+            ha_host: "homeassistant.local:8123".to_string(),
+            transparent: true,
+            proxy_port: 8124,
+            log_level: "WARN".to_string(),
+        };
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("ha_host: homeassistant.local:8123"));
+        assert!(yaml.contains("transparent: true"));
+        assert!(yaml.contains("proxy_port: 8124"));
+        assert!(yaml.contains("log_level: WARN"));
+    }
+}
