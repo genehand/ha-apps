@@ -3,7 +3,6 @@
 Bridges BinarySensorEntity to MQTT binary sensor discovery.
 """
 
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Optional
 
@@ -15,6 +14,7 @@ from ..entity import (
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
@@ -55,8 +55,9 @@ class BinarySensorDeviceClass(StrEnum):
     WINDOW = "window"
 
 
-@dataclass(frozen=True)
-class BinarySensorEntityDescription(EntityDescription):
+class BinarySensorEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a binary sensor entity."""
 
     device_class: Optional[str] = None

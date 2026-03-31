@@ -3,7 +3,6 @@
 Bridges SelectEntity to MQTT select discovery.
 """
 
-from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from ..entity import (
@@ -14,12 +13,14 @@ from ..entity import (
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 
 DOMAIN = "select"
 
 
-@dataclass(frozen=True)
-class SelectEntityDescription(EntityDescription):
+class SelectEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a select entity."""
 
     options: List[str] = None

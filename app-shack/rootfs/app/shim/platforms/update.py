@@ -4,7 +4,6 @@ Bridges UpdateEntity to MQTT update discovery.
 Shows available updates for integrations.
 """
 
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Dict, Optional
 from datetime import datetime
@@ -17,6 +16,7 @@ from ..entity import (
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
@@ -30,8 +30,9 @@ class UpdateDeviceClass(StrEnum):
     FIRMWARE = "firmware"
 
 
-@dataclass(frozen=True)
-class UpdateEntityDescription(EntityDescription):
+class UpdateEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a update entity."""
 
     device_class: Optional[str] = None

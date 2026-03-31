@@ -78,6 +78,8 @@ class IntegrationInfo:
             "latest_version": self.latest_version,
             "update_available": self.update_available,
             "config_flow": self.config_flow,
+            "requirements": self.requirements,
+            "dependencies": self.dependencies,
         }
 
 
@@ -755,6 +757,7 @@ class IntegrationManager:
         temp_dir = self._shim_dir / "temp"
         temp_dir.mkdir(exist_ok=True)
         zip_path = temp_dir / f"{domain}.zip"
+        extract_dir: Path | None = None
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -834,7 +837,7 @@ class IntegrationManager:
             # Cleanup
             if zip_path.exists():
                 zip_path.unlink()
-            if extract_dir.exists():
+            if extract_dir and extract_dir.exists():
                 shutil.rmtree(extract_dir)
 
     def _load_manifest(self, domain: str) -> Optional[dict]:
@@ -968,7 +971,6 @@ class IntegrationManager:
 
         _LOGGER.info(f"Integration {domain} has requirements: {info.requirements}")
 
-        import subprocess
         import sys
 
         # Use the venv pip to ensure packages are installed in the right environment
@@ -984,16 +986,21 @@ class IntegrationManager:
         for requirement in info.requirements:
             try:
                 _LOGGER.info(f"Installing requirement: {requirement}")
-                result = subprocess.run(
-                    pip_cmd + ["install", requirement],
-                    capture_output=True,
-                    text=True,
-                    check=True,
+                proc = await asyncio.create_subprocess_exec(
+                    *pip_cmd,
+                    "install",
+                    requirement,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    _LOGGER.error(f"Failed to install {requirement}: {stderr.decode()}")
+                    return False
                 _LOGGER.info(f"Successfully installed {requirement}")
-                _LOGGER.debug(f"pip output: {result.stdout}")
-            except subprocess.CalledProcessError as e:
-                _LOGGER.error(f"Failed to install {requirement}: {e.stderr}")
+                _LOGGER.debug(f"pip output: {stdout.decode()}")
+            except Exception as e:
+                _LOGGER.error(f"Failed to install {requirement}: {e}")
                 return False
 
         # Invalidate import cache so newly installed packages can be imported

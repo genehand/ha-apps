@@ -3,7 +3,6 @@
 Bridges LightEntity to MQTT light discovery.
 """
 
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,6 +14,7 @@ from ..entity import (
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
@@ -37,8 +37,9 @@ class ColorMode(StrEnum):
     WHITE = "white"
 
 
-@dataclass(frozen=True)
-class LightEntityDescription(EntityDescription):
+class LightEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a light entity."""
 
 

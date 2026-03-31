@@ -1,7 +1,7 @@
 """Tests for shim modules added in this session."""
 
 import pytest
-from dataclasses import dataclass
+from dataclasses import dataclass, FrozenInstanceError
 
 
 class TestEntityDescription:
@@ -456,3 +456,36 @@ class TestConfigEntryUniqueId:
 
         entry.unique_id = "new_id"
         assert entry.unique_id == "new_id"
+
+
+class TestEntityDescriptionWorksWithIntegrations:
+    """Tests that EntityDescription works with real integration patterns."""
+
+    def test_entity_description_basic_creation(self):
+        """Test basic EntityDescription creation."""
+        from shim.entity import EntityDescription
+
+        desc = EntityDescription(
+            key="test_key",
+            name="Test Name",
+            device_class="temperature",
+        )
+        assert desc.key == "test_key"
+        assert desc.name == "Test Name"
+        assert desc.device_class == "temperature"
+
+    def test_sensor_entity_description_creation(self):
+        """Test SensorEntityDescription creation."""
+        from shim.platforms.sensor import SensorEntityDescription
+
+        desc = SensorEntityDescription(
+            key="test_key",
+            name="Test Sensor",
+            state_class="measurement",
+            native_unit_of_measurement="°C",
+            options=["option1", "option2"],
+        )
+        assert desc.key == "test_key"
+        assert desc.state_class == "measurement"
+        assert desc.native_unit_of_measurement == "°C"
+        assert desc.options == ["option1", "option2"]

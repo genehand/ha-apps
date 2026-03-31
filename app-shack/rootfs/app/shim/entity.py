@@ -3,7 +3,6 @@
 Provides Entity base class and entity registry functionality.
 """
 
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Dict, List, Optional, Callable, Set, Union
 import asyncio
@@ -11,43 +10,24 @@ from datetime import datetime
 
 from .logging import get_logger
 from .const import STATE_UNAVAILABLE
+from .frozen_dataclass_compat import FrozenOrThawed
 
 _LOGGER = get_logger(__name__)
 
 
-@dataclass(frozen=True)
-class EntityDescription:
+class EntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
     """A class that describes Home Assistant entities."""
 
     key: str
-    """A unique identifier for this entity description instance."""
-
     device_class: Optional[str] = None
-    """The device class for this entity description."""
-
     entity_category: Optional[str] = None
-    """The category of this entity description."""
-
     entity_registry_enabled_default: bool = True
-    """Indicate if the entity should be enabled by default."""
-
     entity_registry_visible_default: bool = True
-    """Indicate if the entity should be visible by default."""
-
     has_entity_name: bool = False
-    """Return True if the entity has a naming convention that includes the device name."""
-
     icon: Optional[str] = None
-    """The icon for this entity description."""
-
     name: Optional[str] = None
-    """The name of the entity."""
-
     translation_key: Optional[str] = None
-    """The translation key for this entity description."""
-
     unit_of_measurement: Optional[str] = None
-    """The unit of measurement for this entity description."""
 
 
 def format_device_identifiers(identifiers: Set[Union[tuple, list, str]]) -> List[str]:

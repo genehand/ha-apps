@@ -3,7 +3,6 @@
 Bridges ButtonEntity to MQTT button discovery.
 """
 
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Optional
 
@@ -15,6 +14,7 @@ from ..entity import (
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 
 DOMAIN = "button"
 
@@ -27,8 +27,9 @@ class ButtonDeviceClass(StrEnum):
     IDENTIFY = "identify"
 
 
-@dataclass(frozen=True)
-class ButtonEntityDescription(EntityDescription):
+class ButtonEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """A class that describes button entities."""
 
 

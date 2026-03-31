@@ -4,7 +4,6 @@ Bridges FanEntity to MQTT fan discovery.
 """
 
 import math
-from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from ..entity import (
@@ -15,6 +14,7 @@ from ..entity import (
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
@@ -22,8 +22,9 @@ _LOGGER = get_logger(__name__)
 DOMAIN = "fan"
 
 
-@dataclass(frozen=True)
-class FanEntityDescription(EntityDescription):
+class FanEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a fan entity."""
 
     preset_modes: Optional[List[str]] = None

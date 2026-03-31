@@ -206,7 +206,7 @@ class TextEntity(Entity):
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class TextEntityDescription:
     """A class that describes text entities."""
 

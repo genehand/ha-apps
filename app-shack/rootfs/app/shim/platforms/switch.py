@@ -3,7 +3,6 @@
 Bridges SwitchEntity to MQTT switch discovery.
 """
 
-from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Optional
 
@@ -15,6 +14,7 @@ from ..entity import (
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 
 DOMAIN = "switch"
 
@@ -26,8 +26,9 @@ class SwitchDeviceClass(StrEnum):
     SWITCH = "switch"
 
 
-@dataclass(frozen=True)
-class SwitchEntityDescription(EntityDescription):
+class SwitchEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """A class that describes switch entities."""
 
 

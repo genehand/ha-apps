@@ -78,12 +78,13 @@ class RestoreSensor:
         return None
 
 
-from dataclasses import dataclass
 from ..entity import EntityDescription
+from ..frozen_dataclass_compat import FrozenOrThawed
 
 
-@dataclass(frozen=True)
-class SensorEntityDescription(EntityDescription):
+class SensorEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """A class that describes sensor entities."""
 
     state_class: str | None = None
