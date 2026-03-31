@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ integration.name }} - HA Shim</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background: #03a9f4;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+        
+        header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        
+        header a {
+            color: white;
+            text-decoration: none;
+            opacity: 0.8;
+        }
+        
+        header a:hover {
+            opacity: 1;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            margin-bottom: 15px;
+            color: #03a9f4;
+            font-size: 20px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+            margin-right: 10px;
+        }
+        
+        .btn-primary {
+            background: #03a9f4;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #0288d1;
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+        
+        .btn-secondary {
+            background: #757575;
+            color: white;
+        }
+        
+        .entity-list {
+            display: grid;
+            gap: 10px;
+        }
+        
+        .entity-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: #f9f9f9;
+            border-radius: 4px;
+        }
+        
+        .info-row {
+            display: flex;
+            margin-bottom: 10px;
+        }
+        
+        .info-label {
+            font-weight: bold;
+            width: 150px;
+            color: #666;
+        }
+        
+        .info-value {
+            flex: 1;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .status-enabled {
+            background: #c8e6c9;
+            color: #2e7d32;
+        }
+        
+        .status-disabled {
+            background: #ffe0b2;
+            color: #ef6c00;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <a href="/">← Back to Dashboard</a>
+            <h1>{{ integration.name }}</h1>
+        </div>
+    </header>
+    
+    <div class="container">
+        <div class="card">
+            <h2>Integration Details</h2>
+            <div class="info-row">
+                <div class="info-label">Domain:</div>
+                <div class="info-value">{{ integration.domain }}</div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Version:</div>
+                <div class="info-value">{{ integration.version }}</div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Description:</div>
+                <div class="info-value">{{ integration.description or 'No description' }}</div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Source:</div>
+                <div class="info-value">{{ integration.source }}</div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Repository:</div>
+                <div class="info-value"><a href="{{ integration.repository_url }}" target="_blank">{{ integration.repository_url }}</a></div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Status:</div>
+                <div class="info-value">
+                    <span class="status-badge {{ 'status-enabled' if integration.enabled else 'status-disabled' }}">
+                        {{ 'Enabled' if integration.enabled else 'Disabled' }}
+                    </span>
+                </div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Update Available:</div>
+                <div class="info-value">
+                    {% if integration.update_available %}
+                    <span style="color: #ff5722;">Yes ({{ integration.latest_version }})</span>
+                    {% else %}
+                    <span style="color: #4caf50;">No</span>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <div style="margin-top: 20px;">
+                {% if integration.enabled %}
+                <button type="button" class="btn btn-secondary"
+                        hx-post="/integrations/{{ integration.domain }}/disable"
+                        hx-target="body"
+                        hx-swap="outerHTML">
+                    Disable Integration
+                </button>
+                {% else %}
+                <button type="button" class="btn btn-primary"
+                        hx-post="/integrations/{{ integration.domain }}/enable"
+                        hx-target="body"
+                        hx-swap="outerHTML">
+                    Enable Integration
+                </button>
+                {% endif %}
+                
+                {% if integration.update_available %}
+                <button type="button" class="btn btn-primary"
+                        hx-post="/integrations/{{ integration.domain }}/update"
+                        hx-target="body"
+                        hx-swap="outerHTML">
+                    Update to {{ integration.latest_version }}
+                </button>
+                {% endif %}
+                
+                <a href="/config/{{ integration.domain }}" class="btn btn-primary">Configure</a>
+                
+                <button type="button" class="btn btn-danger"
+                        hx-post="/integrations/{{ integration.domain }}/remove"
+                        hx-confirm="Are you sure you want to remove this integration?"
+                        hx-target="body"
+                        hx-swap="outerHTML">
+                    Remove
+                </button>
+            </div>
+        </div>
+        
+        {% if entries %}
+        <div class="card">
+            <h2>Configuration Entries</h2>
+            <div class="entity-list">
+                {% for entry in entries %}
+                <div class="entity-item">
+                    <div>
+                        <strong>{{ entry.title }}</strong>
+                        <div style="font-size: 12px; color: #666;">ID: {{ entry.entry_id }}</div>
+                    </div>
+                    <button type="button" class="btn btn-danger"
+                            hx-post="/config/{{ entry.entry_id }}/remove"
+                            hx-confirm="Are you sure you want to remove this configuration entry? This will also remove all associated entities and MQTT topics."
+                            hx-target="body"
+                            hx-swap="outerHTML">
+                        Remove
+                    </button>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if entities %}
+        <div class="card">
+            <h2>Entities</h2>
+            <div class="entity-list">
+                {% for entity in entities %}
+                <div class="entity-item">
+                    <div>
+                        <strong>{{ entity.name or entity.entity_id }}</strong>
+                        <div style="font-size: 12px; color: #666;">{{ entity.entity_id }}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 18px; font-weight: bold;">{{ entity.state or 'unavailable' }}</div>
+                        <div style="font-size: 12px; color: #666;">{{ 'available' if entity.available else 'unavailable' }}</div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

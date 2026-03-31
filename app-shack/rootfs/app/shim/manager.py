@@ -1,0 +1,517 @@
+"""Main Shim Manager for Home Assistant Integration Bridge.
+
+Orchestrates the shim, MQTT bridge, and integrations.
+"""
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from paho.mqtt.client import Client, MQTTMessage
+
+from .logging import get_logger, setup_logging
+from .core import HomeAssistant, ConfigEntry
+from .storage import Storage
+from .import_patch import setup_import_patching
+from .entity import EntityRegistry, get_mqtt_object_id
+from .integrations.manager import IntegrationManager
+from .integrations.loader import IntegrationLoader
+
+_LOGGER = get_logger(__name__)
+
+
+class ShimManager:
+    """Main manager for the HA shim."""
+
+    def __init__(
+        self,
+        config_dir: Path,
+        mqtt_client: Client,
+        mqtt_base_topic: str = "shim",
+    ):
+        self._config_dir = Path(config_dir)
+        self._mqtt_client = mqtt_client
+        self._mqtt_base_topic = mqtt_base_topic
+
+        # Setup logging
+        setup_logging()
+
+        # Initialize core HA shim
+        _LOGGER.info("Initializing Home Assistant shim")
+        self._hass = HomeAssistant(self._config_dir)
+        self._hass._mqtt_client = mqtt_client  # Give hass access to MQTT
+
+        # Initialize storage
+        self._storage = self._hass._storage
+
+        # Initialize integration management
+        self._integration_manager = IntegrationManager(
+            self._storage, self._hass.shim_dir
+        )
+
+        # Initialize integration loader
+        self._integration_loader = IntegrationLoader(
+            self._hass, self._integration_manager
+        )
+
+        # Store loader reference for FlowManager access
+        self._hass.data["integration_loader"] = self._integration_loader
+
+        # State tracking
+        self._running = False
+        self._update_check_task = None
+
+    async def start(self) -> None:
+        """Start the shim manager."""
+        _LOGGER.info("Starting Shim Manager")
+        self._running = True
+
+        # Setup MQTT subscriptions
+        self._setup_mqtt_subscriptions()
+
+        # Fetch HACS repositories
+        _LOGGER.info("Fetching HACS repository list")
+        await self._integration_manager.fetch_hacs_repositories()
+
+        # Load and setup enabled integrations
+        await self._load_enabled_integrations()
+
+        # Start periodic update checks
+        self._update_check_task = asyncio.create_task(self._periodic_update_checks())
+
+        _LOGGER.info("Shim Manager started successfully")
+
+    async def stop(self) -> None:
+        """Stop the shim manager."""
+        _LOGGER.info("Stopping Shim Manager")
+        self._running = False
+
+        # Cancel update check task
+        if self._update_check_task:
+            self._update_check_task.cancel()
+            try:
+                await self._update_check_task
+            except asyncio.CancelledError:
+                pass
+
+        # Unload all integrations without cleaning up MQTT topics
+        # (preserve topics for reconnection on restart)
+        for domain in self._integration_loader.get_loaded_integrations():
+            entries = self._hass.config_entries.async_entries(domain)
+            for entry in entries:
+                await self._integration_loader.unload_integration(
+                    entry, cleanup_mqtt=False
+                )
+
+        _LOGGER.info("Shim Manager stopped")
+
+    def _setup_mqtt_subscriptions(self) -> None:
+        """Setup MQTT command subscriptions."""
+
+        # Add a catch-all handler for debugging
+        def on_message(client, userdata, msg):
+            _LOGGER.debug(
+                f"MQTT message received: {msg.topic} = {msg.payload.decode()[:100]}"
+            )
+
+        self._mqtt_client.on_message = on_message
+
+        # Subscribe to command topics for all entity types
+        # Use # wildcard to match all command topics (set, percentage_set, preset_mode_set, etc.)
+        topics = [
+            ("homeassistant/+/+/set", self._on_entity_command),
+            ("homeassistant/+/+/+/set", self._on_entity_command),
+            ("homeassistant/+/+/percentage_set", self._on_entity_command),
+            ("homeassistant/+/+/preset_mode_set", self._on_entity_command),
+            ("homeassistant/+/+/oscillation_set", self._on_entity_command),
+            ("homeassistant/+/+/brightness_set", self._on_entity_command),
+            ("homeassistant/+/+/temperature_set", self._on_entity_command),
+            ("homeassistant/+/+/mode_set", self._on_entity_command),
+            (
+                f"{self._mqtt_base_topic}/integrations/+/enable",
+                self._on_enable_integration,
+            ),
+            (
+                f"{self._mqtt_base_topic}/integrations/+/disable",
+                self._on_disable_integration,
+            ),
+            (
+                f"{self._mqtt_base_topic}/integrations/+/update",
+                self._on_update_integration,
+            ),
+        ]
+
+        for topic, callback in topics:
+            self._mqtt_client.message_callback_add(topic, callback)
+            result, mid = self._mqtt_client.subscribe(topic)
+            _LOGGER.debug(
+                f"Subscribed to MQTT topic: {topic} (result={result}, mid={mid})"
+            )
+
+    def _on_entity_command(
+        self, client: Client, userdata: Any, message: MQTTMessage
+    ) -> None:
+        """Handle entity command from MQTT."""
+        try:
+            topic = message.topic
+            payload = message.payload.decode()
+            _LOGGER.debug(f"Received MQTT command: topic={topic}, payload={payload}")
+
+            # Parse topic: homeassistant/<domain>/<entity_id>/<command>
+            # Command can be: set, percentage_set, preset_mode_set, oscillation_set, etc.
+            parts = topic.split("/")
+            if len(parts) < 4:
+                _LOGGER.warning(f"Invalid topic format: {topic}")
+                return
+
+            domain = parts[1]
+            object_id = parts[2]
+            # Convert dash-separated object_id back to underscore format
+            # MQTT topics use dashes, but entity IDs use underscores
+            object_id = object_id.replace("-", "_")
+            entity_id = f"{domain}.{object_id}"
+            # Last part is the command type (e.g., "set", "percentage_set", "preset_mode_set")
+            command_type = parts[-1]
+            _LOGGER.debug(
+                f"Parsed command: domain={domain}, entity_id={entity_id}, command_type={command_type}"
+            )
+
+            # Find entity - try both reconstructed entity_id and MQTT-safe object_id
+            entity = self._find_entity(entity_id, object_id=parts[2])
+            if not entity:
+                _LOGGER.warning(
+                    f"Entity {entity_id} (object_id: {parts[2]}) not found for command"
+                )
+                return
+
+            _LOGGER.debug(f"Found entity {entity_id}, routing command")
+            # Route command to entity (thread-safe)
+            self._hass.async_run_job(self._route_command, entity, command_type, payload)
+
+        except Exception as e:
+            _LOGGER.error(f"Error handling entity command: {e}")
+
+    async def _route_command(
+        self, entity: Any, command_type: str, payload: str
+    ) -> None:
+        """Route a command to the appropriate entity method."""
+        try:
+            _LOGGER.debug(
+                f"Routing command: entity={entity.entity_id}, type={command_type}, payload={payload}"
+            )
+            if command_type == "set":
+                # Check for text entity first (has async_set_value but not turn_on)
+                if hasattr(entity, "async_set_value"):
+                    # Text entity set value
+                    _LOGGER.debug(
+                        f"Setting text value for {entity.entity_id} to '{payload}'"
+                    )
+                    await entity.async_set_value(payload)
+                elif payload.upper() == "ON":
+                    _LOGGER.debug(f"Turning ON entity {entity.entity_id}")
+                    if hasattr(entity, "async_turn_on"):
+                        await entity.async_turn_on()
+                    elif hasattr(entity, "turn_on"):
+                        entity.turn_on()
+                    else:
+                        _LOGGER.warning(
+                            f"Entity {entity.entity_id} has no turn_on method"
+                        )
+                elif payload.upper() == "OFF":
+                    _LOGGER.debug(f"Turning OFF entity {entity.entity_id}")
+                    if hasattr(entity, "async_turn_off"):
+                        await entity.async_turn_off()
+                    elif hasattr(entity, "turn_off"):
+                        entity.turn_off()
+                    else:
+                        _LOGGER.warning(
+                            f"Entity {entity.entity_id} has no turn_off method"
+                        )
+
+            elif command_type == "percentage_set":
+                # Fan speed
+                if hasattr(entity, "async_set_percentage"):
+                    await entity.async_set_percentage(int(payload))
+                elif hasattr(entity, "set_percentage"):
+                    entity.set_percentage(int(payload))
+
+            elif command_type == "preset_mode_set":
+                # Fan preset mode
+                if hasattr(entity, "async_set_preset_mode"):
+                    await entity.async_set_preset_mode(payload)
+                elif hasattr(entity, "set_preset_mode"):
+                    entity.set_preset_mode(payload)
+
+            elif command_type == "oscillation_set":
+                # Fan oscillation
+                if hasattr(entity, "async_oscillate"):
+                    await entity.async_oscillate(payload.upper() == "ON")
+                elif hasattr(entity, "oscillate"):
+                    entity.oscillate(payload.upper() == "ON")
+
+            elif command_type == "brightness_set":
+                # Light brightness
+                if hasattr(entity, "async_turn_on"):
+                    await entity.async_turn_on(brightness=int(payload))
+                elif hasattr(entity, "turn_on"):
+                    entity.turn_on(brightness=int(payload))
+
+            elif command_type == "temperature_set":
+                # Climate temperature
+                if hasattr(entity, "async_set_temperature"):
+                    await entity.async_set_temperature(temperature=float(payload))
+                elif hasattr(entity, "set_temperature"):
+                    entity.set_temperature(temperature=float(payload))
+
+            elif command_type == "mode_set":
+                # Climate HVAC mode
+                if hasattr(entity, "async_set_hvac_mode"):
+                    await entity.async_set_hvac_mode(payload)
+                elif hasattr(entity, "set_hvac_mode"):
+                    entity.set_hvac_mode(payload)
+
+        except Exception as e:
+            _LOGGER.error(f"Error routing command to {entity.entity_id}: {e}")
+
+    def _find_entity(
+        self, entity_id: str, object_id: Optional[str] = None
+    ) -> Optional[Any]:
+        """Find an entity by ID.
+
+        Args:
+            entity_id: The full entity ID (e.g., 'switch.living_room').
+            object_id: Optional MQTT-safe object_id for matching entities with
+                      complex unique_ids that have dots (e.g., from flightradar24).
+        """
+        domain = entity_id.split(".")[0]
+        _LOGGER.debug(f"_find_entity: looking for {entity_id} in domain {domain}")
+        entities = self._integration_loader.get_entities(domain)
+        _LOGGER.debug(
+            f"_find_entity: got {len(entities) if entities else 0} entities for domain {domain}"
+        )
+        if entities:
+            for entity in entities:
+                entity_entity_id = getattr(entity, "entity_id", None)
+                _LOGGER.debug(f"  Checking entity: {entity_entity_id}")
+
+                # Check exact entity_id match
+                if entity_entity_id == entity_id:
+                    return entity
+
+                # Check MQTT-safe object_id match if provided
+                if object_id and hasattr(entity, "mqtt_object_id"):
+                    if entity.mqtt_object_id == object_id:
+                        _LOGGER.debug(f"    Matched by mqtt_object_id: {object_id}")
+                        return entity
+
+        return None
+
+    def _on_enable_integration(
+        self, client: Client, userdata: Any, message: MQTTMessage
+    ) -> None:
+        """Handle integration enable command."""
+        try:
+            topic = message.topic
+            domain = topic.split("/")[-2]
+            self._hass.async_run_job(
+                self._integration_manager.enable_integration, domain
+            )
+        except Exception as e:
+            _LOGGER.error(f"Error enabling integration: {e}")
+
+    def _on_disable_integration(
+        self, client: Client, userdata: Any, message: MQTTMessage
+    ) -> None:
+        """Handle integration disable command."""
+        try:
+            topic = message.topic
+            domain = topic.split("/")[-2]
+            self._hass.async_run_job(self._disable_integration, domain)
+        except Exception as e:
+            _LOGGER.error(f"Error disabling integration: {e}")
+
+    async def _disable_integration(self, domain: str) -> None:
+        """Disable and unload an integration."""
+        # First unload all config entries to stop coordinators
+        entries = self._hass.config_entries.async_entries(domain)
+        if entries:
+            _LOGGER.info(
+                f"Unloading {len(entries)} config entries for disabled integration {domain}"
+            )
+            for entry in entries:
+                await self._integration_loader.unload_integration(entry)
+
+        # Then disable in the manager
+        await self._integration_manager.disable_integration(domain)
+
+    def _on_update_integration(
+        self, client: Client, userdata: Any, message: MQTTMessage
+    ) -> None:
+        """Handle integration update command."""
+        try:
+            topic = message.topic
+            domain = topic.split("/")[-2]
+            self._hass.async_run_job(self._update_integration, domain)
+        except Exception as e:
+            _LOGGER.error(f"Error updating integration: {e}")
+
+    async def _update_integration(self, domain: str) -> None:
+        """Update an integration to the latest version."""
+        info = self._integration_manager.get_integration(domain)
+        if not info or not info.update_available:
+            return
+
+        # Unload first
+        entries = self._hass.config_entries.async_entries(domain)
+        for entry in entries:
+            await self._integration_loader.unload_integration(entry)
+
+        # Install new version
+        success = await self._integration_manager.install_integration(
+            domain, version=info.latest_version
+        )
+
+        if success:
+            # Reload
+            for entry in entries:
+                await self._integration_loader.setup_integration(entry)
+
+            _LOGGER.info(f"Successfully updated {domain} to {info.latest_version}")
+
+    async def _load_enabled_integrations(self) -> None:
+        """Load all enabled integrations."""
+        enabled = self._integration_manager.get_enabled_integrations()
+
+        for info in enabled:
+            _LOGGER.info(f"Loading enabled integration: {info.domain}")
+
+            # Install requirements for fresh containers with mounted volumes
+            _LOGGER.debug(f"Installing requirements for {info.domain}")
+            await self._integration_manager.install_requirements(info.domain)
+
+            # Get config entries for this integration
+            entries = self._hass.config_entries.async_entries(info.domain)
+
+            if not entries and not info.config_flow:
+                # Create a default entry if none exists and integration doesn't require config
+                entry = ConfigEntry(
+                    entry_id=f"{info.domain}_default",
+                    version=1,
+                    domain=info.domain,
+                    title=info.name,
+                    data={},
+                )
+                await self._hass.config_entries.async_add(entry)
+                entries = [entry]
+
+            # Setup each entry
+            for entry in entries:
+                success = await self._integration_loader.setup_integration(entry)
+                if not success:
+                    _LOGGER.error(f"Failed to setup {info.domain}")
+
+    async def _periodic_update_checks(self) -> None:
+        """Periodically check for integration updates."""
+        while self._running:
+            try:
+                await asyncio.sleep(86400)  # Check once per day
+
+                if not self._running:
+                    break
+
+                _LOGGER.info("Checking for integration updates")
+                updates = await self._integration_manager.check_for_updates()
+
+                if updates:
+                    _LOGGER.info(f"Found {len(updates)} available updates")
+                    # Publish update notification to MQTT
+                    await self._publish_update_notification(updates)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                _LOGGER.error(f"Error in update check: {e}")
+
+    async def _publish_update_notification(self, updates: List) -> None:
+        """Publish update notification to MQTT."""
+        if not self._mqtt_client:
+            return
+
+        # Publish to single update entity
+        discovery_topic = "homeassistant/update/shim_updates/config"
+        state_topic = "homeassistant/update/shim_updates/state"
+
+        # Discovery config
+        config = {
+            "name": "Shim Updates",
+            "unique_id": "shim_updates",
+            "state_topic": state_topic,
+            "payload_on": "on",
+            "payload_off": "off",
+            "device": {
+                "identifiers": ["shim"],
+                "name": "HA Shim",
+                "manufacturer": "Custom",
+                "model": "Integration Bridge",
+            },
+        }
+
+        self._mqtt_client.publish(
+            discovery_topic, json.dumps(config), qos=0, retain=True
+        )
+        self._mqtt_client.publish(
+            state_topic, "on" if updates else "off", qos=0, retain=True
+        )
+
+        # Also publish details
+        details_topic = f"{self._mqtt_base_topic}/updates/available"
+        details = [
+            {
+                "domain": u.domain,
+                "name": u.name,
+                "current_version": u.version,
+                "latest_version": u.latest_version,
+            }
+            for u in updates
+        ]
+        self._mqtt_client.publish(
+            details_topic, json.dumps(details), qos=0, retain=True
+        )
+
+    # Public API for web UI
+    def get_hass(self) -> HomeAssistant:
+        """Get the HomeAssistant shim instance."""
+        return self._hass
+
+    def get_integration_manager(self) -> IntegrationManager:
+        """Get the integration manager."""
+        return self._integration_manager
+
+    def get_integration_loader(self) -> IntegrationLoader:
+        """Get the integration loader."""
+        return self._integration_loader
+
+    async def install_integration(self, domain: str, **kwargs) -> bool:
+        """Install an integration."""
+        return await self._integration_manager.install_integration(domain, **kwargs)
+
+    async def create_config_entry(
+        self, domain: str, data: dict
+    ) -> Optional[ConfigEntry]:
+        """Create a new config entry for an integration."""
+        info = self._integration_manager.get_integration(domain)
+        if not info:
+            return None
+
+        # Domain in IntegrationInfo is already the actual domain from manifest
+        entry = ConfigEntry(
+            entry_id=f"{domain}_{asyncio.get_event_loop().time()}",
+            version=1,
+            domain=domain,
+            title=data.get("name", info.name),
+            data=data,
+        )
+
+        await self._hass.config_entries.async_add(entry)
+        return entry

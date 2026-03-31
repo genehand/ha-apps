@@ -4,10 +4,11 @@ Home Assistant app that filters WebSocket events for dashboard entities.
 
 ## Project Structure
 
-This repository contains two implementations:
+This repository contains three implementations:
 
 - **app-dasher/**: Original Python implementation (legacy)
 - **app-dasher-rust/**: New Rust implementation (current)
+- **app-shack/**: HACS Shack for running Home Assistant integrations outside HA
 
 ## Build Commands
 
@@ -70,9 +71,35 @@ cargo test -- --nocapture
 cargo test test_name
 ```
 
-### Python
+### Python (app-shack/)
 
-No test suite is currently configured for the Python version.
+```bash
+# Install test dependencies
+pip3 install -r app-shack/rootfs/app/requirements-dev.txt
+
+# Run unit tests only (fast)
+cd app-shack/rootfs/app && python3 -m pytest tests/ -v -m "not integration"
+
+# Run all tests including integration tests
+cd app-shack/rootfs/app && python3 -m pytest tests/ -v
+
+# Run integration tests only (requires integrations to be installed)
+cd app-shack/rootfs/app && python3 -m pytest tests/ -v -m integration
+
+# Run specific integration test
+cd app-shack/rootfs/app && python3 -m pytest tests/test_integrations.py::test_flightradar24_setup -v
+
+# Run tests with coverage
+cd app-shack/rootfs/app && python3 -m pytest tests/ -v --cov=. --cov-report=term-missing
+
+# Run specific test file
+cd app-shack/rootfs/app && python3 -m pytest tests/test_mqtt_bridge.py -v
+
+# Run specific test
+cd app-shack/rootfs/app && python3 -m pytest tests/test_entity_utils.py::TestGetMqttEntityId -v
+```
+
+**Note**: The legacy Python implementation (app-dasher/) has no test suite configured.
 
 ## Linting
 
@@ -253,6 +280,48 @@ messages_to_process = data if isinstance(data, list) else [data]
 - Supports wildcard patterns (e.g., `light.kitchen_*`)
 - Supports regex filters: `/pattern/`
 
+## MQTT Topic Naming (app-shack/)
+
+MQTT topics used for Home Assistant discovery must follow specific naming conventions:
+
+### Topic Structure
+
+Topics follow the pattern: `homeassistant/<platform>/<entity_id>/<suffix>`
+
+Examples:
+- Discovery config: `homeassistant/sensor/living-room-temperature/config`
+- State topic: `homeassistant/sensor/living-room-temperature/state`
+- Command topic: `homeassistant/switch/living-room/set`
+
+### Naming Rules
+
+1. **Use dashes (`-`) not underscores (`_`)** in MQTT topic names
+   - Entity ID: `sensor.living_room` (Home Assistant format)
+   - MQTT topic: `living-room` (MQTT format)
+
+2. **Conversion function**: Use `get_mqtt_entity_id()` from `shim/entity.py`:
+   ```python
+   from shim.entity import get_mqtt_entity_id
+   
+   entity_id = "fan.living_room"
+   mqtt_id = get_mqtt_entity_id(entity_id)  # Returns: "living-room"
+   topic = f"homeassistant/fan/{mqtt_id}/state"
+   ```
+
+3. **Reverse conversion**: When receiving commands from HA, convert dashes back to underscores:
+   ```python
+   # MQTT topic: homeassistant/fan/living-room/set
+   parts = topic.split("/")
+   object_id = parts[2].replace("-", "_")  # "living-room" -> "living_room"
+   entity_id = f"{parts[1]}.{object_id}"   # "fan.living_room"
+   ```
+
+### Why Dashes?
+
+- MQTT topic naming conventions recommend avoiding underscores in topic names
+- Dashes are more readable and standard in MQTT ecosystems
+- Home Assistant's MQTT discovery format expects this convention
+
 ## Docker/Container Guidelines
 
 ### Rust
@@ -277,6 +346,9 @@ git add app-dasher-rust/
 
 # Stage changes for Python implementation
 git add app-dasher/
+
+# Stage changes for Shack
+git add app-shack/
 
 # Commit with descriptive message
 git commit -m "feat: add support for custom filter rules"
@@ -303,3 +375,18 @@ git commit -m "feat: add support for custom filter rules"
 **Update App Version**: Edit `app-dasher/config.yaml`, increment `version`, commit and tag.
 
 **Local Testing**: Copy `app-dasher/proxy-config.yaml`, modify for environment, run `cd app-dasher/rootfs/app && python3 dasher.py`, access at `http://localhost:8124`.
+
+### Shack (app-shack/)
+
+**Add a New Dependency**: Edit `app-shack/rootfs/app/requirements.txt`, add to dependencies, then rebuild Docker image.
+
+**Run Locally**: 
+```bash
+cd app-shack/rootfs/app
+python3 -m pip install -r requirements.txt
+python3 main.py
+```
+
+**Update App Version**: Edit `app-shack/config.yaml`, increment `version`, commit and tag.
+
+**Build Docker Image**: Run `cd app-shack && ./build.sh` (requires Docker).

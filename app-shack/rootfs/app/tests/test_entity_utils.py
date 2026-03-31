@@ -1,0 +1,1105 @@
+"""Tests for entity utilities and helpers."""
+
+import pytest
+import sys
+from pathlib import Path
+
+# Add the app directory to the path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from shim.entity import (
+    get_mqtt_entity_id,
+    format_device_identifiers,
+    get_device_info_attr,
+)
+
+
+class TestGetMqttEntityId:
+    """Test cases for get_mqtt_entity_id function."""
+
+    def test_simple_entity_id(self):
+        """Test conversion of simple entity ID."""
+        # Input: fan.living_room
+        # Expected: living-room (underscores become dashes)
+        result = get_mqtt_entity_id("fan.living_room")
+        assert result == "living-room"
+
+    def test_entity_id_with_domain(self):
+        """Test that domain prefix is removed."""
+        result = get_mqtt_entity_id("sensor.temperature_sensor")
+        assert result == "temperature-sensor"
+
+    def test_entity_id_with_multiple_underscores(self):
+        """Test conversion with multiple underscores."""
+        result = get_mqtt_entity_id("light.bedroom_ceiling_light")
+        assert result == "bedroom-ceiling-light"
+
+    def test_entity_id_with_dots_in_name(self):
+        """Test conversion with dots in entity name."""
+        # This is an edge case - dots in the entity name itself
+        result = get_mqtt_entity_id("switch.living.room")
+        assert result == "living-room"
+
+    def test_entity_id_already_dash_separated(self):
+        """Test entity ID that already uses dashes."""
+        result = get_mqtt_entity_id("sensor.air-quality")
+        assert result == "air-quality"
+
+    def test_entity_id_no_domain(self):
+        """Test entity ID without domain prefix."""
+        result = get_mqtt_entity_id("living_room")
+        assert result == "living-room"
+
+    def test_entity_id_deduplicates_consecutive_segments(self):
+        """Test that consecutive duplicate segments are deduplicated."""
+        # Flightradar24 pattern: domain.object_id with redundant domain
+        result = get_mqtt_entity_id(
+            "sensor.flightradar24_40897_75808525_flightradar24_in_area"
+        )
+        # Should remove the duplicate "flightradar24" segment
+        assert result == "flightradar24-40897-75808525-in-area"
+
+    def test_entity_id_deduplicates_multiple_duplicates(self):
+        """Test deduplication with multiple duplicate segments."""
+        result = get_mqtt_entity_id("switch.a_b_a_b_test")
+        # Should keep first 'a' and 'b', skip duplicates
+        assert result == "a-b-test"
+
+    def test_entity_id_removes_all_duplicates(self):
+        """Test that all duplicate segments are removed, not just consecutive."""
+        # Even non-consecutive duplicates should be removed
+        result = get_mqtt_entity_id("sensor.flightradar24_123_test_flightradar24_end")
+        assert result == "flightradar24-123-test-end"
+
+
+class TestFormatDeviceIdentifiers:
+    """Test cases for format_device_identifiers function."""
+
+    def test_tuple_identifiers(self):
+        """Test formatting of tuple identifiers."""
+        identifiers = {("flightradar24", "12345"), ("other", "67890")}
+        result = format_device_identifiers(identifiers)
+        assert "flightradar24-12345" in result
+        assert "other-67890" in result
+        assert len(result) == 2
+
+    def test_list_identifiers(self):
+        """Test formatting of list identifiers."""
+        # Note: Lists can't be set elements, but function should handle them if passed
+        identifiers = [("integration", "device1"), ("integration", "device2")]
+        result = format_device_identifiers(identifiers)
+        assert "integration-device1" in result
+        assert "integration-device2" in result
+
+    def test_string_identifiers(self):
+        """Test formatting of string identifiers."""
+        identifiers = {"simple_id", "another_id"}
+        result = format_device_identifiers(identifiers)
+        assert "simple_id" in result
+        assert "another_id" in result
+
+    def test_empty_identifiers(self):
+        """Test formatting of empty identifiers set."""
+        identifiers = set()
+        result = format_device_identifiers(identifiers)
+        assert result == []
+
+    def test_mixed_identifiers(self):
+        """Test formatting of mixed identifier types."""
+        identifiers = {("tuple", "id"), "string_id", ("list", "id")}
+        result = format_device_identifiers(identifiers)
+        assert len(result) == 3
+        assert "tuple-id" in result
+        assert "string_id" in result
+        assert "list-id" in result
+
+
+class TestGetDeviceInfoAttr:
+    """Test cases for get_device_info_attr function."""
+
+    def test_dict_device_info(self):
+        """Test getting attribute from dict device_info."""
+        device_info = {"name": "Test Device", "model": "Model X"}
+        result = get_device_info_attr(device_info, "name")
+        assert result == "Test Device"
+
+    def test_dataclass_device_info(self):
+        """Test getting attribute from dataclass device_info."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class DeviceInfo:
+            name: str
+            model: str
+
+        device_info = DeviceInfo(name="Test Device", model="Model X")
+        result = get_device_info_attr(device_info, "name")
+        assert result == "Test Device"
+
+    def test_none_device_info(self):
+        """Test getting attribute when device_info is None."""
+        result = get_device_info_attr(None, "name")
+        assert result is None
+
+    def test_default_value(self):
+        """Test that default value is returned when attribute not found."""
+        device_info = {"name": "Test Device"}
+        result = get_device_info_attr(device_info, "missing_attr", "default")
+        assert result == "default"
+
+
+class TestGetMqttObjectId:
+    """Test cases for get_mqtt_object_id function."""
+
+    def test_get_mqtt_object_id_with_dots(self):
+        """Test get_mqtt_object_id with dots in entity_id (flightradar24 style)."""
+        from shim.entity import get_mqtt_object_id
+
+        # Flightradar24 uses dots in unique_ids
+        entity_id = "switch.flightradar24_41831.336792666_scanning"
+        result = get_mqtt_object_id(entity_id)
+
+        # Should convert dots and underscores to dashes
+        assert result == "flightradar24-41831-336792666-scanning"
+
+    def test_get_mqtt_object_id_simple(self):
+        """Test get_mqtt_object_id with simple entity_id."""
+        from shim.entity import get_mqtt_object_id
+
+        entity_id = "sensor.living_room_temperature"
+        result = get_mqtt_object_id(entity_id)
+
+        assert result == "living-room-temperature"
+
+
+class TestEntityMqttObjectId:
+    """Test cases for Entity.mqtt_object_id property."""
+
+    def test_mqtt_object_id_from_entity_id(self):
+        """Test mqtt_object_id property returns correct value."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "switch.flightradar24_41831.336792666_scanning"
+
+        assert entity.mqtt_object_id == "flightradar24-41831-336792666-scanning"
+
+    def test_mqtt_object_id_none_when_no_entity_id(self):
+        """Test mqtt_object_id returns None when entity_id is not set."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = None
+
+        assert entity.mqtt_object_id is None
+
+
+class TestGetEntityNameForDiscovery:
+    """Test cases for get_entity_name_for_discovery function."""
+
+    def test_strips_device_name_prefix(self):
+        """Test that device name prefix is stripped from entity name."""
+        from shim.entity import get_entity_name_for_discovery
+
+        entity_name = "Living Room Temperature"
+        device_info = {"name": "Living Room"}
+
+        result = get_entity_name_for_discovery(entity_name, device_info)
+        assert result == "Temperature"
+
+    def test_preserves_name_without_prefix(self):
+        """Test that names without device prefix are preserved."""
+        from shim.entity import get_entity_name_for_discovery
+
+        entity_name = "Kitchen Light"
+        device_info = {"name": "Living Room"}
+
+        result = get_entity_name_for_discovery(entity_name, device_info)
+        assert result == "Kitchen Light"
+
+    def test_preserves_name_when_same_as_device(self):
+        """Test that exact device name is preserved."""
+        from shim.entity import get_entity_name_for_discovery
+
+        entity_name = "Living Room"
+        device_info = {"name": "Living Room"}
+
+        result = get_entity_name_for_discovery(entity_name, device_info)
+        assert result == "Living Room"
+
+    def test_returns_none_for_none_input(self):
+        """Test that None is returned for None input."""
+        from shim.entity import get_entity_name_for_discovery
+
+        result = get_entity_name_for_discovery(None, {"name": "Device"})
+        assert result is None
+
+    def test_handles_none_device_info(self):
+        """Test that entity name is returned when device_info is None."""
+        from shim.entity import get_entity_name_for_discovery
+
+        entity_name = "Test Sensor"
+        result = get_entity_name_for_discovery(entity_name, None)
+        assert result == "Test Sensor"
+
+    def test_handles_device_without_name(self):
+        """Test that entity name is returned when device has no name."""
+        from shim.entity import get_entity_name_for_discovery
+
+        entity_name = "Test Sensor"
+        device_info = {"model": "Model X"}  # No name key
+        result = get_entity_name_for_discovery(entity_name, device_info)
+        assert result == "Test Sensor"
+
+
+class TestBuildMqttDeviceConfig:
+    """Test cases for build_mqtt_device_config function."""
+
+    def test_build_device_config_with_all_fields(self):
+        """Test building config with all device info fields."""
+        from shim.entity import build_mqtt_device_config
+
+        device_info = {
+            "identifiers": {("flightradar24", "12345")},
+            "name": "FlightRadar24 Device",
+            "manufacturer": "FlightRadar24",
+            "model": "Integration",
+            "sw_version": "1.0.0",
+        }
+
+        result = build_mqtt_device_config(device_info)
+
+        assert result["identifiers"] == ["flightradar24-12345"]
+        assert result["name"] == "FlightRadar24 Device"
+        assert result["manufacturer"] == "FlightRadar24"
+        assert result["model"] == "Integration"
+        assert result["sw_version"] == "1.0.0"
+
+    def test_build_device_config_skips_none_values(self):
+        """Test that None values are skipped in device config."""
+        from shim.entity import build_mqtt_device_config
+
+        device_info = {
+            "identifiers": {("test", "123")},
+            "name": "Test Device",
+            "manufacturer": None,
+            "model": None,
+        }
+
+        result = build_mqtt_device_config(device_info)
+
+        assert "manufacturer" not in result
+        assert "model" not in result
+        assert "name" in result
+
+    def test_build_device_config_partial_fields(self):
+        """Test building config with only some fields."""
+        from shim.entity import build_mqtt_device_config
+
+        device_info = {
+            "identifiers": {("test", "123")},
+            "name": "Test Device",
+            "manufacturer": "Test Corp",
+        }
+
+        result = build_mqtt_device_config(device_info)
+
+        assert result["manufacturer"] == "Test Corp"
+        assert "model" not in result
+        assert "sw_version" not in result
+
+    def test_build_device_config_none_device_info(self):
+        """Test building config when device_info is None."""
+        from shim.entity import build_mqtt_device_config
+
+        result = build_mqtt_device_config(None)
+        assert result == {}
+
+
+class TestMqttCleanup:
+    """Test cases for MQTT cleanup on entity removal."""
+
+    @pytest.mark.asyncio
+    async def test_mqtt_cleanup_on_entity_removal(self):
+        """Test that MQTT topics are cleaned up when entity is removed."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        # Create entity
+        entity = Entity()
+        entity._attr_name = "Test Sensor"
+        entity.entity_id = "sensor.test_device"
+        entity._attr_unique_id = "test_unique_123"
+
+        # Create mock hass with mqtt client
+        mock_mqtt = MagicMock()
+        mock_mqtt.publish = MagicMock()
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states = MagicMock()
+        mock_hass.states.async_remove = MagicMock()
+        entity.hass = mock_hass
+        entity._added = True
+
+        # Call async_remove
+        await entity.async_remove(cleanup_mqtt=True)
+
+        # Verify mqtt.publish was called (cleanup happened)
+        assert mock_mqtt.publish.called
+
+    @pytest.mark.asyncio
+    async def test_no_mqtt_cleanup_when_disabled(self):
+        """Test that MQTT cleanup is skipped when cleanup_mqtt=False."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        # Create entity
+        entity = Entity()
+        entity._attr_name = "Test Sensor"
+        entity.entity_id = "sensor.test_device"
+        entity._attr_unique_id = "test_unique_123"
+
+        # Create mock hass with mqtt client
+        mock_mqtt = MagicMock()
+        mock_mqtt.publish = MagicMock()
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states = MagicMock()
+        mock_hass.states.async_remove = MagicMock()
+        entity.hass = mock_hass
+        entity._added = True
+
+        # Call async_remove with cleanup_mqtt=False
+        await entity.async_remove(cleanup_mqtt=False)
+
+        # Verify mqtt.publish was NOT called (cleanup skipped)
+        assert not mock_mqtt.publish.called, (
+            "MQTT publish should NOT have been called when cleanup_mqtt=False"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mqtt_cleanup_topic_names(self):
+        """Test that correct MQTT topics are cleaned up."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        # Create entity with underscores in unique_id (like flightradar24 sensors)
+        entity = Entity()
+        entity._attr_name = "FlightRadar24 Sensor"
+        entity.entity_id = "sensor.flightradar24_40243_843390375_flightradar24_airport_departures_canceled"
+        entity._attr_unique_id = (
+            "flightradar24_40243.843390375_flightradar24_airport_departures_canceled"
+        )
+
+        # Create mock hass with mqtt client
+        mock_mqtt = MagicMock()
+        mock_mqtt.publish = MagicMock()
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states = MagicMock()
+        mock_hass.states.async_remove = MagicMock()
+        entity.hass = mock_hass
+        entity._added = True
+
+        # Call async_remove
+        await entity.async_remove(cleanup_mqtt=True)
+
+        # Get all publish calls
+        publish_calls = mock_mqtt.publish.call_args_list
+
+        # Verify topics use correct entity_id (lowercase platform)
+        for call in publish_calls:
+            args, kwargs = call
+            topic = args[0]
+            # Topic should start with homeassistant/sensor/, not homeassistant/SENSOR/
+            assert (
+                "homeassistant/sensor/" in topic or "homeassistant/SENSOR/" not in topic
+            ), f"Topic should use lowercase 'sensor': {topic}"
+
+            # Verify dashes are used (from get_mqtt_entity_id conversion)
+            assert "flightradar24" in topic or "flight-radar" in topic.lower(), (
+                f"Topic should contain entity identifier: {topic}"
+            )
+
+
+class TestSensorEntityName:
+    """Test cases for SensorEntity name property."""
+
+    def test_sensor_name_from_attr_name(self):
+        """Test that name returns _attr_name when set."""
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        sensor._attr_name = "Test Sensor Name"
+
+        assert sensor.name == "Test Sensor Name"
+
+    def test_sensor_name_from_entity_description(self):
+        """Test that name falls back to entity_description.name when _attr_name not set."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        sensor = SensorEntity()
+        sensor._attr_name = None
+        sensor.entity_description = SensorEntityDescription(
+            key="test_key", name="Description Name"
+        )
+
+        assert sensor.name == "Description Name"
+
+    def test_sensor_name_priority_attr_over_description(self):
+        """Test that _attr_name takes priority over entity_description.name."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        sensor = SensorEntity()
+        sensor._attr_name = "Attr Name"
+        sensor.entity_description = SensorEntityDescription(
+            key="test_key", name="Description Name"
+        )
+
+        # _attr_name should win
+        assert sensor.name == "Attr Name"
+
+    def test_sensor_name_none_when_both_empty(self):
+        """Test that name returns None when neither _attr_name nor entity_description is set."""
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        sensor._attr_name = None
+        sensor.entity_description = None
+
+        assert sensor.name is None
+
+    def test_sensor_name_with_flightradar24_style_entity(self):
+        """Test name extraction for flightradar24-style sensors."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        # Simulate a flightradar24 sensor
+        sensor = SensorEntity()
+        sensor._attr_name = None
+        sensor.entity_description = SensorEntityDescription(
+            key="in_area", name="Current in area"
+        )
+
+        assert sensor.name == "Current in area"
+
+    def test_sensor_name_falls_back_to_parent_class(self):
+        """Test that SensorEntity.name falls back to parent class name property.
+
+        This ensures integrations like dyson_local that define their own name
+        property (e.g., DysonEntity.name) still work correctly.
+        """
+        from shim.platforms.sensor import SensorEntity
+        from shim.entity import Entity
+
+        # Create a parent class that defines its own name property
+        # (simulating DysonEntity)
+        class ParentEntity(Entity):
+            def __init__(self):
+                super().__init__()
+                self._device_name = "Device Name"
+                self._sub_name = "Humidity"
+
+            @property
+            def name(self):
+                return f"{self._device_name} {self._sub_name}"
+
+        class TestSensor(SensorEntity, ParentEntity):
+            pass
+
+        sensor = TestSensor()
+        sensor._attr_name = None
+        sensor.entity_description = None
+
+        # Should use parent class name property
+        assert sensor.name == "Device Name Humidity"
+
+    def test_sensor_name_prefers_attr_over_parent(self):
+        """Test that _attr_name takes priority over parent class name."""
+        from shim.platforms.sensor import SensorEntity
+        from shim.entity import Entity
+
+        class ParentEntity(Entity):
+            @property
+            def name(self):
+                return "Parent Name"
+
+        class TestSensor(SensorEntity, ParentEntity):
+            pass
+
+        sensor = TestSensor()
+        sensor._attr_name = "Sensor Attr Name"
+
+        # _attr_name should win over parent
+        assert sensor.name == "Sensor Attr Name"
+
+    def test_sensor_name_prefers_description_over_parent(self):
+        """Test that entity_description.name takes priority over parent class name."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from shim.entity import Entity
+
+        class ParentEntity(Entity):
+            @property
+            def name(self):
+                return "Parent Name"
+
+        class TestSensor(SensorEntity, ParentEntity):
+            pass
+
+        sensor = TestSensor()
+        sensor._attr_name = None
+        sensor.entity_description = SensorEntityDescription(
+            key="test", name="Description Name"
+        )
+
+        # Should use entity_description.name, not parent class name
+        assert sensor.name == "Description Name"
+
+
+class TestDirectAttributeAssignment:
+    """Test cases for directly assigned attributes (e.g., entity.icon = '...')."""
+
+    def test_entity_icon_direct_assignment(self):
+        """Test that icon property returns directly assigned icon."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        # Direct assignment via __dict__ (bypasses property)
+        entity.__dict__["icon"] = "mdi:airplane"
+
+        assert entity.icon == "mdi:airplane"
+
+    def test_entity_icon_attr_fallback(self):
+        """Test that icon falls back to _attr_icon when no direct assignment."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_icon = "mdi:default"
+
+        assert entity.icon == "mdi:default"
+
+    def test_entity_device_class_direct_assignment(self):
+        """Test that device_class property returns directly assigned device_class."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        # Direct assignment via __dict__
+        entity.__dict__["device_class"] = "temperature"
+
+        assert entity.device_class == "temperature"
+
+    def test_sensor_state_class_direct_assignment(self):
+        """Test that state_class property returns directly assigned state_class."""
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        # Direct assignment via __dict__
+        sensor.__dict__["state_class"] = "measurement"
+
+        assert sensor.state_class == "measurement"
+
+    def test_sensor_state_class_attr_fallback(self):
+        """Test that state_class falls back to _attr_state_class."""
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        sensor._attr_state_class = "total"
+
+        assert sensor.state_class == "total"
+
+    def test_sensor_state_class_from_entity_description(self):
+        """Test that state_class comes from entity_description."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        sensor = SensorEntity()
+        sensor.entity_description = SensorEntityDescription(
+            key="test", name="Test", state_class="measurement"
+        )
+
+        assert sensor.state_class == "measurement"
+
+    def test_sensor_icon_from_entity_description(self):
+        """Test that icon comes from entity_description."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        sensor = SensorEntity()
+        sensor.entity_description = SensorEntityDescription(
+            key="test", name="Test", icon="mdi:airplane"
+        )
+
+        assert sensor.icon == "mdi:airplane"
+
+    def test_direct_icon_triggers_discovery_update(self):
+        """Test that directly assigned icon triggers discovery republish."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+
+        mock_hass = MagicMock()
+        entity.hass = mock_hass
+
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        # Set icon directly via __dict__
+        entity.__dict__["icon"] = "mdi:airplane"
+
+        # Check for discovery update
+        result = entity._check_and_publish_discovery_update(["icon"])
+
+        assert result is True
+        assert len(jobs_added) == 1
+
+
+class TestPublishMqttAttributes:
+    """Test cases for _publish_mqtt_attributes method."""
+
+    def test_publish_attributes_when_present(self):
+        """Test that attributes are published when extra_state_attributes is set."""
+        from unittest.mock import MagicMock
+        import json
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = {"key1": "value1", "key2": 42}
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        entity._publish_mqtt_attributes()
+
+        mock_mqtt.publish.assert_called_once()
+        args, kwargs = mock_mqtt.publish.call_args
+        assert args[0] == "homeassistant/sensor/test-entity/attributes"
+        assert json.loads(args[1]) == {"key1": "value1", "key2": 42}
+        assert kwargs == {"qos": 0, "retain": True}
+
+    def test_no_publish_when_no_attributes(self):
+        """Test that nothing is published when extra_state_attributes is None."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = None
+
+        mock_mqtt = MagicMock()
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        entity._publish_mqtt_attributes()
+
+        mock_mqtt.publish.assert_not_called()
+
+    def test_no_publish_when_mqtt_not_connected(self):
+        """Test that nothing is published when MQTT is not connected."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = {"test": "value"}
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = False
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        entity._publish_mqtt_attributes()
+
+        mock_mqtt.publish.assert_not_called()
+
+    def test_no_publish_without_entity_id(self):
+        """Test that nothing is published when entity_id is not set."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = None
+        entity._attr_extra_state_attributes = {"test": "value"}
+
+        mock_mqtt = MagicMock()
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        entity._publish_mqtt_attributes()
+
+        mock_mqtt.publish.assert_not_called()
+
+
+class TestAddMqttAttributesToConfig:
+    """Test cases for _add_mqtt_attributes_to_config method."""
+
+    def test_add_attributes_topic_to_config(self):
+        """Test that json_attributes_topic is added when attributes exist."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = {"test": "value"}
+
+        config = {}
+        entity._add_mqtt_attributes_to_config(config)
+
+        assert (
+            config["json_attributes_topic"]
+            == "homeassistant/sensor/test-entity/attributes"
+        )
+
+    def test_no_add_when_no_attributes(self):
+        """Test that json_attributes_topic is not added when attributes don't exist."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = None
+
+        config = {}
+        entity._add_mqtt_attributes_to_config(config)
+
+        assert "json_attributes_topic" not in config
+
+    def test_no_add_without_entity_id(self):
+        """Test that json_attributes_topic is not added when entity_id is None."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = None
+        entity._attr_extra_state_attributes = {"test": "value"}
+
+        config = {}
+        entity._add_mqtt_attributes_to_config(config)
+
+        assert "json_attributes_topic" not in config
+
+
+class TestCheckAndPublishDiscoveryUpdate:
+    """Test cases for _check_and_publish_discovery_update method."""
+
+    def test_republish_when_new_property_becomes_available(self):
+        """Test that discovery is republished when a new property becomes available."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        # Set icon property
+        entity._attr_icon = "mdi:test"
+
+        # Track if async_add_job was called with _publish_mqtt_discovery
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        # Use actual attribute name
+        result = entity._check_and_publish_discovery_update(["_attr_icon"])
+
+        assert result is True
+        assert len(jobs_added) == 1
+        assert jobs_added[0] == entity._publish_mqtt_discovery
+
+    def test_no_republish_when_property_already_registered(self):
+        """Test that discovery is not republished for already registered properties."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_icon = "mdi:test"
+
+        mock_hass = MagicMock()
+        entity.hass = mock_hass
+
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        # First call registers the property
+        result1 = entity._check_and_publish_discovery_update(["_attr_icon"])
+        assert result1 is True
+        assert len(jobs_added) == 1
+
+        # Second call should not trigger republish
+        result2 = entity._check_and_publish_discovery_update(["_attr_icon"])
+        assert result2 is False
+        assert len(jobs_added) == 1
+
+    def test_no_republish_when_property_is_none(self):
+        """Test that discovery is not republished when property value is None."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_icon = None
+
+        mock_hass = MagicMock()
+        entity.hass = mock_hass
+
+        discovery_called = []
+
+        async def mock_publish_discovery():
+            discovery_called.append(True)
+
+        entity._publish_mqtt_discovery = mock_publish_discovery
+
+        result = entity._check_and_publish_discovery_update(["icon"])
+
+        assert result is False
+        assert len(discovery_called) == 0
+
+    def test_multiple_properties_tracking(self):
+        """Test tracking multiple properties independently."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+
+        mock_hass = MagicMock()
+        entity.hass = mock_hass
+
+        entity._attr_icon = "mdi:test"
+        entity._attr_state_class = None
+
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        # First call registers icon (using actual attribute names)
+        result1 = entity._check_and_publish_discovery_update(
+            ["_attr_icon", "_attr_state_class"]
+        )
+        assert result1 is True
+
+        # Set state_class and call again
+        entity._attr_state_class = "measurement"
+        result2 = entity._check_and_publish_discovery_update(
+            ["_attr_icon", "_attr_state_class"]
+        )
+        assert result2 is True
+
+        assert len(jobs_added) == 2
+
+
+class TestSensorMqttDiscoveryUpdates:
+    """Test cases for sensor platform MQTT discovery updates."""
+
+    def test_sensor_checks_discovery_updates_on_publish(self):
+        """Test that sensor checks for discovery updates when publishing state."""
+        from unittest.mock import MagicMock
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        sensor.entity_id = "sensor.test_sensor"
+        sensor._attr_unique_id = "test_unique_123"
+        sensor._attr_native_value = "test_value"
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        sensor.hass = mock_hass
+
+        check_update_calls = []
+
+        def mock_check_update(properties):
+            check_update_calls.append(properties)
+            return False
+
+        sensor._check_and_publish_discovery_update = mock_check_update
+
+        sensor._mqtt_publish()
+
+        assert len(check_update_calls) == 1
+        assert set(check_update_calls[0]) == {
+            "device_class",
+            "state_class",
+            "icon",
+            "native_unit_of_measurement",
+        }
+
+    def test_sensor_republish_when_icon_becomes_available(self):
+        """Test that sensor republishes discovery when icon is set after initial creation."""
+        from unittest.mock import MagicMock
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        sensor.entity_id = "sensor.test_sensor"
+        sensor._attr_unique_id = "test_unique_123"
+        sensor._attr_native_value = "42"
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        sensor.hass = mock_hass
+
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        # Initially no icon
+        sensor._attr_icon = None
+
+        # First publish without icon
+        sensor._mqtt_publish()
+
+        # No jobs should be added yet
+        initial_jobs = len(jobs_added)
+
+        # Now set the icon
+        sensor._attr_icon = "mdi:airplane"
+
+        # Publish again
+        sensor._mqtt_publish()
+
+        # Discovery should be republished
+        assert len(jobs_added) == initial_jobs + 1
+
+    def test_sensor_republish_when_state_class_becomes_available(self):
+        """Test that sensor republishes discovery when state_class is set after initial creation."""
+        from unittest.mock import MagicMock
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        sensor.entity_id = "sensor.test_sensor"
+        sensor._attr_unique_id = "test_unique_123"
+        sensor._attr_native_value = "42"
+        sensor._attr_icon = "mdi:test"
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        sensor.hass = mock_hass
+
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        # First publish with icon but no state_class
+        sensor._mqtt_publish()
+        initial_jobs = len(jobs_added)
+
+        # Now set state_class
+        sensor._attr_state_class = "measurement"
+
+        # Publish again
+        sensor._mqtt_publish()
+
+        # Discovery should be republished
+        assert len(jobs_added) == initial_jobs + 1
+
+
+class TestAttributesRepublishDiscovery:
+    """Test cases for attributes triggering discovery republish."""
+
+    def test_attributes_trigger_discovery_republish(self):
+        """Test that first attributes publish triggers discovery republish."""
+        from unittest.mock import MagicMock
+        import json
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = {"test": "value"}
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        entity._publish_mqtt_attributes()
+
+        # Should publish attributes
+        assert mock_mqtt.publish.called
+        args, kwargs = mock_mqtt.publish.call_args
+        assert args[0] == "homeassistant/sensor/test-entity/attributes"
+
+        # Should trigger discovery republish
+        assert len(jobs_added) == 1
+        assert jobs_added[0] == entity._publish_mqtt_discovery
+
+    def test_attributes_no_republish_on_subsequent_calls(self):
+        """Test that discovery is only republished once for attributes."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = {"test": "value"}
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        jobs_added = []
+
+        def mock_async_add_job(f):
+            jobs_added.append(f)
+
+        mock_hass.async_add_job = mock_async_add_job
+
+        # First call
+        entity._publish_mqtt_attributes()
+        assert len(jobs_added) == 1
+
+        # Second call should not trigger republish
+        entity._publish_mqtt_attributes()
+        assert len(jobs_added) == 1

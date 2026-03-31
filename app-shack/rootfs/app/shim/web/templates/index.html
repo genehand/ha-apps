@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HACS Shack</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background: #03a9f4;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+        
+        header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            margin-bottom: 15px;
+            color: #03a9f4;
+            font-size: 20px;
+        }
+        
+        .integration-list {
+            display: grid;
+            gap: 15px;
+        }
+        
+        .integration-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 6px;
+            border-left: 4px solid #ddd;
+        }
+        
+        .integration-item.enabled {
+            border-left-color: #4caf50;
+        }
+        
+        .integration-item.disabled {
+            border-left-color: #ff9800;
+        }
+        
+        .integration-item.error {
+            border-left-color: #f44336;
+        }
+        
+        .integration-info h3 {
+            margin: 0 0 5px 0;
+            font-size: 16px;
+        }
+        
+        .integration-info p {
+            margin: 0;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .integration-meta {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+        
+        .integration-actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        
+        .btn-primary {
+            background: #03a9f4;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #0288d1;
+        }
+        
+        .btn-success {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #388e3c;
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+        
+        .btn-secondary {
+            background: #757575;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: #616161;
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .update-badge {
+            background: #ff5722;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        
+        .status-enabled {
+            background: #4caf50;
+        }
+        
+        .status-disabled {
+            background: #ff9800;
+        }
+        
+        .alert {
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+        
+        .alert-success {
+            background: #c8e6c9;
+            color: #2e7d32;
+            border: 1px solid #a5d6a7;
+        }
+        
+        .alert-error {
+            background: #ffcdd2;
+            color: #c62828;
+            border: 1px solid #ef9a9a;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #ddd;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            color: #666;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+        }
+        
+        .tab.active {
+            color: #03a9f4;
+            border-bottom-color: #03a9f4;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #03a9f4;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🏚️ HACS Shack</h1>
+        </div>
+    </header>
+    
+    <div class="container">
+        <div class="card">
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('installed')">Installed</button>
+                <button class="tab" onclick="showTab('available')">Available</button>
+            </div>
+            
+            <div id="installed" class="tab-content active">
+                <h2>Installed Integrations</h2>
+                {% if integrations %}
+                <div class="integration-list">
+                    {% for integration in integrations %}
+                    <div class="integration-item {{ 'enabled' if integration.enabled else 'disabled' }}">
+                        <div class="integration-info">
+                            <h3>
+                                <span class="status-indicator {{ 'status-enabled' if integration.enabled else 'status-disabled' }}"></span>
+                                {{ integration.name }}
+                                {% if integration.update_available %}
+                                <span class="update-badge">Update: {{ integration.latest_version }}</span>
+                                {% endif %}
+                            </h3>
+                            <p>{{ integration.description or 'No description' }}</p>
+                            <div class="integration-meta">
+                                Version: {{ integration.version }} | 
+                                Source: {{ integration.source }} |
+                                Status: {{ 'Enabled' if integration.enabled else 'Disabled' }}
+                            </div>
+                        </div>
+                        <div class="integration-actions">
+                            <a href="/integrations/{{ integration.domain }}" class="btn btn-primary">Manage</a>
+                            {% if integration.enabled %}
+                            <button class="btn btn-secondary"
+                                    hx-post="/integrations/{{ integration.domain }}/disable"
+                                    hx-target="body"
+                                    hx-swap="outerHTML">
+                                Disable
+                            </button>
+                            {% else %}
+                            <button class="btn btn-success"
+                                    hx-post="/integrations/{{ integration.domain }}/enable"
+                                    hx-target="body"
+                                    hx-swap="outerHTML">
+                                Enable
+                            </button>
+                            {% endif %}
+                            {% if integration.update_available %}
+                            <button class="btn btn-primary"
+                                    hx-post="/integrations/{{ integration.domain }}/update"
+                                    hx-target="body"
+                                    hx-swap="outerHTML">
+                                Update
+                            </button>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <p>No integrations installed yet.</p>
+                    <p>Click "Available" to install integrations from HACS.</p>
+                </div>
+                {% endif %}
+            </div>
+            
+            <div id="available" class="tab-content">
+                <h2>Available Integrations</h2>
+                {% if available %}
+                <div class="integration-list">
+                    {% for item in available %}
+                    <div class="integration-item">
+                        <div class="integration-info">
+                            <h3>{{ item.name }}</h3>
+                            <p>{{ item.description or 'No description' }}</p>
+                        </div>
+                        <div class="integration-actions">
+                            {% if item.installed %}
+                            <span style="color: #4caf50;">✓ Installed</span>
+                            {% else %}
+                            <button class="btn btn-success"
+                                    hx-post="/integrations/{{ item.domain }}/install"
+                                    hx-target="body"
+                                    hx-swap="outerHTML"
+                                    hx-indicator="#spinner-{{ item.domain }}">
+                                <span id="spinner-{{ item.domain }}" class="spinner" style="display: none;"></span>
+                                Install
+                            </button>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <p>No integrations available.</p>
+                    <p>Failed to fetch HACS repository list.</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>System Status</h2>
+            <div hx-get="/api/status" hx-trigger="load, every 30s">
+                <div class="spinner"></div> Loading status...
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+    </script>
+</body>
+</html>

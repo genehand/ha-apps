@@ -1,0 +1,10 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community Add-on: Shack
+# Starts Shack service
+# ==============================================================================
+
+bashio::log.info "Starting Shack..."
+
+exec /app/main.py

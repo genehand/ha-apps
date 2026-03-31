@@ -1,0 +1,14 @@
+#!/command/with-contenv bashio
+# ==============================================================================
+# Home Assistant Community Add-on: Shack
+# Handles service exit - S6 will manage the supervision tree
+# ==============================================================================
+readonly exit_code_service="${1}"
+readonly exit_code_signal="${2}"
+readonly service="Shack"
+
+bashio::log.info \
+  "Service ${service} exited with code ${exit_code_service}" \
+  "(by signal ${exit_code_signal})"
+
+exit "${exit_code_service}"
