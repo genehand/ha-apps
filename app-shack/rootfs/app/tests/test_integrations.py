@@ -125,6 +125,7 @@ async def test_flightradar24_setup():
         # Cleanup
         try:
             await loader.unload_integration(entry, cleanup_mqtt=True)
+            await hass.config_entries.async_remove(entry.entry_id)
         except Exception:
             pass  # Ignore cleanup errors
 
@@ -192,12 +193,21 @@ async def test_flightradar24_entity_lifecycle():
         # Unload and verify cleanup
         await loader.unload_integration(entry, cleanup_mqtt=True)
 
+        # Remove the config entry
+        await hass.config_entries.async_remove(entry.entry_id)
+
         # Entities should be unregistered
         entities_after = len(registry.get_all())
         # Note: Some entities might persist in the loader's internal registry
         # but should be removed from the EntityRegistry
 
     except Exception as e:
+        # Cleanup on failure
+        try:
+            await loader.unload_integration(entry, cleanup_mqtt=True)
+            await hass.config_entries.async_remove(entry.entry_id)
+        except Exception:
+            pass
         pytest.fail(f"Integration test failed: {e}")
 
 

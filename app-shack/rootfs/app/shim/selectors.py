@@ -274,6 +274,78 @@ class DurationSelector(Selector):
         self.config["enable_day"] = enable_day
 
 
+class StateSelector(Selector):
+    """Selector for entity states."""
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        entity_id: Optional[str] = None,
+    ):
+        """Initialize state selector."""
+        super().__init__(config)
+        if entity_id:
+            self.config["entity_id"] = entity_id
+
+
+class TemplateSelector(Selector):
+    """Selector for templates (used heavily in MQTT)."""
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        native_value: bool = True,
+    ):
+        """Initialize template selector."""
+        super().__init__(config)
+        self.config["native_value"] = native_value
+
+
+class QRCodeSelector(Selector):
+    """Selector for QR code scanning (device pairing)."""
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        data: Optional[str] = None,
+    ):
+        """Initialize QR code selector."""
+        super().__init__(config)
+        if data:
+            self.config["data"] = data
+
+
+class FloorSelector(Selector):
+    """Selector for floors (new HA organizational feature)."""
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        multiple: bool = False,
+    ):
+        """Initialize floor selector."""
+        super().__init__(config)
+        self.config["multiple"] = multiple
+
+
+class LabelSelector(Selector):
+    """Selector for labels (new HA organizational feature)."""
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        multiple: bool = False,
+    ):
+        """Initialize label selector."""
+        super().__init__(config)
+        self.config["multiple"] = multiple
+
+
 # Selector config type aliases (used by config flows)
 EntitySelectorConfig = dict
 DeviceSelectorConfig = dict
@@ -321,6 +393,12 @@ TemplateSelectorConfig = dict
 TimeZoneSelectorConfig = dict
 TriggerSelectorConfig = dict
 UserSelectorConfig = dict
+
+StateSelectorConfig = dict
+TemplateSelectorConfig = dict
+QRCodeSelectorConfig = dict
+FloorSelectorConfig = dict
+LabelSelectorConfig = dict
 
 
 def selector(

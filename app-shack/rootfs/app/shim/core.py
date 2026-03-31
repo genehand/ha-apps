@@ -469,6 +469,29 @@ class ConfigEntries:
                                 _LOGGER.debug(
                                     f"Adding entity {entity.entity_id} to {platform} platform"
                                 )
+
+                                # Check if entity is disabled by default
+                                entity_enabled = getattr(
+                                    entity, "entity_registry_enabled_default", True
+                                )
+                                if (
+                                    hasattr(entity, "entity_description")
+                                    and entity.entity_description is not None
+                                ):
+                                    desc_enabled = getattr(
+                                        entity.entity_description,
+                                        "entity_registry_enabled_default",
+                                        None,
+                                    )
+                                    if desc_enabled is not None:
+                                        entity_enabled = desc_enabled
+
+                                if not entity_enabled:
+                                    _LOGGER.debug(
+                                        f"Skipping disabled entity {entity.entity_id}"
+                                    )
+                                    continue
+
                                 # Set integration domain for tracking
                                 entity._attr_integration_domain = entry.domain
                                 # Register entity with loader under platform domain

@@ -9,5 +9,9 @@ aiohttp>=3.9.0
 voluptuous>=0.14.0
 python-multipart>=0.0.6
 
+# HACS integration dependencies
+aiogithubapi>=22.10.1
+awesomeversion>=22.9.0
+
 # Workaround for FlightRadarAPI
 beautifulsoup4

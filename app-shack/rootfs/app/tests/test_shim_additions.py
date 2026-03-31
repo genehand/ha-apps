@@ -257,17 +257,17 @@ class TestOptionsFlowAdvancedOptions:
 
 
 class TestNewConstants:
-    """Tests for new constants added to shim.const."""
+    """Tests for new constants added to shim.ha_fetched.const."""
 
     def test_conf_id_exists(self):
         """Test CONF_ID constant exists."""
-        from shim.const import CONF_ID
+        from shim.ha_fetched.const import CONF_ID
 
         assert CONF_ID == "id"
 
     def test_platform_enum_values(self):
         """Test Platform enum has expected values."""
-        from shim.const import Platform
+        from shim.ha_fetched.const import Platform
 
         assert Platform.SENSOR == "sensor"
         assert Platform.SWITCH == "switch"
@@ -278,27 +278,15 @@ class TestNewConstants:
 
     def test_unit_of_temperature_enum(self):
         """Test UnitOfTemperature enum values."""
-        from shim.const import UnitOfTemperature
+        from shim.ha_fetched.const import UnitOfTemperature
 
         assert UnitOfTemperature.CELSIUS == "°C"
         assert UnitOfTemperature.FAHRENHEIT == "°F"
         assert UnitOfTemperature.KELVIN == "K"
 
-    def test_state_class_constants(self):
-        """Test state class constants exist."""
-        from shim.const import (
-            STATE_CLASS_MEASUREMENT,
-            STATE_CLASS_TOTAL,
-            STATE_CLASS_TOTAL_INCREASING,
-        )
-
-        assert STATE_CLASS_MEASUREMENT == "measurement"
-        assert STATE_CLASS_TOTAL == "total"
-        assert STATE_CLASS_TOTAL_INCREASING == "total_increasing"
-
     def test_entity_category_enum(self):
-        """Test EntityCategory enum from shim.const."""
-        from shim.const import EntityCategory
+        """Test EntityCategory enum from shim.ha_fetched.const."""
+        from shim.ha_fetched.const import EntityCategory
 
         assert EntityCategory.CONFIG == "config"
         assert EntityCategory.DIAGNOSTIC == "diagnostic"

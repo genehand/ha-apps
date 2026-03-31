@@ -84,6 +84,11 @@ class FrozenOrThawed(type):
                 "options": None,
                 "preset_modes": None,
                 "supported_features": 0,
+                # Text entity description fields
+                "pattern": None,
+                "mode": "text",
+                "min": 0,
+                "max": 255,
             }
             for field_name, field_type in annotations.items():
                 if field_name in field_defaults:

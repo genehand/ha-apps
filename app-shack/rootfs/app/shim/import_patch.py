@@ -30,23 +30,109 @@ class ImportPatcher:
 
         _LOGGER.info("Patching imports for Home Assistant compatibility")
 
-        # Import shim modules
+        # Import types here since it's used below
+        import types
+        import importlib.util
+        from pathlib import Path
+
+        # STEP 1: Inject stub modules FIRST
+        # This prevents ImportError for HA-internal dependencies
+        stubs = {
+            "homeassistant.helpers.deprecation": "_stub_helpers_deprecation",
+            "homeassistant.util.hass_dict": "_stub_util_hass_dict",
+            "homeassistant.util.signal_type": "_stub_util_signal_type",
+        }
+
+        for module_name, stub_filename in stubs.items():
+            stub_module = types.ModuleType(module_name)
+            stub_path = Path(__file__).parent / "ha_fetched" / f"{stub_filename}.py"
+            if stub_path.exists():
+                # Execute stub file content in the module
+                stub_code = stub_path.read_text()
+                exec(stub_code, stub_module.__dict__)
+                sys.modules[module_name] = stub_module
+                _LOGGER.debug(f"Injected stub: {module_name}")
+
+        # STEP 2: Load ha_fetched modules directly (avoiding __init__.py which imports const)
+        # const.py depends on homeassistant namespace being set up first
+        ha_fetched_path = Path(__file__).parent / "ha_fetched"
+
+        # Load generated.entity_platforms
+        spec_ep = importlib.util.spec_from_file_location(
+            "ha_fetched.generated.entity_platforms",
+            ha_fetched_path / "generated" / "entity_platforms.py",
+        )
+        ha_entity_platforms = importlib.util.module_from_spec(spec_ep)
+        sys.modules["ha_fetched.generated.entity_platforms"] = ha_entity_platforms
+        spec_ep.loader.exec_module(ha_entity_platforms)
+
+        # Load generated package
+        spec_gen = importlib.util.spec_from_file_location(
+            "ha_fetched.generated", ha_fetched_path / "generated" / "__init__.py"
+        )
+        ha_generated = importlib.util.module_from_spec(spec_gen)
+        ha_generated.entity_platforms = ha_entity_platforms
+        sys.modules["ha_fetched.generated"] = ha_generated
+        spec_gen.loader.exec_module(ha_generated)
+
+        # Load util.event_type
+        spec_et = importlib.util.spec_from_file_location(
+            "ha_fetched.util.event_type",
+            ha_fetched_path / "util" / "event_type.py",
+        )
+        ha_event_type = importlib.util.module_from_spec(spec_et)
+        sys.modules["ha_fetched.util.event_type"] = ha_event_type
+        spec_et.loader.exec_module(ha_event_type)
+
+        # STEP 3: Set up homeassistant namespace BEFORE importing const
+        homeassistant_generated = types.ModuleType("homeassistant.generated")
+        homeassistant_generated.entity_platforms = ha_entity_platforms
+        sys.modules["homeassistant.generated"] = homeassistant_generated
+        sys.modules["homeassistant.generated.entity_platforms"] = ha_entity_platforms
+
+        homeassistant_util = types.ModuleType("homeassistant.util")
+        homeassistant_util.event_type = ha_event_type
+        homeassistant_util.hass_dict = sys.modules["homeassistant.util.hass_dict"]
+        homeassistant_util.signal_type = sys.modules["homeassistant.util.signal_type"]
+        sys.modules["homeassistant.util"] = homeassistant_util
+        sys.modules["homeassistant.util.event_type"] = ha_event_type
+
+        # STEP 4: Now load const and exceptions
+        spec_const = importlib.util.spec_from_file_location(
+            "ha_fetched.const", ha_fetched_path / "const.py"
+        )
+        ha_const = importlib.util.module_from_spec(spec_const)
+        sys.modules["ha_fetched.const"] = ha_const
+        spec_const.loader.exec_module(ha_const)
+
+        spec_exc = importlib.util.spec_from_file_location(
+            "ha_fetched.exceptions", ha_fetched_path / "exceptions.py"
+        )
+        ha_exceptions = importlib.util.module_from_spec(spec_exc)
+        sys.modules["ha_fetched.exceptions"] = ha_exceptions
+        spec_exc.loader.exec_module(ha_exceptions)
+
+        # STEP 5: Import other shim modules
         from . import core
-        from . import const
         from . import entity
-        from . import exceptions
         from . import config_entries
         from . import selectors
 
-        # Import types here since it's used below
-        import types
-
-        # Create homeassistant package
+        # STEP 6: Create full homeassistant package
         homeassistant = types.ModuleType("homeassistant")
         homeassistant.core = core
-        homeassistant.const = const
-        homeassistant.exceptions = exceptions
+        homeassistant.const = ha_const
+        homeassistant.exceptions = ha_exceptions
         homeassistant.config_entries = config_entries
+        homeassistant.generated = homeassistant_generated
+        homeassistant.util = homeassistant_util
+
+        # Register all submodules in sys.modules
+        sys.modules["homeassistant"] = homeassistant
+        sys.modules["homeassistant.core"] = core
+        sys.modules["homeassistant.const"] = ha_const
+        sys.modules["homeassistant.exceptions"] = ha_exceptions
+        sys.modules["homeassistant.config_entries"] = config_entries
 
         # Create data_entry_flow stub module
         data_entry_flow = types.ModuleType("homeassistant.data_entry_flow")
@@ -59,8 +145,14 @@ class ImportPatcher:
 
         homeassistant.helpers = types.ModuleType("homeassistant.helpers")
         homeassistant.helpers.selector = selectors
-        homeassistant.util = types.ModuleType("homeassistant.util")
         homeassistant.components = types.ModuleType("homeassistant.components")
+
+        # Skip loading dt.py and color.py - they require HA-specific dependencies
+        # (aiozoneinfo, voluptuous, etc.) that we don't need for basic integration support
+        # Most HACS integrations don't actually use these utils
+        _LOGGER.debug(
+            "Skipping dt.py and color.py - HA-specific dependencies not needed"
+        )
 
         # Create device_registry stub
         device_registry = types.ModuleType("homeassistant.helpers.device_registry")
@@ -695,8 +787,8 @@ class ImportPatcher:
         # Install patched modules
         sys.modules["homeassistant"] = homeassistant
         sys.modules["homeassistant.core"] = core
-        sys.modules["homeassistant.const"] = const
-        sys.modules["homeassistant.exceptions"] = exceptions
+        sys.modules["homeassistant.const"] = ha_const
+        sys.modules["homeassistant.exceptions"] = ha_exceptions
         sys.modules["homeassistant.config_entries"] = config_entries
         sys.modules["homeassistant.data_entry_flow"] = data_entry_flow
         sys.modules["homeassistant.helpers"] = homeassistant.helpers

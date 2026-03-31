@@ -9,7 +9,11 @@ import asyncio
 from datetime import datetime
 
 from .logging import get_logger
-from .const import STATE_UNAVAILABLE
+
+# STATE_UNAVAILABLE is a constant from homeassistant.const
+# Define it locally to avoid circular import during module load
+STATE_UNAVAILABLE = "unavailable"
+
 from .frozen_dataclass_compat import FrozenOrThawed
 
 _LOGGER = get_logger(__name__)
@@ -313,6 +317,9 @@ class Entity:
     @property
     def entity_category(self) -> Optional[str]:
         """Return the category of this entity."""
+        # Check entity_description first (integrations may set via entity_description)
+        if hasattr(self, "entity_description") and self.entity_description is not None:
+            return getattr(self.entity_description, "entity_category", None)
         return self._attr_entity_category
 
     @property
@@ -602,8 +609,26 @@ class Entity:
         self.hass = hass
         self.platform = platform
 
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Return if the entity should be enabled by default."""
+        # Check entity_description first
+        if hasattr(self, "entity_description") and self.entity_description is not None:
+            value = getattr(
+                self.entity_description, "entity_registry_enabled_default", None
+            )
+            if value is not None:
+                return value
+        # Fall back to class attribute
+        return getattr(self, "_attr_entity_registry_enabled_default", True)
+
     async def add_to_platform_finish(self) -> None:
         """Finish adding an entity to a platform."""
+        # Check if entity is disabled by default
+        if not self.entity_registry_enabled_default:
+            _LOGGER.debug(f"Skipping disabled entity {self.entity_id}")
+            return
+
         self._added = True
 
         # Register with entity registry

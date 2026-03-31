@@ -8,7 +8,7 @@ from typing import Any, Optional, Dict, Callable
 from dataclasses import dataclass
 from contextvars import ContextVar
 
-from .exceptions import HomeAssistantError
+from shim.ha_fetched.exceptions import HomeAssistantError
 from .core import ConfigEntry
 from .core import callback
 

@@ -42,9 +42,11 @@ class ShimManager:
         # Initialize storage
         self._storage = self._hass._storage
 
-        # Initialize integration management
+        # Initialize integration management with notification callback
         self._integration_manager = IntegrationManager(
-            self._storage, self._hass.shim_dir
+            self._storage,
+            self._hass.shim_dir,
+            notification_callback=self._send_ha_notification,
         )
 
         # Initialize integration loader
@@ -77,6 +79,9 @@ class ShimManager:
         # Start periodic update checks
         self._update_check_task = asyncio.create_task(self._periodic_update_checks())
 
+        # Start integration manager background tasks
+        await self._integration_manager.start_background_tasks()
+
         _LOGGER.info("Shim Manager started successfully")
 
     async def stop(self) -> None:
@@ -91,6 +96,9 @@ class ShimManager:
                 await self._update_check_task
             except asyncio.CancelledError:
                 pass
+
+        # Stop integration manager background tasks
+        await self._integration_manager.stop_background_tasks()
 
         # Unload all integrations without cleaning up MQTT topics
         # (preserve topics for reconnection on restart)
@@ -488,6 +496,49 @@ class ShimManager:
             details_topic, json.dumps(details), qos=0, retain=True
         )
 
+    async def _send_ha_notification(self, title: str, message: str) -> None:
+        """Send a notification to Home Assistant via persistent_notification.
+
+        This is used by the IntegrationManager to send aggregated update notifications.
+        """
+        if not self._mqtt_client:
+            _LOGGER.warning("Cannot send HA notification - MQTT client not available")
+            return
+
+        # Create a notification ID based on the title
+        notification_id = (
+            f"shim_{title.lower().replace(' ', '_').replace('-', '_')[:30]}"
+        )
+
+        # Use the HA persistent_notification service via MQTT
+        service_topic = f"homeassistant/services/persistent_notification/create"
+
+        # Publish service call
+        payload = {
+            "notification_id": notification_id,
+            "title": title,
+            "message": message,
+        }
+
+        try:
+            # Publish to the service topic - HA should pick this up
+            topic = f"{self._mqtt_base_topic}/notification"
+            self._mqtt_client.publish(
+                topic,
+                json.dumps(
+                    {
+                        "title": title,
+                        "message": message,
+                        "notification_id": notification_id,
+                    }
+                ),
+                qos=0,
+                retain=False,
+            )
+            _LOGGER.info(f"Sent HA notification: {title}")
+        except Exception as e:
+            _LOGGER.error(f"Failed to send HA notification: {e}")
+
     # Public API for web UI
     def get_hass(self) -> HomeAssistant:
         """Get the HomeAssistant shim instance."""
@@ -501,8 +552,11 @@ class ShimManager:
         """Get the integration loader."""
         return self._integration_loader
 
-    async def install_integration(self, domain: str, **kwargs) -> bool:
-        """Install an integration."""
+    async def install_integration(self, domain: str, **kwargs):
+        """Install an integration.
+
+        Returns InstallTask for async installs or bool for legacy blocking installs.
+        """
         return await self._integration_manager.install_integration(domain, **kwargs)
 
     async def create_config_entry(

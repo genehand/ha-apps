@@ -132,7 +132,7 @@ class WebUI:
             return HTMLResponse(content=html)
 
         @self._app.post("/integrations/{domain}/enable")
-        async def enable_integration(domain: str):
+        async def enable_integration(request: Request, domain: str):
             """Enable an integration."""
             success = (
                 await self._shim_manager.get_integration_manager().enable_integration(
@@ -148,11 +148,19 @@ class WebUI:
                     await self._shim_manager.get_integration_loader().setup_integration(
                         entry
                     )
-                return JSONResponse({"status": "success"})
-            return JSONResponse({"status": "error"}, status_code=400)
+                # Return HTML redirect to refresh the page
+                return HTMLResponse(
+                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" class="alert alert-success">'
+                    f"Integration {domain} enabled successfully!"
+                    f"</div>"
+                )
+            return HTMLResponse(
+                f'<div class="alert alert-error">Failed to enable {domain}</div>',
+                status_code=400,
+            )
 
         @self._app.post("/integrations/{domain}/disable")
-        async def disable_integration(domain: str):
+        async def disable_integration(request: Request, domain: str):
             """Disable an integration."""
             # Unload first
             entries = self._shim_manager.get_hass().config_entries.async_entries(domain)
@@ -167,21 +175,116 @@ class WebUI:
                 )
             )
             if success:
-                return JSONResponse({"status": "success"})
-            return JSONResponse({"status": "error"}, status_code=400)
+                # Return HTML redirect to refresh the page
+                return HTMLResponse(
+                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" class="alert alert-success">'
+                    f"Integration {domain} disabled successfully!"
+                    f"</div>"
+                )
+            return HTMLResponse(
+                f'<div class="alert alert-error">Failed to disable {domain}</div>',
+                status_code=400,
+            )
 
         @self._app.post("/integrations/{domain}/install")
-        async def install_integration(domain: str, version: Optional[str] = Form(None)):
-            """Install an integration."""
-            success = await self._shim_manager.install_integration(
+        async def install_integration(
+            request: Request, domain: str, version: Optional[str] = Form(None)
+        ):
+            """Install an integration (async - returns immediately)."""
+            from ..integrations import InstallTask
+
+            # Queue the install and get the task
+            result = await self._shim_manager.install_integration(
                 domain, version=version
             )
-            if success:
-                return JSONResponse({"status": "success"})
-            return JSONResponse({"status": "error"}, status_code=400)
+
+            # Check if it's a task (async) or boolean (sync/legacy)
+            if isinstance(result, InstallTask):
+                # Async install - return status page with auto-refresh
+                return HTMLResponse(
+                    f'<div class="alert alert-success" style="margin-bottom: 15px;">'
+                    f"<strong>Installation Queued</strong><br>"
+                    f"{domain} is being installed in the background. This may take a minute..."
+                    f"</div>"
+                    f'<div hx-trigger="every 2s" hx-get="/api/install-status/{domain}" '
+                    f'hx-target="#install-status-{domain}" hx-swap="innerHTML">'
+                    f'<div id="install-status-{domain}">'
+                    f'<span class="spinner"></span> Checking installation status...'
+                    f"</div></div>"
+                    f"<script>"
+                    f"setTimeout(function() {{"
+                    f'  window.location.href = "/"'
+                    f"}}, 10000);"
+                    f"</script>"
+                )
+            elif result:
+                # Legacy blocking install succeeded
+                return HTMLResponse(
+                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" '
+                    f'class="alert alert-success">'
+                    f"Integration {domain} installed successfully!"
+                    f"</div>"
+                )
+            else:
+                return HTMLResponse(
+                    f'<div class="alert alert-error">Failed to install {domain}</div>',
+                    status_code=400,
+                )
+
+        @self._app.get("/api/install-status/{domain}")
+        async def get_install_status(request: Request, domain: str):
+            """Get the installation status for a domain (returns HTML for HTMX)."""
+            task = self._shim_manager.get_integration_manager().get_install_status(
+                domain
+            )
+
+            if not task:
+                # Check if already installed
+                info = self._shim_manager.get_integration_manager().get_integration(
+                    domain
+                )
+                if info:
+                    return HTMLResponse(
+                        f'<div class="alert alert-success">'
+                        f"<strong>✓ Complete!</strong> {info.name} v{info.version} is now installed."
+                        f"</div>"
+                        f'<button type="button" class="btn btn-primary" '
+                        f"onclick=\"window.location.href='/'\">Back to Installed</button>"
+                    )
+                return HTMLResponse(
+                    f'<div class="alert alert-error">Installation not found</div>',
+                    status_code=404,
+                )
+
+            if task.status == "complete":
+                return HTMLResponse(
+                    f'<div class="alert alert-success">'
+                    f"<strong>✓ Complete!</strong> Installation finished successfully."
+                    f"</div>"
+                    f'<button type="button" class="btn btn-primary" '
+                    f"onclick=\"window.location.href='/'\">Back to Installed</button>"
+                )
+            elif task.status == "error":
+                return HTMLResponse(
+                    f'<div class="alert alert-error">'
+                    f"<strong>✗ Installation Failed</strong><br>"
+                    f"{task.error_message or 'Unknown error'}"
+                    f"</div>"
+                    f'<button type="button" class="btn btn-secondary" '
+                    f"onclick=\"window.location.href='/'\">Back</button>"
+                )
+            else:
+                # Still processing
+                return HTMLResponse(
+                    f'<div class="alert" style="background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9;">'
+                    f'<span class="spinner"></span> '
+                    f"<strong>Installing {domain}...</strong><br>"
+                    f"Status: {task.status}"
+                    f"</div>"
+                )
 
         @self._app.post("/integrations/{domain}/remove")
-        async def remove_integration(domain: str):
+        async def remove_integration(request: Request, domain: str):
             """Remove an integration."""
             # First remove all config entries (this unloads entities and cleans up MQTT)
             entries = self._shim_manager.get_hass().config_entries.async_entries(domain)
@@ -197,19 +300,35 @@ class WebUI:
                 )
             )
             if success:
-                return JSONResponse({"status": "success"})
-            return JSONResponse({"status": "error"}, status_code=400)
+                return HTMLResponse(
+                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" '
+                    f'class="alert alert-success">'
+                    f"Integration {domain} removed successfully!"
+                    f"</div>"
+                )
+            return HTMLResponse(
+                f'<div class="alert alert-error">Failed to remove {domain}</div>',
+                status_code=400,
+            )
 
         @self._app.post("/integrations/{domain}/update")
-        async def update_integration(domain: str):
+        async def update_integration(request: Request, domain: str):
             """Update an integration."""
             info = self._shim_manager.get_integration_manager().get_integration(domain)
             if not info or not info.update_available:
-                return JSONResponse({"status": "no_update"})
+                return HTMLResponse(
+                    f'<div class="alert alert-error">No update available for {domain}</div>',
+                    status_code=400,
+                )
 
             # This triggers the update process
             await self._shim_manager._update_integration(domain)
-            return JSONResponse({"status": "success"})
+            return HTMLResponse(
+                f'<div hx-trigger="load" hx-get="/integrations/{domain}" hx-target="body" hx-swap="outerHTML" '
+                f'class="alert alert-success">'
+                f"Integration {domain} updated successfully!"
+                f"</div>"
+            )
 
         @self._app.post("/config/{entry_id}/remove")
         async def remove_config_entry(entry_id: str):

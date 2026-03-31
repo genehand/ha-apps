@@ -13,9 +13,11 @@ import aiohttp
 import zipfile
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from awesomeversion import AwesomeVersion
+from awesomeversion.exceptions import AwesomeVersionException
 
 from ..logging import get_logger
 from ..storage import Storage
@@ -26,6 +28,21 @@ _LOGGER = get_logger(__name__)
 HACS_CDN_URL = "https://data-v2.hacs.xyz/integration/data.json"
 # Cache HACS data for 6 hours
 HACS_CACHE_DURATION_HOURS = 6
+# Check for updates every 4 hours
+UPDATE_CHECK_INTERVAL_HOURS = 4
+
+
+@dataclass
+class InstallTask:
+    """Task for async installation."""
+
+    domain: str
+    version: Optional[str]
+    source: str
+    custom_url: Optional[str]
+    callback: Optional[callable] = None
+    status: str = "pending"  # pending, downloading, installing, complete, error
+    error_message: Optional[str] = None
 
 
 class IntegrationInfo:
@@ -86,11 +103,19 @@ class IntegrationInfo:
 class IntegrationManager:
     """Manages HACS integrations for the shim."""
 
-    def __init__(self, storage: Storage, shim_dir: Path):
+    def __init__(
+        self,
+        storage: Storage,
+        shim_dir: Path,
+        notification_callback: Optional[callable] = None,
+    ):
         self._storage = storage
         self._shim_dir = Path(shim_dir)
         self._integrations_dir = self._shim_dir / "custom_components"
         self._integrations_dir.mkdir(parents=True, exist_ok=True)
+
+        # Callback for sending notifications to HA
+        self._notification_callback = notification_callback
 
         # Create __init__.py to make custom_components a Python package
         init_file = self._integrations_dir / "__init__.py"
@@ -108,6 +133,15 @@ class IntegrationManager:
         self._integrations: Dict[str, IntegrationInfo] = {}  # domain -> info
         self._hacs_etag: Optional[str] = None  # ETag for CDN caching
         self._hacs_last_fetched: Optional[datetime] = None  # Last fetch time
+
+        # Async install queue
+        self._install_queue: asyncio.Queue[InstallTask] = asyncio.Queue()
+        self._install_tasks: Dict[str, InstallTask] = {}  # domain -> task
+        self._install_worker_task: Optional[asyncio.Task] = None
+
+        # Periodic update check task
+        self._update_check_task: Optional[asyncio.Task] = None
+        self._last_notification_time: Optional[datetime] = None
 
         self._load_integrations()
         self._load_custom_repos()
@@ -579,7 +613,7 @@ class IntegrationManager:
                 if domain in self._hacs_repos:
                     hacs_repo = self._hacs_repos[domain]
                     latest = hacs_repo.get("last_version")
-                    if latest and latest != info.version:
+                    if latest and self._compare_versions(info.version, latest):
                         info.latest_version = latest
                         info.update_available = True
                         updates_available.append(info)
@@ -591,7 +625,7 @@ class IntegrationManager:
                     latest = await self._get_latest_version_from_github(
                         info.repository_url
                     )
-                    if latest and latest != info.version:
+                    if latest and self._compare_versions(info.version, latest):
                         info.latest_version = latest
                         info.update_available = True
                         updates_available.append(info)
@@ -605,6 +639,157 @@ class IntegrationManager:
 
         self._save_integrations()
         return updates_available
+
+    def _compare_versions(self, current: str, latest: str) -> bool:
+        """Compare two versions using AwesomeVersion.
+
+        Returns True if latest is newer than current.
+        """
+        try:
+            current_ver = AwesomeVersion(current)
+            latest_ver = AwesomeVersion(latest)
+            return latest_ver > current_ver
+        except AwesomeVersionException as e:
+            _LOGGER.warning(f"Version comparison failed for {current} vs {latest}: {e}")
+            # Fallback to simple string comparison
+            return latest != current
+
+    async def start_background_tasks(self):
+        """Start background tasks for install queue and update checking."""
+        if self._install_worker_task is None or self._install_worker_task.done():
+            self._install_worker_task = asyncio.create_task(self._install_worker())
+            _LOGGER.info("Started install queue worker")
+
+        if self._update_check_task is None or self._update_check_task.done():
+            self._update_check_task = asyncio.create_task(self._periodic_update_check())
+            _LOGGER.info("Started periodic update check task")
+
+    async def stop_background_tasks(self):
+        """Stop background tasks."""
+        if self._install_worker_task:
+            self._install_worker_task.cancel()
+            try:
+                await self._install_worker_task
+            except asyncio.CancelledError:
+                pass
+            _LOGGER.info("Stopped install queue worker")
+
+        if self._update_check_task:
+            self._update_check_task.cancel()
+            try:
+                await self._update_check_task
+            except asyncio.CancelledError:
+                pass
+            _LOGGER.info("Stopped periodic update check task")
+
+    async def _install_worker(self):
+        """Background worker that processes install queue."""
+        while True:
+            try:
+                task = await self._install_queue.get()
+                await self._process_install_task(task)
+                self._install_queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                _LOGGER.error(f"Install worker error: {e}")
+
+    async def _process_install_task(self, task: InstallTask):
+        """Process a single install task."""
+        task.status = "downloading"
+        _LOGGER.info(f"Processing install task for {task.domain}")
+
+        try:
+            success = await self._do_install(
+                task.domain, task.version, task.source, task.custom_url
+            )
+            if success:
+                task.status = "complete"
+                _LOGGER.info(f"Successfully installed {task.domain}")
+            else:
+                task.status = "error"
+                task.error_message = "Installation failed"
+                _LOGGER.error(f"Failed to install {task.domain}")
+        except Exception as e:
+            task.status = "error"
+            task.error_message = str(e)
+            _LOGGER.error(f"Exception installing {task.domain}: {e}")
+        finally:
+            # Call callback if provided
+            if task.callback:
+                try:
+                    task.callback(task.domain, task.status, task.error_message)
+                except Exception as e:
+                    _LOGGER.error(f"Install callback error: {e}")
+
+    def queue_install(
+        self,
+        domain: str,
+        version: Optional[str] = None,
+        source: str = "hacs_default",
+        custom_url: Optional[str] = None,
+        callback: Optional[callable] = None,
+    ) -> InstallTask:
+        """Queue an integration for async installation.
+
+        Returns immediately with a task object that can be used to track progress.
+        """
+        task = InstallTask(
+            domain=domain,
+            version=version,
+            source=source,
+            custom_url=custom_url,
+            callback=callback,
+        )
+        self._install_tasks[domain] = task
+        self._install_queue.put_nowait(task)
+        _LOGGER.info(f"Queued {domain} for installation")
+        return task
+
+    def get_install_status(self, domain: str) -> Optional[InstallTask]:
+        """Get the current installation status for a domain."""
+        return self._install_tasks.get(domain)
+
+    async def _periodic_update_check(self):
+        """Periodically check for updates and send aggregated notifications."""
+        while True:
+            try:
+                await asyncio.sleep(UPDATE_CHECK_INTERVAL_HOURS * 3600)
+                await self._check_updates_and_notify()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                _LOGGER.error(f"Periodic update check error: {e}")
+
+    async def _check_updates_and_notify(self):
+        """Check for updates and send a single aggregated notification."""
+        _LOGGER.info("Running periodic update check")
+
+        updates = await self.check_for_updates()
+
+        if not updates:
+            return
+
+        # Build aggregated message
+        update_count = len(updates)
+        integration_list = ", ".join(
+            [f"{u.name} ({u.version} → {u.latest_version})" for u in updates[:5]]
+        )
+
+        if update_count > 5:
+            integration_list += f" and {update_count - 5} more"
+
+        title = f"{update_count} integration update{'s' if update_count > 1 else ''} available"
+        message = f"Updates available for: {integration_list}"
+
+        _LOGGER.info(f"Update notification: {title} - {message}")
+
+        # Send notification to HA if callback is available
+        if self._notification_callback:
+            try:
+                await self._notification_callback(title, message)
+            except Exception as e:
+                _LOGGER.error(f"Failed to send update notification: {e}")
 
     async def _get_latest_version_from_github(self, repo_url: str) -> Optional[str]:
         """Get latest release version from GitHub (fallback for custom repos)."""
@@ -645,8 +830,29 @@ class IntegrationManager:
         version: Optional[str] = None,
         source: str = "hacs_default",
         custom_url: Optional[str] = None,
+        wait: bool = False,
+    ) -> Union[bool, InstallTask]:
+        """Queue an integration for installation.
+
+        By default, returns immediately with an InstallTask for async tracking.
+        Set wait=True to block until installation completes (old behavior).
+        """
+        if wait:
+            # Synchronous (blocking) install - old behavior
+            return await self._do_install(domain, version, source, custom_url)
+
+        # Async install - queue and return task immediately
+        task = self.queue_install(domain, version, source, custom_url)
+        return task
+
+    async def _do_install(
+        self,
+        domain: str,
+        version: Optional[str] = None,
+        source: str = "hacs_default",
+        custom_url: Optional[str] = None,
     ) -> bool:
-        """Install or update an integration."""
+        """Perform the actual installation (used by queue worker)."""
         if source == "hacs_default":
             if domain in self._hacs_repos:
                 repo_info = self._hacs_repos[domain]
@@ -983,8 +1189,52 @@ class IntegrationManager:
             pip_cmd = [sys.executable, "-m", "pip"]
             _LOGGER.debug(f"Using system pip: {pip_cmd}")
 
+        installed_any = False
+
         for requirement in info.requirements:
             try:
+                # Check if requirement is already installed
+                check_proc = await asyncio.create_subprocess_exec(
+                    *pip_cmd,
+                    "show",
+                    requirement.split("==")[0].split(">=")[0].split("<=")[0].strip(),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await check_proc.communicate()
+
+                if check_proc.returncode == 0:
+                    # Package is installed, check version if specified
+                    if (
+                        "==" in requirement
+                        or ">=" in requirement
+                        or "<=" in requirement
+                    ):
+                        # Parse installed version from pip show output
+                        installed_version = None
+                        for line in stdout.decode().strip().split("\n"):
+                            if line.startswith("Version:"):
+                                installed_version = line.split(":", 1)[1].strip()
+                                break
+
+                        if installed_version:
+                            # Check if version matches
+                            req_clean = requirement.strip()
+                            if req_clean.endswith(f"=={installed_version}"):
+                                _LOGGER.info(
+                                    f"Requirement already satisfied: {requirement}"
+                                )
+                                continue
+                            elif "==" not in req_clean:
+                                # For >= or <=, we'll let pip handle it
+                                _LOGGER.info(
+                                    f"Requirement {requirement} has version {installed_version} installed, checking if update needed"
+                                )
+                    else:
+                        # No version specified, package exists
+                        _LOGGER.info(f"Requirement already satisfied: {requirement}")
+                        continue
+
                 _LOGGER.info(f"Installing requirement: {requirement}")
                 proc = await asyncio.create_subprocess_exec(
                     *pip_cmd,
@@ -999,16 +1249,22 @@ class IntegrationManager:
                     return False
                 _LOGGER.info(f"Successfully installed {requirement}")
                 _LOGGER.debug(f"pip output: {stdout.decode()}")
+                installed_any = True
             except Exception as e:
                 _LOGGER.error(f"Failed to install {requirement}: {e}")
                 return False
 
         # Invalidate import cache so newly installed packages can be imported
-        import importlib
+        if installed_any:
+            import importlib
 
-        importlib.invalidate_caches()
-        _LOGGER.info(
-            f"Invalidated import cache after installing requirements for {domain}"
-        )
+            importlib.invalidate_caches()
+            _LOGGER.info(
+                f"Invalidated import cache after installing requirements for {domain}"
+            )
+        else:
+            _LOGGER.debug(
+                f"All requirements already satisfied for {domain}, no cache invalidation needed"
+            )
 
         return True

@@ -2,13 +2,57 @@
 
 Home Assistant app that filters WebSocket events for dashboard entities.
 
-## Project Structure
+## Repository Structure
 
-This repository contains three implementations:
+This repository contains three implementations in subdirectories:
 
 - **app-dasher/**: Original Python implementation (legacy)
 - **app-dasher-rust/**: New Rust implementation (current)
 - **app-shack/**: HACS Shack for running Home Assistant integrations outside HA
+
+### Important: Working Directories
+
+Each project has its own working directory. **Do not run commands from the repo root.**
+
+| Project | Working Directory | Example Command |
+|---------|------------------|-----------------|
+| app-dasher-rust | `app-dasher-rust/` | `cd app-dasher-rust && cargo build` |
+| app-dasher | `app-dasher/rootfs/app/` | `cd app-dasher/rootfs/app && python3 dasher.py` |
+| app-shack | `app-shack/rootfs/app/` | `cd app-shack/rootfs/app && python3 main.py` |
+
+## Upstream Code Reference
+
+We maintain scripts to fetch code from upstream Home Assistant and HACS repositories for reference and reuse:
+
+### Fetch Scripts
+
+- `app-shack/scripts/fetch_ha_files.py`: Downloads HA core files (const.py, exceptions.py, utils)
+- `app-shack/scripts/fetch_hacs_files.py`: Downloads HACS utility modules (version, validation, queue management)
+
+### When to Use
+
+**Check upstream first when:**
+- Implementing version comparison logic → use HACS's `utils/version.py`
+- Need validation schemas → use HACS's `utils/validate.py`
+- Building download/management systems → use HACS's `utils/queue_manager.py`
+- Working with HA constants → reference HA's `const.py`
+- Handling HA exceptions → reuse HA's `exception.py` classes
+
+### How to Use
+
+```bash
+# Fetch latest HA release files
+cd app-shack/scripts && python3 fetch_ha_files.py
+
+# Fetch latest HACS release files
+cd app-shack/scripts && python3 fetch_hacs_files.py
+
+# Preview without downloading
+python3 fetch_ha_files.py --dry-run
+python3 fetch_hacs_files.py --dry-run
+```
+
+Files are written to `app-shack/rootfs/app/shim/ha_fetched/` and `app-shack/rootfs/app/shim/hacs_fetched/` with necessary import path adjustments.
 
 ## Build Commands
 
@@ -378,15 +422,28 @@ git commit -m "feat: add support for custom filter rules"
 
 ### Shack (app-shack/)
 
-**Add a New Dependency**: Edit `app-shack/rootfs/app/requirements.txt`, add to dependencies, then rebuild Docker image.
+**Working Directory**: All commands must be run from `app-shack/rootfs/app/` (not the repo root).
 
-**Run Locally**: 
+**Local Testing with Virtual Environment**:
 ```bash
+# Create and activate virtual environment in app directory
 cd app-shack/rootfs/app
-python3 -m pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the application
 python3 main.py
+
+# Run tests
+python3 -m pytest tests/ -v
 ```
 
-**Update App Version**: Edit `app-shack/config.yaml`, increment `version`, commit and tag.
+**Important Notes**:
+- The `.venv` directory is local to `app-shack/rootfs/app/` (not at repo root)
+- Always activate the venv before running or testing
+- Many imports fail without the venv due to missing dependencies (fastapi, paho-mqtt, etc.)
 
-**Build Docker Image**: Run `cd app-shack && ./build.sh` (requires Docker).
+**Add a New Dependency**: Edit `app-shack/rootfs/app/requirements.txt`, run `pip install -r requirements.txt` in the venv.

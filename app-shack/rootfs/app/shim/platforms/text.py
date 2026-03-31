@@ -203,11 +203,10 @@ class TextEntity(Entity):
         mqtt.publish(discovery_topic, json.dumps(config), qos=0, retain=True)
 
 
-from dataclasses import dataclass
+from ..frozen_dataclass_compat import FrozenOrThawed
 
 
-@dataclass(frozen=True)
-class TextEntityDescription:
+class TextEntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
     """A class that describes text entities."""
 
     key: str

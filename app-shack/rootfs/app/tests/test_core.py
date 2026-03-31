@@ -234,7 +234,15 @@ class TestEntityIdGeneration:
         (uppercase) instead of 'sensor', causing entity IDs like
         'SENSOR.device_123' instead of 'sensor.device_123'.
         """
-        from shim.const import Platform
+        # Set up import patching first so homeassistant namespace is available
+        from shim.core import HomeAssistant
+        from shim.import_patch import ImportPatcher
+
+        hass = HomeAssistant(config_dir=tmp_path)
+        patcher = ImportPatcher(hass)
+        patcher.patch()
+
+        from homeassistant.const import Platform
         from unittest.mock import MagicMock, AsyncMock
 
         # Create a mock entity with unique_id
@@ -271,7 +279,15 @@ class TestEntityIdGeneration:
     @pytest.mark.asyncio
     async def test_entity_id_generation_lowercase_platform(self, tmp_path):
         """Test that entity IDs are generated with lowercase platform prefixes."""
-        from shim.const import Platform
+        # Set up import patching first so homeassistant namespace is available
+        from shim.core import HomeAssistant
+        from shim.import_patch import ImportPatcher
+
+        hass = HomeAssistant(config_dir=tmp_path)
+        patcher = ImportPatcher(hass)
+        patcher.patch()
+
+        from homeassistant.const import Platform
 
         # Test all common platforms
         test_cases = [
