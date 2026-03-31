@@ -636,19 +636,28 @@ class IntegrationManager:
     async def install_requirements(self, domain: str) -> bool:
         """Install Python requirements for an integration."""
         info = self._integrations.get(domain)
-        if not info or not info.requirements:
+        if not info:
+            _LOGGER.warning(f"Integration {domain} not found in _integrations")
             return True
+
+        if not info.requirements:
+            _LOGGER.debug(f"Integration {domain} has no requirements to install")
+            return True
+
+        _LOGGER.info(f"Integration {domain} has requirements: {info.requirements}")
 
         import subprocess
         import sys
 
         # Use the venv pip to ensure packages are installed in the right environment
         venv_pip = self._shim_dir.parent / ".venv" / "bin" / "pip"
-        if not venv_pip.exists():
+        if venv_pip.exists():
+            pip_cmd = [str(venv_pip)]
+            _LOGGER.debug(f"Using venv pip: {venv_pip}")
+        else:
             # Fallback to current Python's pip
             pip_cmd = [sys.executable, "-m", "pip"]
-        else:
-            pip_cmd = [str(venv_pip)]
+            _LOGGER.debug(f"Using system pip: {pip_cmd}")
 
         for requirement in info.requirements:
             try:
@@ -659,9 +668,18 @@ class IntegrationManager:
                     text=True,
                     check=True,
                 )
-                _LOGGER.debug(f"Installed {requirement}: {result.stdout}")
+                _LOGGER.info(f"Successfully installed {requirement}")
+                _LOGGER.debug(f"pip output: {result.stdout}")
             except subprocess.CalledProcessError as e:
                 _LOGGER.error(f"Failed to install {requirement}: {e.stderr}")
                 return False
+
+        # Invalidate import cache so newly installed packages can be imported
+        import importlib
+
+        importlib.invalidate_caches()
+        _LOGGER.info(
+            f"Invalidated import cache after installing requirements for {domain}"
+        )
 
         return True

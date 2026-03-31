@@ -381,14 +381,26 @@ class ShimManager:
 
     async def _load_enabled_integrations(self) -> None:
         """Load all enabled integrations."""
+        # Install requirements for ALL integrations first (even disabled)
+        # This allows config flows to work for disabled integrations
+        all_integrations = self._integration_manager.get_all_integrations()
+        _LOGGER.info(
+            f"Installing requirements for {len(all_integrations)} integrations"
+        )
+        for info in all_integrations:
+            _LOGGER.info(f"Installing requirements for {info.domain}")
+            requirements_success = await self._integration_manager.install_requirements(
+                info.domain
+            )
+            if not requirements_success:
+                _LOGGER.error(f"Failed to install requirements for {info.domain}")
+
+        # Now load only the enabled integrations
         enabled = self._integration_manager.get_enabled_integrations()
+        _LOGGER.info(f"Loading {len(enabled)} enabled integrations")
 
         for info in enabled:
             _LOGGER.info(f"Loading enabled integration: {info.domain}")
-
-            # Install requirements for fresh containers with mounted volumes
-            _LOGGER.debug(f"Installing requirements for {info.domain}")
-            await self._integration_manager.install_requirements(info.domain)
 
             # Get config entries for this integration
             entries = self._hass.config_entries.async_entries(info.domain)
