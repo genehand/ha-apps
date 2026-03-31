@@ -4,12 +4,13 @@ Provides classes for config flow handling.
 """
 
 from enum import Enum
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, Callable
 from dataclasses import dataclass
 from contextvars import ContextVar
 
 from .exceptions import HomeAssistantError
 from .core import ConfigEntry
+from .core import callback
 
 # Context variable to track the current config entry being set up
 current_entry: ContextVar[Optional[ConfigEntry]] = ContextVar(
@@ -87,6 +88,41 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         self.context = {}
         self._errors = {}
         self.cur_step_id = "user"  # Track current step for multi-step flows
+        self._show_advanced_options = False  # Advanced options display setting
+
+    def __getattr__(self, name: str) -> any:
+        """Provide default values for attributes that may not be set.
+
+        This handles subclasses that don't call super().__init__().
+        """
+        if name == "context":
+            # Initialize context on first access if not set
+            self.context = {}
+            return self.context
+        if name == "_show_advanced_options":
+            self._show_advanced_options = False
+            return self._show_advanced_options
+        raise AttributeError(
+            f"'{type(self).__name__}' object has no attribute '{name}'"
+        )
+
+    @property
+    def show_advanced_options(self) -> bool:
+        """Return if advanced options should be shown.
+
+        Checks context first, then falls back to internal flag.
+        """
+        # Check context for advanced mode (set by UI)
+        # Handle case where __init__ wasn't called (subclass didn't call super())
+        context = getattr(self, "context", {})
+        if context.get("show_advanced_options"):
+            return True
+        return getattr(self, "_show_advanced_options", False)
+
+    @show_advanced_options.setter
+    def show_advanced_options(self, value: bool) -> None:
+        """Set advanced options display setting."""
+        self._show_advanced_options = value
 
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None):
         """Handle the initial step."""
@@ -111,6 +147,21 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
             "step_id": step_id,
             "data_schema": data_schema,
             "errors": errors or {},
+            "description_placeholders": description_placeholders or {},
+        }
+
+    def async_show_menu(
+        self,
+        step_id: str,
+        menu_options: list,
+        description_placeholders: Optional[Dict[str, str]] = None,
+    ):
+        """Return a menu selection step definition."""
+        self.cur_step_id = step_id
+        return {
+            "type": "menu",
+            "step_id": step_id,
+            "menu_options": menu_options,
             "description_placeholders": description_placeholders or {},
         }
 
@@ -197,6 +248,17 @@ class OptionsFlow:
         """Initialize options flow."""
         self.config_entry = config_entry
         self.hass = None
+        self._show_advanced_options = False  # Advanced options display setting
+
+    @property
+    def show_advanced_options(self) -> bool:
+        """Return if advanced options should be shown."""
+        return self._show_advanced_options
+
+    @show_advanced_options.setter
+    def show_advanced_options(self, value: bool) -> None:
+        """Set advanced options display setting."""
+        self._show_advanced_options = value
 
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None):
         """Manage the options."""

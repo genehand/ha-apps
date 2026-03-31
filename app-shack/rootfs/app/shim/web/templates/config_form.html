@@ -190,6 +190,7 @@
                             id="{{ field.name }}" 
                             name="{{ field.name }}"
                             {% if field.required %}required{% endif %}
+                            {% if field.multiple %}multiple{% endif %}
                         >
                             {% for option in field.options %}
                             <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>
@@ -204,6 +205,18 @@
                             rows="4"
                             {% if field.required %}required{% endif %}
                         >{{ field.default or '' }}</textarea>
+                        {% elif field.type == 'checkbox' %}
+                        <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                            <input 
+                                type="checkbox" 
+                                id="{{ field.name }}" 
+                                name="{{ field.name }}"
+                                value="true"
+                                {% if field.default %}checked{% endif %}
+                                style="width: auto; margin-right: 10px;"
+                            >
+                            <span>Enable</span>
+                        </label>
                         {% else %}
                         <input 
                             type="{{ field.type or 'text' }}" 

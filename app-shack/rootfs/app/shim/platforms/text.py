@@ -16,6 +16,8 @@ from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
+DOMAIN = "text"
+
 
 class TextMode(StrEnum):
     """Modes for the text entity."""

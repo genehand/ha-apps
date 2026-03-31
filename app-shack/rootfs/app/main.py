@@ -25,17 +25,20 @@ CONFIG_DIR = Path("/data") if IS_ADDON else Path("./data")
 
 
 def setup_logging(log_level: str) -> logging.Logger:
-    """Configure colored logging."""
-    logger = logging.getLogger("shack")
+    """Configure colored logging for root logger to capture all output."""
+    # Get root logger to capture all logging (including shim.*)
+    root_logger = logging.getLogger()
 
     # Clear any existing handlers first to prevent duplicates
-    logger.handlers.clear()
+    root_logger.handlers.clear()
 
-    # Prevent propagation to root logger (which might have default handlers)
-    logger.propagate = False
+    # Remove default handlers that might interfere
+    root_logger.handlers = []
 
-    logger.setLevel(getattr(logging, log_level.upper()))
+    # Set level on root logger
+    root_logger.setLevel(getattr(logging, log_level.upper()))
 
+    # Create handler with colored output
     handler = colorlog.StreamHandler(sys.stdout)
     handler.setFormatter(
         colorlog.ColoredFormatter(
@@ -50,9 +53,13 @@ def setup_logging(log_level: str) -> logging.Logger:
             },
         )
     )
-    logger.addHandler(handler)
+    root_logger.addHandler(handler)
 
-    return logger
+    # Also configure the shack logger for backwards compatibility
+    shack_logger = logging.getLogger("shack")
+    shack_logger.setLevel(getattr(logging, log_level.upper()))
+
+    return shack_logger
 
 
 async def main():

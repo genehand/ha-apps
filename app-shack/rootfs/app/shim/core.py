@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Generic
 from datetime import datetime
 import json
 from pathlib import Path
+from enum import Enum
 
 from .storage import Storage
 from .logging import get_logger
@@ -22,6 +23,14 @@ from .logging import get_logger
 _LOGGER = get_logger(__name__)
 
 T = TypeVar("T")
+
+
+class SupportsResponse(Enum):
+    """Enum for service call response support."""
+
+    NONE = "none"
+    OPTIONAL = "optional"
+    ONLY = "only"
 
 
 def callback(func: Callable) -> Callable:
@@ -45,6 +54,12 @@ class ConfigEntry:
     options: dict = field(default_factory=dict)
     pref_disable_new_entities: bool = False
     source: str = "user"
+    runtime_data: Any = None
+    # Additional fields for compatibility with newer HA integrations
+    minor_version: int = 1
+    discovery_keys: Any = field(default_factory=dict)
+    subentries_data: tuple = field(default_factory=tuple)
+    _unique_id: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self):
         """Initialize callbacks list after creation."""
@@ -52,8 +67,15 @@ class ConfigEntry:
 
     @property
     def unique_id(self) -> Optional[str]:
-        """Return unique ID if set in data."""
+        """Return unique ID from field or data."""
+        if self._unique_id is not None:
+            return self._unique_id
         return self.data.get("unique_id")
+
+    @unique_id.setter
+    def unique_id(self, value: Optional[str]) -> None:
+        """Set unique ID."""
+        self._unique_id = value
 
     def async_on_unload(self, callback: Callable) -> Callable:
         """Register a callback to be called when the entry is unloaded.
@@ -225,6 +247,7 @@ class ServiceRegistry:
         domain: str,
         service: str,
         service_func: Callable,
+        supports_response: Optional[Any] = None,
     ) -> None:
         """Register a service."""
         if domain not in self._services:
@@ -723,3 +746,21 @@ class MockEventBus:
     def fire(self, event_type: str, event_data: Optional[dict] = None) -> None:
         """Fire an event (synchronous version)."""
         self._hass.async_fire(event_type, event_data)
+
+    def async_listen_once(self, event_type: str, listener: Callable) -> Callable:
+        """Listen for an event once."""
+
+        def wrapped_listener(event_data):
+            remove_listener()
+            return listener(event_data)
+
+        if event_type not in self._hass._event_listeners:
+            self._hass._event_listeners[event_type] = []
+
+        self._hass._event_listeners[event_type].append(wrapped_listener)
+
+        def remove_listener():
+            if wrapped_listener in self._hass._event_listeners.get(event_type, []):
+                self._hass._event_listeners[event_type].remove(wrapped_listener)
+
+        return remove_listener

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from paho.mqtt.client import Client, MQTTMessage
 
-from .logging import get_logger, setup_logging
+from .logging import get_logger
 from .core import HomeAssistant, ConfigEntry
 from .storage import Storage
 from .import_patch import setup_import_patching
@@ -33,9 +33,6 @@ class ShimManager:
         self._config_dir = Path(config_dir)
         self._mqtt_client = mqtt_client
         self._mqtt_base_topic = mqtt_base_topic
-
-        # Setup logging
-        setup_logging()
 
         # Initialize core HA shim
         _LOGGER.info("Initializing Home Assistant shim")

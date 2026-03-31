@@ -3,29 +3,32 @@
 Bridges SwitchEntity to MQTT switch discovery.
 """
 
-from typing import Any, Optional
 from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any, Optional
 
 from ..entity import (
     ToggleEntity,
+    EntityDescription,
     format_device_identifiers,
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
 
+DOMAIN = "switch"
 
-@dataclass
-class SwitchEntityDescription:
+
+class SwitchDeviceClass(StrEnum):
+    """Device class for switches."""
+
+    OUTLET = "outlet"
+    SWITCH = "switch"
+
+
+@dataclass(frozen=True)
+class SwitchEntityDescription(EntityDescription):
     """A class that describes switch entities."""
-
-    key: str
-    name: Optional[str] = None
-    icon: Optional[str] = None
-    entity_category: Optional[str] = None
-    device_class: Optional[str] = None
-    entity_registry_enabled_default: bool = True
-    entity_registry_visible_default: bool = True
 
 
 class SwitchEntity(ToggleEntity):

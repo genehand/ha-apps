@@ -16,6 +16,8 @@ from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
+DOMAIN = "climate"
+
 # HVAC modes
 HVAC_MODE_OFF = "off"
 HVAC_MODE_HEAT = "heat"

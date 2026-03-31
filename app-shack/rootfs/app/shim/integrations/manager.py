@@ -102,11 +102,13 @@ class IntegrationManager:
             importlib.invalidate_caches()
 
         self._hacs_repos: Dict[str, dict] = {}  # domain -> repo info
+        self._custom_repos: Dict[str, dict] = {}  # domain -> custom repo info
         self._integrations: Dict[str, IntegrationInfo] = {}  # domain -> info
         self._hacs_etag: Optional[str] = None  # ETag for CDN caching
         self._hacs_last_fetched: Optional[datetime] = None  # Last fetch time
 
         self._load_integrations()
+        self._load_custom_repos()
 
     def _load_integrations(self) -> None:
         """Load installed integrations from storage."""
@@ -118,6 +120,124 @@ class IntegrationManager:
         """Save integrations to storage."""
         data = {domain: info.to_dict() for domain, info in self._integrations.items()}
         self._storage.save_integrations(data)
+
+    def _load_custom_repos(self) -> None:
+        """Load custom repositories from storage."""
+        data = self._storage.load_custom_repos()
+        for domain, repo_data in data.items():
+            self._custom_repos[domain] = repo_data
+
+    def _save_custom_repos(self) -> None:
+        """Save custom repositories to storage."""
+        self._storage.save_custom_repos(self._custom_repos)
+
+    async def add_custom_repository(self, repo_url: str) -> Tuple[bool, str]:
+        """Add a custom repository by URL.
+
+        Args:
+            repo_url: GitHub repository URL (e.g., https://github.com/owner/repo)
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        # Validate URL format
+        if "github.com" not in repo_url:
+            return False, "Only GitHub repositories are supported"
+
+        match = re.match(r"https?://github\.com/([^/]+)/([^/]+)", repo_url)
+        if not match:
+            return False, "Invalid GitHub URL format"
+
+        owner, repo = match.groups()
+
+        # Check if already exists
+        for domain, existing in self._custom_repos.items():
+            if existing.get("repository_url") == repo_url:
+                return False, f"Repository already added as {domain}"
+
+        try:
+            # Fetch repository info to validate it
+            async with aiohttp.ClientSession() as session:
+                repo_info = await self._fetch_repo_info(session, repo_url)
+
+            if not repo_info:
+                return (
+                    False,
+                    "Could not find a valid Home Assistant integration in this repository",
+                )
+
+            domain = repo_info.get("domain")
+            if not domain:
+                return False, "Could not determine integration domain from manifest"
+
+            # Check if domain conflicts with HACS default
+            if domain in self._hacs_repos:
+                return (
+                    False,
+                    f"Integration {domain} is already available in HACS default repositories",
+                )
+
+            # Check if domain conflicts with existing custom repo
+            if domain in self._custom_repos:
+                return False, f"Custom repository for {domain} already exists"
+
+            # Store the custom repo
+            self._custom_repos[domain] = {
+                "domain": domain,
+                "name": repo_info.get("name", domain),
+                "description": repo_info.get("description", ""),
+                "repository_url": repo_url,
+                "full_name": f"{owner}/{repo}",
+                "added_at": datetime.now().isoformat(),
+                "manifest": repo_info.get("manifest", {}),
+            }
+
+            self._save_custom_repos()
+            _LOGGER.info(f"Added custom repository {domain} from {repo_url}")
+            return True, f"Successfully added {domain}"
+
+        except Exception as e:
+            _LOGGER.error(f"Error adding custom repository: {e}")
+            return False, f"Error adding repository: {str(e)}"
+
+    async def remove_custom_repository(self, domain: str) -> Tuple[bool, str]:
+        """Remove a custom repository.
+
+        Args:
+            domain: Integration domain to remove
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        if domain not in self._custom_repos:
+            return False, f"Custom repository {domain} not found"
+
+        # Check if integration is installed
+        if domain in self._integrations:
+            return (
+                False,
+                f"Please remove the {domain} integration first before removing the repository",
+            )
+
+        del self._custom_repos[domain]
+        self._save_custom_repos()
+        _LOGGER.info(f"Removed custom repository {domain}")
+        return True, f"Successfully removed {domain}"
+
+    def get_custom_repositories(self) -> List[dict]:
+        """Get all custom repositories."""
+        return [
+            {
+                "domain": domain,
+                "name": info.get("name", domain),
+                "description": info.get("description", ""),
+                "repository_url": info.get("repository_url", ""),
+                "full_name": info.get("full_name", ""),
+                "added_at": info.get("added_at"),
+                "installed": domain in self._integrations,
+            }
+            for domain, info in self._custom_repos.items()
+        ]
 
     async def fetch_hacs_repositories(self, force: bool = False) -> Dict[str, dict]:
         """Fetch HACS default repository list from CDN.
@@ -230,44 +350,97 @@ class IntegrationManager:
         Uses cached CDN data which already contains manifest details.
         Only fetches from GitHub if additional info is needed.
         """
-        if domain not in self._hacs_repos:
-            return None
+        # Check HACS default repos first
+        if domain in self._hacs_repos:
+            repo_info = self._hacs_repos[domain].copy()
 
-        repo_info = self._hacs_repos[domain].copy()
+            # Add additional computed fields
+            manifest = repo_info.get("manifest", {})
+            repo_info["config_flow"] = manifest.get("config_flow", False)
+            repo_info["requirements"] = manifest.get("requirements", [])
+            repo_info["dependencies"] = manifest.get("dependencies", [])
+            repo_info["documentation"] = manifest.get("documentation", "")
+            repo_info["iot_class"] = manifest.get("iot_class", "")
 
-        # Add additional computed fields
-        manifest = repo_info.get("manifest", {})
-        repo_info["config_flow"] = manifest.get("config_flow", False)
-        repo_info["requirements"] = manifest.get("requirements", [])
-        repo_info["dependencies"] = manifest.get("dependencies", [])
-        repo_info["documentation"] = manifest.get("documentation", "")
-        repo_info["iot_class"] = manifest.get("iot_class", "")
+            return repo_info
 
-        return repo_info
+        # Check custom repos
+        if domain in self._custom_repos:
+            repo_info = self._custom_repos[domain].copy()
+
+            # Add additional computed fields
+            manifest = repo_info.get("manifest", {})
+            repo_info["config_flow"] = manifest.get("config_flow", False)
+            repo_info["requirements"] = manifest.get("requirements", [])
+            repo_info["dependencies"] = manifest.get("dependencies", [])
+            repo_info["documentation"] = manifest.get("documentation", "")
+            repo_info["iot_class"] = manifest.get("iot_class", "")
+
+            return repo_info
+
+        return None
 
     async def _fetch_repo_info(
         self, session: aiohttp.ClientSession, repo_url: str
     ) -> Optional[dict]:
-        """Fetch repository information including manifest."""
-        # Convert GitHub URL to raw content URL
-        if "github.com" in repo_url:
-            # Extract owner/repo
-            match = re.match(r"https?://github\.com/([^/]+)/([^/]+)", repo_url)
-            if match:
-                owner, repo = match.groups()
-                # Try to fetch manifest from main branch
-                manifest_urls = [
-                    f"https://raw.githubusercontent.com/{owner}/{repo}/main/custom_components/{repo.lower().replace('-', '_')}/manifest.json",
-                    f"https://raw.githubusercontent.com/{owner}/{repo}/master/custom_components/{repo.lower().replace('-', '_')}/manifest.json",
-                ]
+        """Fetch repository information including manifest.
 
-                for manifest_url in manifest_urls:
-                    try:
-                        async with session.get(
-                            manifest_url, timeout=aiohttp.ClientTimeout(total=5)
-                        ) as response:
-                            if response.status == 200:
-                                manifest = await response.json()
+        Follows HACS conventions:
+        1. Check for hacs.json for configuration hints
+        2. Look for custom_components/<domain>/manifest.json
+        3. Support content_in_root for single-file integrations
+        """
+        if "github.com" not in repo_url:
+            return None
+
+        match = re.match(r"https?://github\.com/([^/]+)/([^/]+)", repo_url)
+        if not match:
+            return None
+
+        owner, repo = match.groups()
+        branches = ["main", "master"]
+
+        # First, check for hacs.json to get repository configuration
+        hacs_config = await self._fetch_hacs_json(session, owner, repo, branches)
+        content_in_root = (
+            hacs_config.get("content_in_root", False) if hacs_config else False
+        )
+
+        # Try to get repository tree to find the actual directory structure
+        for branch in branches:
+            try:
+                tree = await self._fetch_repo_tree(session, owner, repo, branch)
+                if not tree:
+                    continue
+
+                if content_in_root:
+                    # Manifest is in root directory
+                    manifest = await self._fetch_manifest_from_path(
+                        session, owner, repo, branch, "manifest.json"
+                    )
+                    if manifest:
+                        return {
+                            "domain": manifest.get("domain"),
+                            "name": manifest.get("name", repo),
+                            "version": manifest.get("version", "unknown"),
+                            "description": manifest.get("documentation", ""),
+                            "repository_url": repo_url,
+                            "manifest": manifest,
+                        }
+                else:
+                    # Look for custom_components structure
+                    custom_components_dir = self._find_custom_components_dir(tree)
+                    if custom_components_dir:
+                        # Get the first (and usually only) subdirectory
+                        integration_dir = self._get_first_subdirectory(
+                            tree, custom_components_dir
+                        )
+                        if integration_dir:
+                            manifest_path = f"{custom_components_dir}/{integration_dir}/manifest.json"
+                            manifest = await self._fetch_manifest_from_path(
+                                session, owner, repo, branch, manifest_path
+                            )
+                            if manifest:
                                 return {
                                     "domain": manifest.get("domain"),
                                     "name": manifest.get("name", repo),
@@ -276,9 +449,116 @@ class IntegrationManager:
                                     "repository_url": repo_url,
                                     "manifest": manifest,
                                 }
-                    except Exception:
-                        continue
 
+                    # Fallback: try to find manifest.json anywhere in custom_components
+                    manifest_path = self._find_manifest_in_custom_components(tree)
+                    if manifest_path:
+                        manifest = await self._fetch_manifest_from_path(
+                            session, owner, repo, branch, manifest_path
+                        )
+                        if manifest:
+                            return {
+                                "domain": manifest.get("domain"),
+                                "name": manifest.get("name", repo),
+                                "version": manifest.get("version", "unknown"),
+                                "description": manifest.get("documentation", ""),
+                                "repository_url": repo_url,
+                                "manifest": manifest,
+                            }
+
+            except Exception as e:
+                _LOGGER.debug(
+                    f"Error fetching repo info for {owner}/{repo} on {branch}: {e}"
+                )
+                continue
+
+        return None
+
+    async def _fetch_hacs_json(
+        self, session: aiohttp.ClientSession, owner: str, repo: str, branches: List[str]
+    ) -> Optional[dict]:
+        """Fetch hacs.json configuration file."""
+        for branch in branches:
+            url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/hacs.json"
+            try:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
+                    if response.status == 200:
+                        # Use content_type=None because raw.githubusercontent.com returns text/plain
+                        return await response.json(content_type=None)
+            except Exception:
+                continue
+        return None
+
+    async def _fetch_repo_tree(
+        self, session: aiohttp.ClientSession, owner: str, repo: str, branch: str
+    ) -> List[dict]:
+        """Fetch repository tree using GitHub API."""
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+        try:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("tree", [])
+        except Exception:
+            pass
+        return []
+
+    def _find_custom_components_dir(self, tree: List[dict]) -> Optional[str]:
+        """Find the custom_components directory in the tree."""
+        for item in tree:
+            path = item.get("path", "")
+            if item.get("type") == "tree" and path == "custom_components":
+                return path
+        return None
+
+    def _get_first_subdirectory(
+        self, tree: List[dict], parent_dir: str
+    ) -> Optional[str]:
+        """Get the first subdirectory within a parent directory."""
+        prefix = f"{parent_dir}/"
+        for item in tree:
+            path = item.get("path", "")
+            if (
+                item.get("type") == "tree"
+                and path.startswith(prefix)
+                and path.count("/") == prefix.count("/")
+            ):
+                return path[len(prefix) :]
+        return None
+
+    def _find_manifest_in_custom_components(self, tree: List[dict]) -> Optional[str]:
+        """Find manifest.json path within custom_components."""
+        for item in tree:
+            path = item.get("path", "")
+            if path.startswith("custom_components/") and path.endswith(
+                "/manifest.json"
+            ):
+                return path
+        return None
+
+    async def _fetch_manifest_from_path(
+        self,
+        session: aiohttp.ClientSession,
+        owner: str,
+        repo: str,
+        branch: str,
+        path: str,
+    ) -> Optional[dict]:
+        """Fetch manifest.json from a specific path."""
+        url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+        try:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    # Use content_type=None because raw.githubusercontent.com returns text/plain
+                    return await response.json(content_type=None)
+        except Exception:
+            pass
         return None
 
     async def check_for_updates(self) -> List[IntegrationInfo]:
@@ -366,13 +646,35 @@ class IntegrationManager:
     ) -> bool:
         """Install or update an integration."""
         if source == "hacs_default":
-            if domain not in self._hacs_repos:
+            if domain in self._hacs_repos:
+                repo_info = self._hacs_repos[domain]
+                repo_url = repo_info["repository_url"]
+            elif domain in self._custom_repos:
+                # Check custom repos if not in HACS defaults
+                _LOGGER.info(f"Found {domain} in custom repositories")
+                repo_info = self._custom_repos[domain]
+                repo_url = repo_info["repository_url"]
+                source = "custom"
+            else:
                 _LOGGER.error(
-                    f"Integration {domain} not found in HACS default repositories"
+                    f"Integration {domain} not found in HACS default or custom repositories"
                 )
                 return False
-            repo_info = self._hacs_repos[domain]
-            repo_url = repo_info["repository_url"]
+        elif source == "custom":
+            # Check custom repositories first
+            if domain in self._custom_repos:
+                repo_info = self._custom_repos[domain]
+                repo_url = repo_info["repository_url"]
+            elif custom_url:
+                # Direct URL provided
+                repo_url = custom_url
+                repo_info = await self._fetch_repo_info_custom(repo_url)
+                if not repo_info:
+                    _LOGGER.error(f"Failed to fetch info for {repo_url}")
+                    return False
+            else:
+                _LOGGER.error(f"Custom repository {domain} not found")
+                return False
         else:
             repo_url = custom_url
             repo_info = await self._fetch_repo_info_custom(repo_url)
@@ -569,6 +871,7 @@ class IntegrationManager:
                 "name": info.get("name", domain),
                 "description": info.get("description", ""),
                 "installed": domain in self._integrations,
+                "source": "hacs_default",
                 # Rich metadata from CDN
                 "full_name": info.get("full_name", ""),
                 "repository_url": info.get("repository_url", ""),
@@ -578,6 +881,25 @@ class IntegrationManager:
                 "last_version": info.get("last_version"),
                 "last_commit": info.get("last_commit"),
                 "last_updated": info.get("last_updated"),
+            }
+            integrations.append(integration)
+
+        # Add custom repositories
+        for domain, info in self._custom_repos.items():
+            integration = {
+                "domain": domain,
+                "name": info.get("name", domain),
+                "description": info.get("description", ""),
+                "installed": domain in self._integrations,
+                "source": "custom",
+                "full_name": info.get("full_name", ""),
+                "repository_url": info.get("repository_url", ""),
+                "downloads": 0,
+                "stars": 0,
+                "topics": [],
+                "last_version": info.get("manifest", {}).get("version"),
+                "last_commit": None,
+                "last_updated": None,
             }
             integrations.append(integration)
 

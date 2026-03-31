@@ -418,20 +418,39 @@ class IntegrationLoader:
             # Get the current step_id (defaults to 'user' for initial step)
             step_id = getattr(flow, "cur_step_id", "user")
 
-            # Get the step method dynamically
-            step_method_name = f"async_step_{step_id}"
-            step_method = getattr(flow, step_method_name, None)
+            # Handle menu selection - if next_step is present, call that step method
+            if user_input and "next_step" in user_input:
+                step_id = user_input["next_step"]
+                # Update the flow's current step
+                flow.cur_step_id = step_id
+                # Call the next step method with None (first call to show form)
+                step_method_name = f"async_step_{step_id}"
+                step_method = getattr(flow, step_method_name, None)
 
-            if step_method is None:
-                _LOGGER.error(f"Step method {step_method_name} not found for {domain}")
-                return None
+                if step_method is None:
+                    _LOGGER.error(
+                        f"Step method {step_method_name} not found for {domain}"
+                    )
+                    return None
 
-            # Call the appropriate step method
-            # If user_input is empty, pass None to show the form
-            if not user_input:
                 result = await step_method(None)
             else:
-                result = await step_method(user_input)
+                # Get the step method dynamically
+                step_method_name = f"async_step_{step_id}"
+                step_method = getattr(flow, step_method_name, None)
+
+                if step_method is None:
+                    _LOGGER.error(
+                        f"Step method {step_method_name} not found for {domain}"
+                    )
+                    return None
+
+                # Call the appropriate step method
+                # If user_input is empty, pass None to show the form
+                if not user_input:
+                    result = await step_method(None)
+                else:
+                    result = await step_method(user_input)
 
             result["flow_id"] = flow_id
             return result

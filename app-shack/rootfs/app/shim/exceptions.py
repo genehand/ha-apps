@@ -10,6 +10,12 @@ class HomeAssistantError(Exception):
     pass
 
 
+class ConfigEntryError(HomeAssistantError):
+    """Error to indicate that config entry is in error state."""
+
+    pass
+
+
 class ConfigEntryNotReady(HomeAssistantError):
     """Error to indicate that config entry is not ready."""
 

@@ -26,6 +26,7 @@ class Storage:
         self._devices_file = self._shim_dir / "devices.json"
         self._entities_file = self._shim_dir / "entities.json"
         self._integrations_file = self._shim_dir / "integrations.json"
+        self._custom_repos_file = self._shim_dir / "custom_repos.json"
 
         _LOGGER.debug(f"Storage initialized at {self._shim_dir}")
 
@@ -217,6 +218,16 @@ class Storage:
         manifest = integration_dir / "manifest.json"
         return manifest.exists()
 
+    # Custom Repositories
+    def load_custom_repos(self) -> Dict[str, dict]:
+        """Load custom repositories from storage."""
+        return self._load_json(self._custom_repos_file)
+
+    def save_custom_repos(self, repos: Dict[str, dict]) -> None:
+        """Save custom repositories to storage."""
+        self._save_json(self._custom_repos_file, repos)
+        _LOGGER.debug(f"Saved {len(repos)} custom repositories")
+
     # Clear all data (for testing/reset)
     def clear_all(self) -> None:
         """Clear all stored data."""
@@ -225,6 +236,7 @@ class Storage:
             self._devices_file,
             self._entities_file,
             self._integrations_file,
+            self._custom_repos_file,
         ]:
             if filepath.exists():
                 filepath.unlink()

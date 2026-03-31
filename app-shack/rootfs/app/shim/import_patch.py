@@ -5,6 +5,8 @@ Patches sys.modules to redirect homeassistant imports to the shim.
 
 import sys
 import types
+from dataclasses import dataclass, field, make_dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -62,14 +64,102 @@ class ImportPatcher:
 
         # Create device_registry stub
         device_registry = types.ModuleType("homeassistant.helpers.device_registry")
-        device_registry.async_get = lambda *args, **kwargs: None
-        device_registry.DeviceEntry = type("DeviceEntry", (), {})
-        device_registry.DeviceRegistry = type("DeviceRegistry", (), {})
+
+        # Create DeviceEntry dataclass
+        @dataclass
+        class DeviceEntry:
+            """Device entry stub."""
+
+            id: str
+            config_entries: set
+            connections: set
+            identifiers: set
+            manufacturer: Optional[str] = None
+            model: Optional[str] = None
+            name: Optional[str] = None
+            sw_version: Optional[str] = None
+            hw_version: Optional[str] = None
+            entry_type: Optional[str] = None
+            via_device: Optional[tuple] = None
+            configuration_url: Optional[str] = None
+            suggested_area: Optional[str] = None
+
+        device_registry.DeviceEntry = DeviceEntry
+
+        # Create a DeviceRegistry class with async_get_or_create method
+        class DeviceRegistry:
+            """Device registry stub."""
+
+            def __init__(self, hass):
+                self.hass = hass
+                self._devices = {}
+
+            def async_get_or_create(
+                self,
+                *,
+                config_entry_id=None,
+                configuration_url=None,
+                connections=None,
+                default_manufacturer=None,
+                default_model=None,
+                default_name=None,
+                identifiers=None,
+                manufacturer=None,
+                model=None,
+                name=None,
+                suggested_area=None,
+                sw_version=None,
+                hw_version=None,
+                entry_type=None,
+                via_device=None,
+                **kwargs,
+            ):
+                """Get or create a device entry."""
+                # Create a unique device id from identifiers
+                device_id = None
+                if identifiers:
+                    device_id = "_".join(str(i) for i in next(iter(identifiers)))
+                if not device_id:
+                    device_id = config_entry_id or "mock_device"
+
+                device_entry = DeviceEntry(
+                    id=device_id,
+                    config_entries={config_entry_id} if config_entry_id else set(),
+                    connections=connections or set(),
+                    identifiers=identifiers or set(),
+                    manufacturer=manufacturer or default_manufacturer,
+                    model=model or default_model,
+                    name=name or default_name,
+                    sw_version=sw_version,
+                    hw_version=hw_version,
+                    entry_type=entry_type,
+                    via_device=via_device,
+                    configuration_url=configuration_url,
+                    suggested_area=suggested_area,
+                )
+                self._devices[device_id] = device_entry
+                return device_entry
+
+            def async_get(self, device_id):
+                """Get a device by id."""
+                return self._devices.get(device_id)
+
+        # Replace the simple DeviceRegistry type with our class
+        device_registry.DeviceRegistry = DeviceRegistry
+
+        # Create a function to get or create the registry instance
+        def async_get(hass):
+            """Get the device registry for the Home Assistant instance."""
+            # Store registry in hass.data
+            if not hasattr(hass, "data"):
+                hass.data = {}
+            if "device_registry" not in hass.data:
+                hass.data["device_registry"] = DeviceRegistry(hass)
+            return hass.data["device_registry"]
+
+        device_registry.async_get = async_get
 
         # DeviceInfo dataclass for integrations
-        from dataclasses import dataclass, field
-        from typing import Optional, List
-
         @dataclass
         class DeviceInfo:
             """Device info for entities."""
@@ -85,11 +175,20 @@ class ImportPatcher:
             entry_type: Optional[str] = None
             configuration_url: Optional[str] = None
             suggested_area: Optional[str] = None
+            serial_number: Optional[str] = None
 
         device_registry.DeviceInfo = DeviceInfo
         device_registry.format_mac = lambda x: x
         device_registry.async_entries_for_config_entry = lambda *args, **kwargs: []
         device_registry.async_get_device = lambda *args, **kwargs: None
+
+        # Add DeviceEntryType enum for SERVICE entry type
+        class DeviceEntryType(Enum):
+            """Device entry type."""
+
+            SERVICE = "service"
+
+        device_registry.DeviceEntryType = DeviceEntryType
 
         homeassistant.helpers.device_registry = device_registry
         sys.modules["homeassistant.helpers.device_registry"] = device_registry
@@ -159,6 +258,202 @@ class ImportPatcher:
 
         homeassistant.helpers.entity_platform = entity_platform
         sys.modules["homeassistant.helpers.entity_platform"] = entity_platform
+
+        # Create aiohttp_client stub module
+        aiohttp_client = types.ModuleType("homeassistant.helpers.aiohttp_client")
+        import aiohttp
+
+        _client_session_cache = {}
+
+        def async_get_clientsession(hass, verify_ssl=True):
+            """Get aiohttp ClientSession with caching."""
+            key = (id(hass), verify_ssl)
+            if key not in _client_session_cache:
+                connector = aiohttp.TCPConnector(verify_ssl=verify_ssl)
+                session = aiohttp.ClientSession(connector=connector)
+                _client_session_cache[key] = session
+            return _client_session_cache[key]
+
+        aiohttp_client.async_get_clientsession = async_get_clientsession
+        homeassistant.helpers.aiohttp_client = aiohttp_client
+        sys.modules["homeassistant.helpers.aiohttp_client"] = aiohttp_client
+
+        # Create issue_registry stub module
+        issue_registry = types.ModuleType("homeassistant.helpers.issue_registry")
+        issue_registry.async_create_issue = lambda *args, **kwargs: None
+        issue_registry.async_delete_issue = lambda *args, **kwargs: None
+
+        # Add IssueSeverity enum
+        class IssueSeverity(Enum):
+            """Issue severity levels."""
+
+            CRITICAL = "critical"
+            ERROR = "error"
+            WARNING = "warning"
+
+        issue_registry.IssueSeverity = IssueSeverity
+        homeassistant.helpers.issue_registry = issue_registry
+        sys.modules["homeassistant.helpers.issue_registry"] = issue_registry
+
+        # Create entity_registry stub module
+        entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+        entity_registry.async_get = lambda *args, **kwargs: None
+        entity_registry.RegistryEntry = type("RegistryEntry", (), {"entity_id": None})
+        homeassistant.helpers.entity_registry = entity_registry
+        sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
+
+        # Create event stub module
+        event = types.ModuleType("homeassistant.helpers.event")
+
+        def async_track_point_in_time(hass, action, point_in_time):
+            """Track a specific point in time."""
+            return lambda: None
+
+        def async_track_state_change_event(hass, entity_ids, action):
+            """Track state change events."""
+            return lambda: None
+
+        event.async_track_point_in_time = async_track_point_in_time
+        event.async_track_state_change_event = async_track_state_change_event
+        event.EventStateChangedData = type("EventStateChangedData", (), {})
+        homeassistant.helpers.event = event
+        sys.modules["homeassistant.helpers.event"] = event
+
+        # Create service_info stub module with submodules
+        service_info = types.ModuleType("homeassistant.helpers.service_info")
+        dhcp = types.ModuleType("homeassistant.helpers.service_info.dhcp")
+        dhcp.DhcpServiceInfo = type("DhcpServiceInfo", (), {})
+        mqtt = types.ModuleType("homeassistant.helpers.service_info.mqtt")
+        mqtt.MqttServiceInfo = type("MqttServiceInfo", (), {})
+        service_info.dhcp = dhcp
+        service_info.mqtt = mqtt
+        homeassistant.helpers.service_info = service_info
+        sys.modules["homeassistant.helpers.service_info"] = service_info
+        sys.modules["homeassistant.helpers.service_info.dhcp"] = dhcp
+        sys.modules["homeassistant.helpers.service_info.mqtt"] = mqtt
+
+        # Create network stub module
+        network = types.ModuleType("homeassistant.helpers.network")
+
+        def get_url(hass, *, prefer_external=False, allow_cloud=True):
+            """Get the URL of the instance."""
+            return "http://localhost:8123"
+
+        network.get_url = get_url
+        homeassistant.helpers.network = network
+        sys.modules["homeassistant.helpers.network"] = network
+
+        # Create storage stub module
+        storage = types.ModuleType("homeassistant.helpers.storage")
+
+        class Store:
+            """Storage implementation."""
+
+            def __init__(self, hass, version, key):
+                self._data = {}
+
+            async def async_load(self):
+                return self._data
+
+            async def async_save(self, data):
+                self._data = data
+
+            def __class_getitem__(cls, item):
+                """Make Store subscriptable for type hints like Store[SomeType]."""
+                return cls
+
+        storage.Store = Store
+        homeassistant.helpers.storage = storage
+        sys.modules["homeassistant.helpers.storage"] = storage
+
+        # Create homeassistant.util package and submodules
+        homeassistant.util = types.ModuleType("homeassistant.util")
+
+        # Create util.dt module
+        dt_util = types.ModuleType("homeassistant.util.dt")
+        from datetime import datetime, timezone
+
+        dt_util.DEFAULT_TIME_ZONE = timezone.utc
+        dt_util.now = lambda: datetime.now(dt_util.DEFAULT_TIME_ZONE)
+        dt_util.as_utc = lambda d: d.astimezone(timezone.utc)
+        dt_util.start_of_local_day = lambda: datetime.now(
+            dt_util.DEFAULT_TIME_ZONE
+        ).replace(hour=0, minute=0, second=0, microsecond=0)
+        homeassistant.util.dt = dt_util
+        sys.modules["homeassistant.util.dt"] = dt_util
+
+        # Create util.color module
+        color_util = types.ModuleType("homeassistant.util.color")
+
+        def brightness_to_value(scale, brightness):
+            """Convert brightness from scale to value."""
+            return int(brightness * 255 / 255)
+
+        def value_to_brightness(scale, value):
+            """Convert value to brightness on scale."""
+            return int(value * 255 / 255)
+
+        def color_rgb_to_rgbw(r, g, b):
+            """Convert RGB to RGBW."""
+            w = min(r, g, b)
+            return (r - w, g - w, b - w, w)
+
+        def color_rgbw_to_rgb(r, g, b, w):
+            """Convert RGBW to RGB."""
+            return (r + w, g + w, b + w)
+
+        color_util.brightness_to_value = brightness_to_value
+        color_util.value_to_brightness = value_to_brightness
+        color_util.color_rgb_to_rgbw = color_rgb_to_rgbw
+        color_util.color_rgbw_to_rgb = color_rgbw_to_rgb
+        homeassistant.util.color = color_util
+        sys.modules["homeassistant.util.color"] = color_util
+
+        # Create util.unit_conversion module
+        unit_conversion = types.ModuleType("homeassistant.util.unit_conversion")
+
+        class TemperatureConverter:
+            """Temperature converter."""
+
+            @staticmethod
+            def convert(value, from_unit, to_unit):
+                """Convert temperature between units."""
+                if from_unit == to_unit:
+                    return value
+                if from_unit == "°C":
+                    if to_unit == "°F":
+                        return value * 9 / 5 + 32
+                    elif to_unit == "K":
+                        return value + 273.15
+                elif from_unit == "°F":
+                    if to_unit == "°C":
+                        return (value - 32) * 5 / 9
+                    elif to_unit == "K":
+                        return (value - 32) * 5 / 9 + 273.15
+                elif from_unit == "K":
+                    if to_unit == "°C":
+                        return value - 273.15
+                    elif to_unit == "°F":
+                        return (value - 273.15) * 9 / 5 + 32
+                return value
+
+        unit_conversion.TemperatureConverter = TemperatureConverter
+        homeassistant.util.unit_conversion = unit_conversion
+        sys.modules["homeassistant.util.unit_conversion"] = unit_conversion
+
+        # Create util.slugify function
+        def slugify(text):
+            """Create a slug from text."""
+            import re
+
+            text = str(text)
+            text = re.sub(r"[^\w\s-]", "", text).strip().lower()
+            text = re.sub(r"[-\s]+", "_", text)
+            return text
+
+        homeassistant.util.slugify = slugify
+
+        sys.modules["homeassistant.util"] = homeassistant.util
 
         # Create update_coordinator stub module
         from .entity import Entity
@@ -437,6 +732,19 @@ class ImportPatcher:
         homeassistant.components.device_tracker = platforms.device_tracker
         homeassistant.components.text = platforms.text
 
+        # Create persistent_notification stub module
+        persistent_notification = types.ModuleType(
+            "homeassistant.components.persistent_notification"
+        )
+        persistent_notification.async_create = (
+            lambda hass, message, title=None, notification_id=None: None
+        )
+        persistent_notification.async_dismiss = lambda hass, notification_id: None
+        homeassistant.components.persistent_notification = persistent_notification
+        sys.modules["homeassistant.components.persistent_notification"] = (
+            persistent_notification
+        )
+
         # Add to sys.modules
         sys.modules["homeassistant.components.fan"] = platforms.fan
         sys.modules["homeassistant.components.sensor"] = platforms.sensor
@@ -479,6 +787,126 @@ class ImportPatcher:
 
         homeassistant.util.percentage = percentage_stub
         sys.modules["homeassistant.util.percentage"] = percentage_stub
+
+        # Create missing component stubs
+        from dataclasses import make_dataclass, field
+
+        image_stub = types.ModuleType("homeassistant.components.image")
+        image_stub.ImageEntity = type("ImageEntity", (), {})
+        # Create ImageEntityDescription as a frozen dataclass with all common fields
+        ImageEntityDescription = make_dataclass(
+            "ImageEntityDescription",
+            [
+                ("key", str),
+                ("name", Optional[str], None),
+                ("icon", Optional[str], None),
+                ("device_class", Optional[str], None),
+                ("entity_category", Optional[str], None),
+                ("entity_registry_enabled_default", bool, True),
+            ],
+            frozen=True,
+        )
+        image_stub.ImageEntityDescription = ImageEntityDescription
+        homeassistant.components.image = image_stub
+        sys.modules["homeassistant.components.image"] = image_stub
+
+        number_stub = types.ModuleType("homeassistant.components.number")
+        number_stub.NumberEntity = type("NumberEntity", (), {})
+        # Create NumberEntityDescription as a frozen dataclass with all common fields
+        NumberEntityDescription = make_dataclass(
+            "NumberEntityDescription",
+            [
+                ("key", str),
+                ("name", Optional[str], None),
+                ("icon", Optional[str], None),
+                ("device_class", Optional[str], None),
+                ("entity_category", Optional[str], None),
+                ("entity_registry_enabled_default", bool, True),
+                ("native_unit_of_measurement", Optional[str], None),
+                ("native_max_value", Optional[float], None),
+                ("native_min_value", Optional[float], None),
+                ("native_step", Optional[float], None),
+            ],
+            frozen=True,
+        )
+        number_stub.NumberEntityDescription = NumberEntityDescription
+        # Create NumberDeviceClass enum
+        number_device_class_enum = Enum(
+            "NumberDeviceClass",
+            [
+                ("APPARENT_POWER", "apparent_power"),
+                ("AQUEOUS_NH3_CONCENTRATION", "aqhi"),
+                ("AREA", "area"),
+                ("ATMOSPHERIC_PRESSURE", "atmospheric_pressure"),
+                ("BATTERY", "battery"),
+                ("BLOOD_GLUCOSE_CONCENTRATION", "blood_glucose_concentration"),
+                ("BREATH_VOC_CONCENTRATION", "breath_voc_concentration"),
+                ("CO", "carbon_monoxide"),
+                ("CO2", "carbon_dioxide"),
+                ("CONDUCTIVITY", "conductivity"),
+                ("CURRENT", "current"),
+                ("DATA_RATE", "data_rate"),
+                ("DATA_SIZE", "data_size"),
+                ("DISTANCE", "distance"),
+                ("DURATION", "duration"),
+                ("ENERGY", "energy"),
+                ("ENERGY_STORAGE", "energy_storage"),
+                ("FREQUENCY", "frequency"),
+                ("GAS", "gas"),
+                ("HUMIDITY", "humidity"),
+                ("ILLUMINANCE", "illuminance"),
+                ("IRRADIANCE", "irradiance"),
+                ("MOISTURE", "moisture"),
+                ("MONETARY", "monetary"),
+                ("NITROGEN_DIOXIDE", "nitrogen_dioxide"),
+                ("NITROGEN_MONOXIDE", "nitrogen_monoxide"),
+                ("NITROUS_OXIDE", "nitrous_oxide"),
+                ("OZONE", "ozone"),
+                ("PH", "ph"),
+                ("PM1", "pm1"),
+                ("PM10", "pm10"),
+                ("PM25", "pm25"),
+                ("POWER", "power"),
+                ("POWER_FACTOR", "power_factor"),
+                ("PRECIPITATION", "precipitation"),
+                ("PRECIPITATION_INTENSITY", "precipitation_intensity"),
+                ("PRESSURE", "pressure"),
+                ("REACTIVE_POWER", "reactive_power"),
+                ("SIGNAL_STRENGTH", "signal_strength"),
+                ("SOUND_PRESSURE", "sound_pressure"),
+                ("SPEED", "speed"),
+                ("SULPHUR_DIOXIDE", "sulphur_dioxide"),
+                ("TEMPERATURE", "temperature"),
+                ("VOLATILE_ORGANIC_COMPOUNDS", "volatile_organic_compounds"),
+                (
+                    "VOLATILE_ORGANIC_COMPOUNDS_PARTS",
+                    "volatile_organic_compounds_parts",
+                ),
+                ("VOLTAGE", "voltage"),
+                ("VOLUME", "volume"),
+                ("VOLUME_FLOW_RATE", "volume_flow_rate"),
+                ("VOLUME_STORAGE", "volume_storage"),
+                ("WATER", "water"),
+                ("WEIGHT", "weight"),
+                ("WIND_SPEED", "wind_speed"),
+            ],
+        )
+        number_stub.NumberDeviceClass = number_device_class_enum
+        homeassistant.components.number = number_stub
+        sys.modules["homeassistant.components.number"] = number_stub
+
+        scene_stub = types.ModuleType("homeassistant.components.scene")
+        scene_stub.Scene = type("Scene", (), {})
+        scene_stub.SceneEntityDescription = type("SceneEntityDescription", (), {})
+        homeassistant.components.scene = scene_stub
+        sys.modules["homeassistant.components.scene"] = scene_stub
+
+        # Create homeassistant.helpers.typing stub
+        typing_stub = types.ModuleType("homeassistant.helpers.typing")
+        typing_stub.EventType = type("EventType", (), {})
+        typing_stub.StateType = type("StateType", (), {})
+        homeassistant.helpers.typing = typing_stub
+        sys.modules["homeassistant.helpers.typing"] = typing_stub
 
         _LOGGER.debug("Stub modules created")
 

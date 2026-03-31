@@ -9,11 +9,14 @@ from typing import Optional
 
 from ..entity import (
     Entity,
+    EntityDescription,
     format_device_identifiers,
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+
+DOMAIN = "button"
 
 
 class ButtonDeviceClass(StrEnum):
@@ -21,18 +24,12 @@ class ButtonDeviceClass(StrEnum):
 
     RESTART = "restart"
     UPDATE = "update"
+    IDENTIFY = "identify"
 
 
-@dataclass
-class ButtonEntityDescription:
+@dataclass(frozen=True)
+class ButtonEntityDescription(EntityDescription):
     """A class that describes button entities."""
-
-    key: str
-    name: Optional[str] = None
-    icon: Optional[str] = None
-    device_class: Optional[str] = None
-    entity_category: Optional[str] = None
-    entity_registry_enabled_default: bool = True
 
 
 class ButtonEntity(Entity):

@@ -3,15 +3,26 @@
 Bridges SelectEntity to MQTT select discovery.
 """
 
+from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from ..entity import (
     Entity,
+    EntityDescription,
     format_device_identifiers,
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
 )
+
+DOMAIN = "select"
+
+
+@dataclass(frozen=True)
+class SelectEntityDescription(EntityDescription):
+    """Describe a select entity."""
+
+    options: List[str] = None
 
 
 class SelectEntity(Entity):

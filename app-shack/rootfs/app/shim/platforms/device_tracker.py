@@ -8,6 +8,8 @@ from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
+DOMAIN = "device_tracker"
+
 
 # Create config_entry submodule
 class _ConfigEntryModule:

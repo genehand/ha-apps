@@ -4,11 +4,14 @@ Bridges UpdateEntity to MQTT update discovery.
 Shows available updates for integrations.
 """
 
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Dict, Optional
 from datetime import datetime
 
 from ..entity import (
     Entity,
+    EntityDescription,
     format_device_identifiers,
     get_device_info_attr,
     build_mqtt_device_config,
@@ -17,6 +20,21 @@ from ..entity import (
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
+
+DOMAIN = "update"
+
+
+class UpdateDeviceClass(StrEnum):
+    """Device class for updates."""
+
+    FIRMWARE = "firmware"
+
+
+@dataclass(frozen=True)
+class UpdateEntityDescription(EntityDescription):
+    """Describe a update entity."""
+
+    device_class: Optional[str] = None
 
 
 class UpdateEntity(Entity):

@@ -257,8 +257,9 @@
     <div class="container">
         <div class="card">
             <div class="tabs">
-                <button class="tab active" onclick="showTab('installed')">Installed</button>
-                <button class="tab" onclick="showTab('available')">Available</button>
+                <button type="button" class="tab active" onclick="showTab('installed')">Installed</button>
+                <button type="button" class="tab" onclick="showTab('available')">Available</button>
+                <button type="button" class="tab" onclick="showTab('custom')">Custom Repos</button>
             </div>
             
             <div id="installed" class="tab-content active">
@@ -285,14 +286,14 @@
                         <div class="integration-actions">
                             <a href="/integrations/{{ integration.domain }}" class="btn btn-primary">Manage</a>
                             {% if integration.enabled %}
-                            <button class="btn btn-secondary"
+                            <button type="button" class="btn btn-secondary"
                                     hx-post="/integrations/{{ integration.domain }}/disable"
                                     hx-target="body"
                                     hx-swap="outerHTML">
                                 Disable
                             </button>
                             {% else %}
-                            <button class="btn btn-success"
+                            <button type="button" class="btn btn-success"
                                     hx-post="/integrations/{{ integration.domain }}/enable"
                                     hx-target="body"
                                     hx-swap="outerHTML">
@@ -300,7 +301,7 @@
                             </button>
                             {% endif %}
                             {% if integration.update_available %}
-                            <button class="btn btn-primary"
+                            <button type="button" class="btn btn-primary"
                                     hx-post="/integrations/{{ integration.domain }}/update"
                                     hx-target="body"
                                     hx-swap="outerHTML">
@@ -328,12 +329,17 @@
                         <div class="integration-info">
                             <h3>{{ item.name }}</h3>
                             <p>{{ item.description or 'No description' }}</p>
+                            {% if item.source == 'custom' %}
+                            <div class="integration-meta" style="color: #ff9800;">
+                                Custom Repository
+                            </div>
+                            {% endif %}
                         </div>
                         <div class="integration-actions">
                             {% if item.installed %}
                             <span style="color: #4caf50;">✓ Installed</span>
                             {% else %}
-                            <button class="btn btn-success"
+                            <button type="button" class="btn btn-success"
                                     hx-post="/integrations/{{ item.domain }}/install"
                                     hx-target="body"
                                     hx-swap="outerHTML"
@@ -352,6 +358,72 @@
                     <p>Failed to fetch HACS repository list.</p>
                 </div>
                 {% endif %}
+            </div>
+            
+            <div id="custom" class="tab-content">
+                <h2>Custom Repositories</h2>
+                <p style="margin-bottom: 20px; color: #666;">
+                    Add GitHub repositories that contain Home Assistant custom integrations.
+                    These integrations will appear in the Available tab.
+                </p>
+                
+                <div class="card" style="background: #f9f9f9; margin-bottom: 20px;">
+                    <h3 style="font-size: 16px; margin-bottom: 15px;">Add Repository</h3>
+                    <form hx-post="/custom-repos" 
+                          hx-target="#custom-repos-list" 
+                          hx-swap="innerHTML"
+                          hx-on::after-request="if(event.detail.successful) { this.reset(); }"
+                          style="display: flex; gap: 10px;">
+                        <input type="url" 
+                               name="repo_url" 
+                               placeholder="https://github.com/owner/repo"
+                               required
+                               style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                        <button type="submit" class="btn btn-primary">Add Repository</button>
+                    </form>
+                </div>
+                
+                <div id="custom-repos-list">
+                    {% if custom_repos %}
+                    <div class="integration-list">
+                        {% for repo in custom_repos %}
+                        <div class="integration-item">
+                            <div class="integration-info">
+                                <h3>{{ repo.name }}</h3>
+                                <p>{{ repo.description or 'No description' }}</p>
+                                <div class="integration-meta">
+                                    <a href="{{ repo.repository_url }}" target="_blank" style="color: #03a9f4;">
+                                        {{ repo.full_name or repo.repository_url }}
+                                    </a>
+                                    {% if repo.installed %}
+                                    <span style="color: #4caf50; margin-left: 10px;">✓ Installed</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="integration-actions">
+                                {% if repo.installed %}
+                                <span style="color: #999; font-size: 12px;">Remove integration first</span>
+                                {% else %}
+                                <button type="button" class="btn btn-danger"
+                                        hx-delete="/custom-repos/{{ repo.domain }}"
+                                        hx-target="#custom-repos-list"
+                                        hx-swap="innerHTML"
+                                        hx-confirm="Are you sure you want to remove this repository?"
+                                        hx-on::after-request="if(event.detail.successful) location.reload();">
+                                    Remove
+                                </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="empty-state">
+                        <p>No custom repositories added.</p>
+                        <p>Add a GitHub repository URL above to get started.</p>
+                    </div>
+                    {% endif %}
+                </div>
             </div>
         </div>
         

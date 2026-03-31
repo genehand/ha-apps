@@ -20,17 +20,16 @@ class TestManagerCommandRouting:
         mock_config_dir = Path("/tmp/test_config")
         mock_mqtt_client = MagicMock()
 
-        with patch("shim.manager.setup_logging"):
-            with patch("shim.manager.HomeAssistant") as MockHass:
-                mock_hass = MagicMock()
-                mock_hass.shim_dir = Path("/tmp/test_shim")
-                mock_hass._storage = MagicMock()
-                MockHass.return_value = mock_hass
+        with patch("shim.manager.HomeAssistant") as MockHass:
+            mock_hass = MagicMock()
+            mock_hass.shim_dir = Path("/tmp/test_shim")
+            mock_hass._storage = MagicMock()
+            MockHass.return_value = mock_hass
 
-                with patch("shim.manager.IntegrationManager"):
-                    with patch("shim.manager.IntegrationLoader"):
-                        manager = ShimManager(mock_config_dir, mock_mqtt_client)
-                        return manager
+            with patch("shim.manager.IntegrationManager"):
+                with patch("shim.manager.IntegrationLoader"):
+                    manager = ShimManager(mock_config_dir, mock_mqtt_client)
+                    return manager
 
     @pytest.mark.asyncio
     async def test_route_command_text_entity_set_value(self):

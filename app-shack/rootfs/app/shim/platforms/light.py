@@ -3,10 +3,13 @@
 Bridges LightEntity to MQTT light discovery.
 """
 
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..entity import (
     ToggleEntity,
+    EntityDescription,
     format_device_identifiers,
     get_device_info_attr,
     build_mqtt_device_config,
@@ -15,6 +18,29 @@ from ..entity import (
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
+
+DOMAIN = "light"
+
+
+class ColorMode(StrEnum):
+    """Color modes for light entities."""
+
+    UNKNOWN = "unknown"
+    ONOFF = "onoff"
+    BRIGHTNESS = "brightness"
+    COLOR_TEMP = "color_temp"
+    HS = "hs"
+    XY = "xy"
+    RGB = "rgb"
+    RGBW = "rgbw"
+    RGBWW = "rgbww"
+    WHITE = "white"
+
+
+@dataclass(frozen=True)
+class LightEntityDescription(EntityDescription):
+    """Describe a light entity."""
+
 
 # Light features
 SUPPORT_BRIGHTNESS = 1

@@ -18,6 +18,8 @@ from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
+DOMAIN = "sensor"
+
 # State classes (for backwards compatibility)
 STATE_CLASS_MEASUREMENT = "measurement"
 STATE_CLASS_TOTAL = "total"
@@ -31,13 +33,20 @@ class SensorDeviceClass(StrEnum):
     BATTERY = "battery"
     CO = "carbon_monoxide"
     CO2 = "carbon_dioxide"
+    CURRENT = "current"
+    ENERGY = "energy"
+    ENUM = "enum"
     HUMIDITY = "humidity"
+    ILLUMINANCE = "illuminance"
     PM = "pm"
     PM25 = "pm25"
     PM10 = "pm10"
+    POWER = "power"
+    SIGNAL_STRENGTH = "signal_strength"
     TEMPERATURE = "temperature"
     NO2 = "nitrogen_dioxide"
     VOLATILE_ORGANIC_COMPOUNDS = "volatile_organic_compounds"
+    VOLTAGE = "voltage"
 
 
 class SensorStateClass(StrEnum):
@@ -70,20 +79,16 @@ class RestoreSensor:
 
 
 from dataclasses import dataclass
+from ..entity import EntityDescription
 
 
-@dataclass
-class SensorEntityDescription:
+@dataclass(frozen=True)
+class SensorEntityDescription(EntityDescription):
     """A class that describes sensor entities."""
 
-    key: str
-    name: str | None = None
-    icon: str | None = None
-    device_class: str | None = None
     state_class: str | None = None
     native_unit_of_measurement: str | None = None
-    entity_category: str | None = None
-    entity_registry_enabled_default: bool = True
+    options: list[str] | None = None
 
 
 class SensorEntity(Entity):

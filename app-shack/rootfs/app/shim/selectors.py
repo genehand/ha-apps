@@ -3,7 +3,33 @@
 Provides selector classes for config flows.
 """
 
+from enum import Enum
 from typing import Any, Dict, List, Optional, Union
+
+
+class SelectSelectorMode(str, Enum):
+    """Enum for select selector modes."""
+
+    LIST = "list"
+    DROPDOWN = "dropdown"
+
+
+class TextSelectorType(str, Enum):
+    """Enum for text selector types."""
+
+    TEXT = "text"
+    PASSWORD = "password"
+    EMAIL = "email"
+    URL = "url"
+    TEL = "tel"
+    NUMBER = "number"
+
+
+class NumberSelectorMode(str, Enum):
+    """Enum for number selector modes."""
+
+    BOX = "box"
+    SLIDER = "slider"
 
 
 class Selector:
@@ -135,14 +161,17 @@ class SelectSelector(Selector):
         self,
         config: Optional[Dict[str, Any]] = None,
         *,
-        options: List[Union[str, Dict[str, str]]],
+        options: Optional[List[Union[str, Dict[str, str]]]] = None,
         multiple: bool = False,
         mode: str = "list",  # "list" or "dropdown"
         translation_key: Optional[str] = None,
     ):
         """Initialize select selector."""
         super().__init__(config)
-        self.config["options"] = options
+        # Use provided options, or fall back to config's options, or empty list
+        self.config["options"] = (
+            options if options is not None else self.config.get("options", [])
+        )
         self.config["multiple"] = multiple
         self.config["mode"] = mode
         if translation_key:
@@ -245,5 +274,79 @@ class DurationSelector(Selector):
         self.config["enable_day"] = enable_day
 
 
-# Alias for EntitySelectorConfig
+# Selector config type aliases (used by config flows)
 EntitySelectorConfig = dict
+DeviceSelectorConfig = dict
+AreaSelectorConfig = dict
+NumberSelectorConfig = dict
+BooleanSelectorConfig = dict
+TextSelectorConfig = dict
+SelectSelectorConfig = dict
+TimeSelectorConfig = dict
+DateSelectorConfig = dict
+DateTimeSelectorConfig = dict
+ColorRGBSelectorConfig = dict
+IconSelectorConfig = dict
+ThemeSelectorConfig = dict
+LocationSelectorConfig = dict
+MediaSelectorConfig = dict
+DurationSelectorConfig = dict
+ObjectSelectorConfig = dict
+AttributeSelectorConfig = dict
+ActionSelectorConfig = dict
+AddonSelectorConfig = dict
+AreaFilterSelectorConfig = dict
+AssistPipelineSelectorConfig = dict
+BackupLocationSelectorConfig = dict
+BarcodeSelectorConfig = dict
+ColorTempSelectorConfig = dict
+ConfigEntrySelectorConfig = dict
+ConstantSelectorConfig = dict
+ConversationAgentSelectorConfig = dict
+CountrySelectorConfig = dict
+DateTimeRangeSelectorConfig = dict
+EntityFilterSelectorConfig = dict
+FileSelectorConfig = dict
+FloorSelectorConfig = dict
+LabelSelectorConfig = dict
+LanguageSelectorConfig = dict
+NavigationLocationSelectorConfig = dict
+QRCodeSelectorConfig = dict
+ResourceSelectorConfig = dict
+SelectorSelectorConfig = dict
+StateSelectorConfig = dict
+StatisticsPeriodSelectorConfig = dict
+TargetSelectorConfig = dict
+TemplateSelectorConfig = dict
+TimeZoneSelectorConfig = dict
+TriggerSelectorConfig = dict
+UserSelectorConfig = dict
+
+
+def selector(
+    selector_type: Union[str, Dict[str, Any]],
+    config: Optional[Dict[str, Any]] = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Create a selector configuration.
+
+    This is a helper function used in config flows to create selector configs.
+
+    Args:
+        selector_type: The type of selector (e.g., 'text', 'number', 'select', etc.)
+                     or a dict with the selector config as the first/only key
+        config: Optional configuration dict
+        **kwargs: Additional configuration options
+
+    Returns:
+        A dict with the selector configuration
+    """
+    # Handle case where selector_type is actually a dict config
+    # e.g., selector({"select": {"options": [...]}})
+    if isinstance(selector_type, dict):
+        return selector_type
+
+    # Handle normal case: selector("text") or selector("select", {...})
+    selector_config = config or {}
+    selector_config.update(kwargs)
+    return {selector_type: selector_config}

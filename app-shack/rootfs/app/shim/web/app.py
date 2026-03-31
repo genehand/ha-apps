@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
 # from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader, Template
@@ -63,6 +64,9 @@ class WebUI:
                 self._shim_manager.get_integration_manager().get_all_integrations()
             )
             available = self._shim_manager.get_integration_manager().get_available_integrations()
+            custom_repos = (
+                self._shim_manager.get_integration_manager().get_custom_repositories()
+            )
 
             # Convert to dicts for template compatibility
             integrations_dicts = [i.to_dict() for i in integrations]
@@ -72,6 +76,7 @@ class WebUI:
                     "name": a.get("name"),
                     "description": a.get("description", ""),
                     "installed": a.get("installed", False),
+                    "source": a.get("source", "hacs_default"),
                 }
                 for a in available
             ]
@@ -81,6 +86,7 @@ class WebUI:
                 request=request,
                 integrations=integrations_dicts,
                 available=available_dicts,
+                custom_repos=custom_repos,
             )
             return HTMLResponse(content=html)
 
@@ -273,10 +279,19 @@ class WebUI:
             flow = hass.config_entries._flow_progress.get(flow_id)
             schema = getattr(flow, "_last_form_schema", None) if flow else None
 
-            _LOGGER.debug(
-                f"Config flow submit for {domain}: flow_id={flow_id}, "
-                f"schema={schema}, user_input={user_input}"
-            )
+            # Handle menu selection - if next_step is present, it's a menu selection
+            if "next_step" in user_input:
+                # This is a menu selection, pass it as the user_input
+                user_input = {"next_step": user_input["next_step"]}
+                _LOGGER.debug(
+                    f"Config flow menu selection for {domain}: flow_id={flow_id}, "
+                    f"selected_option={user_input['next_step']}"
+                )
+            else:
+                _LOGGER.debug(
+                    f"Config flow submit for {domain}: flow_id={flow_id}, "
+                    f"schema={schema}, user_input={user_input}"
+                )
 
             # Convert form values based on schema field types
             if schema and hasattr(schema, "schema"):
@@ -366,6 +381,10 @@ class WebUI:
                 # Show next form step
                 return self._render_config_step(request, domain, result)
 
+            elif result.get("type") == "menu":
+                # Show menu selection step
+                return self._render_menu_step(request, domain, result)
+
             elif result.get("type") == "abort":
                 return HTMLResponse(
                     f'<div class="alert alert-error">Aborted: {result.get("reason")}</div>'
@@ -438,6 +457,134 @@ class WebUI:
                 ),
             }
 
+        @self._app.get("/api/custom-repos", response_class=JSONResponse)
+        async def api_custom_repos():
+            """API endpoint for custom repositories."""
+            repos = (
+                self._shim_manager.get_integration_manager().get_custom_repositories()
+            )
+            return {"repositories": repos}
+
+        @self._app.post("/custom-repos")
+        async def add_custom_repo(request: Request, repo_url: str = Form(...)):
+            """Add a custom repository."""
+            (
+                success,
+                message,
+            ) = await self._shim_manager.get_integration_manager().add_custom_repository(
+                repo_url
+            )
+            if success:
+                # Return updated custom repos list for HTMX
+                custom_repos = self._shim_manager.get_integration_manager().get_custom_repositories()
+                return self._render_custom_repos_list(
+                    custom_repos, success_message=message
+                )
+            else:
+                # Return error message for HTMX
+                custom_repos = self._shim_manager.get_integration_manager().get_custom_repositories()
+                return self._render_custom_repos_list(
+                    custom_repos, error_message=message
+                )
+
+        @self._app.delete("/custom-repos/{domain}")
+        async def remove_custom_repo(domain: str):
+            """Remove a custom repository."""
+            (
+                success,
+                message,
+            ) = await self._shim_manager.get_integration_manager().remove_custom_repository(
+                domain
+            )
+            # Get updated list
+            custom_repos = (
+                self._shim_manager.get_integration_manager().get_custom_repositories()
+            )
+            if success:
+                return self._render_custom_repos_list(
+                    custom_repos, success_message=message
+                )
+            else:
+                return self._render_custom_repos_list(
+                    custom_repos, error_message=message
+                )
+
+    def _render_custom_repos_list(
+        self, repos: List[dict], success_message: str = None, error_message: str = None
+    ) -> HTMLResponse:
+        """Render the custom repositories list HTML."""
+        html_parts = []
+
+        if success_message:
+            html_parts.append(
+                '<div class="alert alert-success" style="margin-bottom: 15px;">'
+                + success_message
+                + "</div>"
+            )
+
+        if error_message:
+            html_parts.append(
+                '<div class="alert alert-error" style="margin-bottom: 15px;">'
+                + error_message
+                + "</div>"
+            )
+
+        if repos:
+            html_parts.append('<div class="integration-list">')
+            for repo in repos:
+                name = repo.get("name", repo.get("domain", "Unknown"))
+                description = repo.get("description", "No description")
+                repo_url = repo.get("repository_url", "#")
+                full_name = repo.get("full_name", repo.get("repository_url", "Unknown"))
+                domain = repo.get("domain", "")
+                is_installed = repo.get("installed", False)
+
+                installed_badge = (
+                    '<span style="color: #4caf50; margin-left: 10px;">✓ Installed</span>'
+                    if is_installed
+                    else ""
+                )
+
+                if is_installed:
+                    actions_html = '<span style="color: #999; font-size: 12px;">Remove integration first</span>'
+                else:
+                    actions_html = (
+                        '<button type="button" class="btn btn-danger" '
+                        'hx-delete="/custom-repos/' + domain + '" '
+                        'hx-target="#custom-repos-list" '
+                        'hx-swap="innerHTML" '
+                        'hx-confirm="Are you sure you want to remove this repository?" '
+                        'hx-on::after-request="if(event.detail.successful) location.reload();">'
+                        "Remove</button>"
+                    )
+
+                html_parts.append(
+                    '<div class="integration-item">'
+                    '<div class="integration-info">'
+                    "<h3>" + name + "</h3>"
+                    "<p>" + description + "</p>"
+                    '<div class="integration-meta">'
+                    '<a href="'
+                    + repo_url
+                    + '" target="_blank" style="color: #03a9f4;">'
+                    + full_name
+                    + "</a>"
+                    + installed_badge
+                    + "</div></div>"
+                    '<div class="integration-actions">' + actions_html + "</div>"
+                    "</div>"
+                )
+            html_parts.append("</div>")
+        else:
+            html_parts.append(
+                '<div class="empty-state">'
+                "<p>No custom repositories added.</p>"
+                "<p>Add a GitHub repository URL above to get started.</p>"
+                "</div>"
+            )
+
+        return HTMLResponse(content="".join(html_parts))
+
     # Error message translations
     ERROR_TRANSLATIONS = {
         "invalid_auth": "Invalid credentials. Please check your username/password.",
@@ -488,6 +635,55 @@ class WebUI:
             step_id=result.get("step_id", "user"),
             flow_id=result.get("flow_id"),
         )
+        return HTMLResponse(content=html)
+
+    def _render_menu_step(
+        self, request: Request, domain: str, result: dict
+    ) -> HTMLResponse:
+        """Render a config flow menu step with options."""
+        menu_options = result.get("menu_options", [])
+        description = result.get("description_placeholders", {})
+        flow_id = result.get("flow_id")
+        step_id = result.get("step_id", "user")
+
+        # Build HTML for menu options
+        options_html = ""
+        for option in menu_options:
+            option_label = option.replace("_", " ").title()
+            options_html += f"""
+            <button type="submit" name="next_step" value="{option}" class="btn btn-secondary" style="margin: 10px; padding: 15px 30px;">
+                {option_label}
+            </button>
+            """
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Configure {domain}</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <link rel="stylesheet" href="/static/styles.css">
+            <script src="/static/htmx.min.js"></script>
+        </head>
+        <body>
+            <div class="container">
+                <h2>Configure {domain.title()}</h2>
+                {"<p>" + str(description) + "</p>" if description else ""}
+                <form hx-post="/config/{domain}" hx-target="#config-result" hx-swap="innerHTML">
+                    <input type="hidden" name="flow_id" value="{flow_id}">
+                    <input type="hidden" name="step_id" value="{step_id}">
+                    <div style="margin: 20px 0;">
+                        <label style="display: block; margin-bottom: 15px;">Select an option:</label>
+                        <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                            {options_html}
+                        </div>
+                    </div>
+                </form>
+                <div id="config-result"></div>
+            </div>
+        </body>
+        </html>
+        """
         return HTMLResponse(content=html)
 
     def _parse_schema(self, schema) -> List[Dict[str, Any]]:
@@ -548,11 +744,36 @@ class WebUI:
         else:
             field["name"] = key
 
+        # Handle list-type defaults - convert to first element for text fields
+        # or keep as-is for multi-select fields
+        if field["default"] is not None and isinstance(field["default"], (list, tuple)):
+            _LOGGER.debug(
+                f"Field {field['name']}: converting list default {field['default']} to first element"
+            )
+            if len(field["default"]) > 0:
+                field["default"] = field["default"][0]
+            else:
+                field["default"] = None
+            _LOGGER.debug(f"Field {field['name']}: new default is {field['default']}")
+
         # Make label from field name (capitalize and replace underscores)
         field["label"] = field["name"].replace("_", " ").title()
 
         # Parse validator type
-        if hasattr(validator, "__class__"):
+        # Handle plain Python types (e.g., str, bool, int) used directly
+        if validator is bool:
+            field["type"] = "checkbox"
+        elif validator is str:
+            field["type"] = "text"
+        elif validator is int:
+            field["type"] = "number"
+        elif validator is float:
+            field["type"] = "number"
+            field["step"] = "any"
+        elif isinstance(validator, type):
+            # Other Python types default to text
+            field["type"] = "text"
+        elif hasattr(validator, "__class__"):
             validator_class = validator.__class__.__name__
 
             if validator_class == "In":
@@ -590,6 +811,65 @@ class WebUI:
                 field["type"] = "checkbox"
             elif validator_class == "Password":
                 field["type"] = "password"
+            elif validator_class == "SelectSelector":
+                # Handle SelectSelector from homeassistant.helpers.selector
+                field["type"] = "select"
+                _LOGGER.debug(f"SelectSelector found for field {field['name']}")
+                if hasattr(validator, "config"):
+                    config = validator.config
+                    _LOGGER.debug(f"SelectSelector config: {config}")
+                    options = config.get("options", [])
+                    multiple = config.get("multiple", False)
+                    _LOGGER.debug(
+                        f"SelectSelector options: {options}, multiple: {multiple}"
+                    )
+                    field["options"] = [
+                        {
+                            "value": opt,
+                            "label": str(opt),
+                            "selected": opt in field.get("default", [])
+                            if multiple
+                            else opt == field.get("default"),
+                        }
+                        for opt in options
+                    ]
+                    field["multiple"] = multiple
+                    _LOGGER.debug(
+                        f"Parsed {len(field['options'])} options for field {field['name']}"
+                    )
+                else:
+                    _LOGGER.debug(f"SelectSelector has no config attribute")
+            elif validator_class == "TextSelector":
+                # Handle TextSelector from homeassistant.helpers.selector
+                if hasattr(validator, "config"):
+                    config = validator.config
+                    selector_type = config.get("type", "text")
+                    if selector_type == "password":
+                        field["type"] = "password"
+                    elif selector_type == "email":
+                        field["type"] = "email"
+                    elif selector_type == "url":
+                        field["type"] = "url"
+                    elif selector_type == "tel":
+                        field["type"] = "tel"
+                    else:
+                        field["type"] = "text"
+                else:
+                    field["type"] = "text"
+            elif validator_class == "NumberSelector":
+                # Handle NumberSelector from homeassistant.helpers.selector
+                field["type"] = "number"
+                if hasattr(validator, "config"):
+                    config = validator.config
+                    if "min" in config:
+                        field["min"] = config["min"]
+                    if "max" in config:
+                        field["max"] = config["max"]
+                    if "step" in config:
+                        field["step"] = config["step"]
+            elif validator_class == "BooleanSelector":
+                # Handle BooleanSelector from homeassistant.helpers.selector
+                field["type"] = "checkbox"
 
         # Check for Coerce (type conversion)
         if hasattr(validator, "type") and validator_class == "Coerce":
@@ -615,6 +895,10 @@ class WebUI:
 
         # Clean up None values
         field = {k: v for k, v in field.items() if v is not None}
+
+        _LOGGER.debug(
+            f"Parsed field {field['name']}: type={field.get('type')}, default={field.get('default')!r}"
+        )
 
         return field
 
