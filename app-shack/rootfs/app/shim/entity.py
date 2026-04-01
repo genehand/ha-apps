@@ -183,7 +183,9 @@ def build_mqtt_device_config(device_info: Any) -> Dict[str, Any]:
 
 
 def get_entity_name_for_discovery(
-    entity_name: Optional[str], device_info: Any
+    entity_name: Optional[str],
+    device_info: Any,
+    has_entity_name: bool = False,
 ) -> Optional[str]:
     """Get entity name for MQTT discovery, stripping device name prefix if present.
 
@@ -195,21 +197,32 @@ def get_entity_name_for_discovery(
     If the entity name is exactly the same as the device name, returns None
     to indicate the entity should use the device name directly (HA convention).
 
+    When has_entity_name is True (modern naming), the entity name is already a suffix
+    and should be returned as-is (or None if it matches the device name).
+
     Args:
-        entity_name: The full entity name.
+        entity_name: The entity name (full name for legacy, suffix for has_entity_name=True).
         device_info: Device info containing the device name.
+        has_entity_name: Whether the entity uses modern naming (name is a suffix).
 
     Returns:
-        The entity name with device prefix stripped, or None if entity name
-        matches device name exactly.
+        The entity name for discovery, or None if entity name matches device name.
     """
     if not entity_name:
-        return entity_name
+        return None if has_entity_name else entity_name
 
     device_name = get_device_info_attr(device_info, "name")
     if not device_name:
         return entity_name
 
+    # For modern naming (has_entity_name=True), the entity name is already a suffix
+    if has_entity_name:
+        # If entity name equals device name exactly, return None (HA convention)
+        if entity_name == device_name:
+            return None
+        return entity_name
+
+    # Legacy naming: entity name includes device name prefix
     # If entity name equals device name exactly, return None (HA convention)
     if entity_name == device_name:
         return None
@@ -354,6 +367,21 @@ class Entity:
         if hasattr(self, "entity_description") and self.entity_description is not None:
             return getattr(self.entity_description, "entity_category", None)
         return self._attr_entity_category
+
+    @property
+    def has_entity_name(self) -> bool:
+        """Return if the entity uses the new naming scheme with the device name.
+
+        When True, the entity name is considered a suffix to the device name.
+        For example, if the device is "Living Room" and the entity name is
+        "Temperature", Home Assistant displays it as "Living Room Temperature".
+
+        When False (legacy), the entity name is the full name.
+        """
+        # Check entity_description first (integrations may set via entity_description)
+        if hasattr(self, "entity_description") and self.entity_description is not None:
+            return getattr(self.entity_description, "has_entity_name", False)
+        return getattr(self, "_attr_has_entity_name", False)
 
     @property
     def unit_of_measurement(self) -> Optional[str]:
@@ -508,7 +536,9 @@ class Entity:
 
         # Build basic discovery config
         config = {
-            "name": get_entity_name_for_discovery(self.name, self.device_info),
+            "name": get_entity_name_for_discovery(
+                self.name, self.device_info, self.has_entity_name
+            ),
             "unique_id": get_mqtt_safe_unique_id(self.unique_id),
             "state_topic": f"{base_topic}/state",
         }

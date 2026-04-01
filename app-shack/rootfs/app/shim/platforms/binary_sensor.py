@@ -56,7 +56,9 @@ class BinarySensorDeviceClass(StrEnum):
     WINDOW = "window"
 
 
-class BinarySensorEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
+class BinarySensorEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a binary sensor entity."""
 
     device_class: Optional[str] = None
@@ -107,7 +109,9 @@ class BinarySensorEntity(ToggleEntity):
 
         # Build discovery config
         # Strip device name prefix from entity name if present
-        entity_name = get_entity_name_for_discovery(self.name, self.device_info)
+        entity_name = get_entity_name_for_discovery(
+            self.name, self.device_info, self.has_entity_name
+        )
         config = {
             "name": entity_name,
             "unique_id": get_mqtt_safe_unique_id(self.unique_id),

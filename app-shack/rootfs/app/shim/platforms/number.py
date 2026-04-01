@@ -141,7 +141,9 @@ class NumberEntity(Entity):
         _LOGGER.debug(f"Publishing number discovery to {discovery_topic}")
 
         # Build discovery config
-        entity_name = get_entity_name_for_discovery(self.name, self.device_info)
+        entity_name = get_entity_name_for_discovery(
+            self.name, self.device_info, self.has_entity_name
+        )
         import json
 
         config = {

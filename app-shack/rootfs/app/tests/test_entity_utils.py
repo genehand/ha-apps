@@ -251,6 +251,106 @@ class TestGetEntityNameForDiscovery:
         result = get_entity_name_for_discovery(entity_name, device_info)
         assert result == "Test Sensor"
 
+    def test_has_entity_name_returns_suffix_as_is(self):
+        """Test that has_entity_name=True returns entity name as-is (it's already a suffix)."""
+        from shim.entity import get_entity_name_for_discovery
+
+        # When has_entity_name=True, the entity name is a suffix, not a full name
+        entity_name = "Alerts"  # Just the suffix, not "NWS Alerts Alerts"
+        device_info = {"name": "NWS Alerts (Zone: CAZ043)"}
+
+        result = get_entity_name_for_discovery(
+            entity_name, device_info, has_entity_name=True
+        )
+        assert result == "Alerts"
+
+    def test_has_entity_name_returns_none_for_empty_name(self):
+        """Test that has_entity_name=True returns None for empty entity name."""
+        from shim.entity import get_entity_name_for_discovery
+
+        result = get_entity_name_for_discovery(
+            None, {"name": "Device"}, has_entity_name=True
+        )
+        assert result is None
+
+    def test_has_entity_name_returns_none_when_matches_device(self):
+        """Test that has_entity_name=True returns None when entity name matches device."""
+        from shim.entity import get_entity_name_for_discovery
+
+        entity_name = "NWS Alerts"
+        device_info = {"name": "NWS Alerts"}
+
+        result = get_entity_name_for_discovery(
+            entity_name, device_info, has_entity_name=True
+        )
+        assert result is None
+
+    def test_has_entity_name_false_uses_legacy_behavior(self):
+        """Test that has_entity_name=False (default) uses legacy naming behavior."""
+        from shim.entity import get_entity_name_for_discovery
+
+        # Legacy naming: entity name includes device prefix
+        entity_name = "NWS Alerts Alerts"  # Full name with duplication issue
+        device_info = {"name": "NWS Alerts"}
+
+        result = get_entity_name_for_discovery(
+            entity_name, device_info, has_entity_name=False
+        )
+        # Should strip the "NWS Alerts " prefix
+        assert result == "Alerts"
+
+    def test_has_entity_name_default_is_false(self):
+        """Test that default has_entity_name value is False."""
+        from shim.entity import get_entity_name_for_discovery
+
+        entity_name = "Device Temperature"
+        device_info = {"name": "Device"}
+
+        # Not passing has_entity_name - should default to False
+        result = get_entity_name_for_discovery(entity_name, device_info)
+        assert result == "Temperature"
+
+
+class TestEntityHasEntityName:
+    """Test cases for Entity.has_entity_name property."""
+
+    def test_has_entity_name_from_entity_description(self):
+        """Test that has_entity_name comes from entity_description."""
+        from shim.entity import Entity, EntityDescription
+
+        entity = Entity()
+        entity.entity_description = EntityDescription(key="test", has_entity_name=True)
+
+        assert entity.has_entity_name is True
+
+    def test_has_entity_name_from_attr(self):
+        """Test that has_entity_name can come from _attr_has_entity_name."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_has_entity_name = True
+
+        assert entity.has_entity_name is True
+
+    def test_has_entity_name_defaults_to_false(self):
+        """Test that has_entity_name defaults to False."""
+        from shim.entity import Entity
+
+        entity = Entity()
+
+        assert entity.has_entity_name is False
+
+    def test_has_entity_name_from_description_defaults_to_false(self):
+        """Test that has_entity_name from description defaults to False if not set."""
+        from shim.entity import Entity, EntityDescription
+
+        entity = Entity()
+        entity.entity_description = EntityDescription(
+            key="test"
+        )  # No has_entity_name specified
+
+        assert entity.has_entity_name is False
+
 
 class TestBuildMqttDeviceConfig:
     """Test cases for build_mqtt_device_config function."""

@@ -115,7 +115,9 @@ class ClimateEntityFeature:
 from ..frozen_dataclass_compat import FrozenOrThawed
 
 
-class ClimateEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
+class ClimateEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a climate entity."""
 
 
@@ -396,7 +398,9 @@ class ClimateEntity(Entity):
 
         # Build discovery config
         # Strip device name prefix from entity name if present
-        entity_name = get_entity_name_for_discovery(self.name, self.device_info)
+        entity_name = get_entity_name_for_discovery(
+            self.name, self.device_info, self.has_entity_name
+        )
         config = {
             "name": entity_name,
             "unique_id": get_mqtt_safe_unique_id(self.unique_id),

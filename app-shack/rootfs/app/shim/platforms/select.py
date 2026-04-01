@@ -111,7 +111,9 @@ class SelectEntity(Entity):
 
         # Build discovery config
         # Strip device name prefix from entity name if present
-        entity_name = get_entity_name_for_discovery(self.name, self.device_info)
+        entity_name = get_entity_name_for_discovery(
+            self.name, self.device_info, self.has_entity_name
+        )
 
         # Map options to display values if options_map is available
         options = self.options
