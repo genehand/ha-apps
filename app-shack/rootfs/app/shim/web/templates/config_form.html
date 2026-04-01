@@ -4,169 +4,62 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Configure {{ domain }} - HA Shim</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.colors.min.css">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-            line-height: 1.6;
-        }
-        
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        header {
-            background: #03a9f4;
-            color: white;
-            padding: 20px 0;
-            margin-bottom: 30px;
-        }
-        
-        header h1 {
-            margin: 0;
-            font-size: 24px;
-        }
-        
-        header a {
-            color: white;
-            text-decoration: none;
-            opacity: 0.8;
-        }
-        
-        header a:hover {
-            opacity: 1;
-        }
-        
-        .card {
-            background: white;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        .card h2 {
-            margin-bottom: 15px;
-            color: #03a9f4;
-            font-size: 20px;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #555;
-        }
-        
-        .form-group input,
-        .form-group select,
-        .form-group textarea {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .form-group input:focus,
-        .form-group select:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #03a9f4;
-        }
-        
-        .form-group .error {
-            color: #f44336;
-            font-size: 12px;
-            margin-top: 5px;
-        }
-        
-        .btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 4px;
+        .theme-toggle {
+            background: transparent;
+            border: 2px solid rgba(255,255,255,0.5);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
             cursor: pointer;
-            font-size: 16px;
-            transition: background 0.2s;
-        }
-        
-        .btn-primary {
-            background: #03a9f4;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            transition: all 0.2s;
             color: white;
         }
-        
-        .btn-primary:hover {
-            background: #0288d1;
+        .theme-toggle:hover {
+            background: rgba(255,255,255,0.1);
+            border-color: white;
         }
-        
-        .btn-secondary {
-            background: #757575;
-            color: white;
-        }
-        
-        .btn-secondary:hover {
-            background: #616161;
-        }
-        
-        .alert {
-            padding: 12px;
-            border-radius: 4px;
-            margin-bottom: 15px;
-        }
-        
-        .alert-success {
-            background: #c8e6c9;
-            color: #2e7d32;
-            border: 1px solid #a5d6a7;
-        }
-        
-        .alert-error {
-            background: #ffcdd2;
-            color: #c62828;
-            border: 1px solid #ef9a9a;
-        }
-        
-        .required {
-            color: #f44336;
+        :root {
+            --pico-font-size: 1rem;
         }
     </style>
 </head>
 <body>
-    <header>
+    <header class="container-fluid" style="background: var(--pico-primary); padding: 1rem 0; margin-bottom: 2rem;">
         <div class="container">
-            <a href="/integrations/{{ domain }}">← Back to Integration</a>
-            <h1>Configure {{ domain }}</h1>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <a href="/integrations/{{ domain }}" style="color: white; text-decoration: none; opacity: 0.8;">← Back to Integration</a>
+                    <h1 style="margin: 0.5rem 0 0 0; color: white;">Configure {{ domain }}</h1>
+                </div>
+                <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                    <span id="theme-icon">🌙</span>
+                </button>
+            </div>
         </div>
     </header>
-    
-    <div class="container">
-        <div class="card">
+
+    <main class="container">
+        <article>
             <h2>Configuration</h2>
-            
+
             {% if description %}
-            <div style="margin-bottom: 20px; padding: 10px; background: #e3f2fd; border-radius: 4px;">
+            <article>
                 {% for key, value in description.items() %}
                 <p>{{ value }}</p>
                 {% endfor %}
-            </div>
+            </article>
             {% endif %}
 
             {% if errors.get('base') %}
-            <div class="alert alert-error" style="margin-bottom: 20px;">
+            <div role="alert" style="margin-bottom: 20px;">
                 <strong>Error:</strong> {{ errors.get('base') }}
             </div>
             {% endif %}
@@ -177,81 +70,100 @@
                 {% endif %}
                 {% if fields %}
                     {% for field in fields %}
-                    <div class="form-group">
-                        <label for="{{ field.name }}">
-                            {{ field.label }}
-                            {% if field.required %}
-                            <span class="required">*</span>
-                            {% endif %}
-                        </label>
-                        
-                        {% if field.type == 'select' %}
-                        <select 
-                            id="{{ field.name }}" 
-                            name="{{ field.name }}"
-                            {% if field.required %}required{% endif %}
-                            {% if field.multiple %}multiple{% endif %}
-                        >
-                            {% for option in field.options %}
-                            <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>
-                                {{ option.label }}
-                            </option>
-                            {% endfor %}
-                        </select>
-                        {% elif field.type == 'textarea' %}
-                        <textarea 
-                            id="{{ field.name }}" 
-                            name="{{ field.name }}"
-                            rows="4"
-                            {% if field.required %}required{% endif %}
-                        >{{ field.default or '' }}</textarea>
-                        {% elif field.type == 'checkbox' %}
-                        <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
-                            <input 
-                                type="checkbox" 
-                                id="{{ field.name }}" 
-                                name="{{ field.name }}"
-                                value="true"
-                                {% if field.default %}checked{% endif %}
-                                style="width: auto; margin-right: 10px;"
-                            >
-                            <span>Enable</span>
-                        </label>
-                        {% else %}
-                        <input 
-                            type="{{ field.type or 'text' }}" 
-                            id="{{ field.name }}" 
-                            name="{{ field.name }}"
-                            value="{{ field.default or '' }}"
-                            {% if field.required %}required{% endif %}
-                            {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}
-                        >
+                    <label for="{{ field.name }}">
+                        {{ field.label }}
+                        {% if field.required %}
+                        <span class="pico-color-red-500">*</span>
                         {% endif %}
-                        
-                        {% if errors.get(field.name) %}
-                        <div class="error">{{ errors[field.name] }}</div>
-                        {% endif %}
-                    </div>
+                    </label>
+
+                    {% if field.type == 'select' %}
+                    <select
+                        id="{{ field.name }}"
+                        name="{{ field.name }}"
+                        {% if field.required %}required{% endif %}
+                        {% if field.multiple %}multiple{% endif %}
+                    >
+                        {% for option in field.options %}
+                        <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>
+                            {{ option.label }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    {% elif field.type == 'textarea' %}
+                    <textarea
+                        id="{{ field.name }}"
+                        name="{{ field.name }}"
+                        rows="4"
+                        {% if field.required %}required{% endif %}
+                    >{{ field.default or '' }}</textarea>
+                    {% elif field.type == 'checkbox' %}
+                    <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                        <input
+                            type="checkbox"
+                            id="{{ field.name }}"
+                            name="{{ field.name }}"
+                            value="true"
+                            {% if field.default %}checked{% endif %}
+                        >
+                        <span>Enable</span>
+                    </label>
+                    {% else %}
+                    <input
+                        type="{{ field.type or 'text' }}"
+                        id="{{ field.name }}"
+                        name="{{ field.name }}"
+                        value="{{ field.default or '' }}"
+                        {% if field.required %}required{% endif %}
+                        {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}
+                    >
+                    {% endif %}
+
+                    {% if errors.get(field.name) %}
+                    <small class="pico-color-red-500">{{ errors[field.name] }}</small>
+                    {% endif %}
                     {% endfor %}
                 {% else %}
-                <div class="form-group">
                     <label for="name">
                         Name
-                        <span class="required">*</span>
+                        <span class="pico-color-red-500">*</span>
                     </label>
                     <input type="text" id="name" name="name" required>
                     {% if errors.get('name') %}
-                    <div class="error">{{ errors['name'] }}</div>
+                    <small class="pico-color-red-500">{{ errors['name'] }}</small>
                     {% endif %}
-                </div>
                 {% endif %}
-                
-                <div style="display: flex; gap: 10px;">
-                    <button type="submit" class="btn btn-primary">Submit</button>
-                    <a href="/integrations/{{ domain }}" class="btn btn-secondary">Cancel</a>
+               
+                <div class="grid" style="margin-top: var(--pico-spacing); align-items: stretch;">
+                    <button type="submit" style="margin-bottom: 0;">Submit</button>
+                    <a href="/integrations/{{ domain }}" role="button" class="secondary" style="margin-bottom: 0; display: flex; align-items: center; justify-content: center;">Cancel</a>
                 </div>
             </form>
-        </div>
-    </div>
+        </article>
+    </main>
+   
+    <script>
+        // Theme toggle functionality
+        function getPreferredTheme() {
+            const saved = localStorage.getItem('theme');
+            if (saved) return saved;
+            return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+       
+        function setTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('theme', theme);
+            document.getElementById('theme-icon').textContent = theme === 'dark' ? '☀️' : '🌙';
+        }
+       
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || getPreferredTheme();
+            const next = current === 'dark' ? 'light' : 'dark';
+            setTheme(next);
+        }
+
+        // Initialize theme on load
+        setTheme(getPreferredTheme());
+    </script>
 </body>
 </html>

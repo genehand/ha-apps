@@ -78,6 +78,9 @@ class WebUI:
                     "description": a.get("description", ""),
                     "installed": a.get("installed", False),
                     "source": a.get("source", "hacs_default"),
+                    "stars": a.get("stars", 0),
+                    "downloads": a.get("downloads", 0),
+                    "repository_url": a.get("repository_url", ""),
                 }
                 for a in available
             ]
@@ -618,6 +621,31 @@ class WebUI:
                     self._shim_manager.get_integration_loader().get_entities()
                 ),
             }
+
+        @self._app.get("/status-fragment", response_class=HTMLResponse)
+        async def status_fragment():
+            """HTML fragment for status display (used by HTMX)."""
+            loaded_integrations = (
+                self._shim_manager.get_integration_loader().get_loaded_integrations()
+            )
+            total_entities = len(
+                self._shim_manager.get_integration_loader().get_entities()
+            )
+
+            return self._render_template(
+                "status.html",
+                loaded_integrations=loaded_integrations,
+                total_entities=total_entities,
+            )
+            total_entities = len(
+                self._shim_manager.get_integration_loader().get_entities()
+            )
+
+            return self._render_template(
+                "status.html",
+                loaded_integrations=loaded_integrations,
+                total_entities=total_entities,
+            )
 
         @self._app.get("/api/custom-repos", response_class=JSONResponse)
         async def api_custom_repos():
