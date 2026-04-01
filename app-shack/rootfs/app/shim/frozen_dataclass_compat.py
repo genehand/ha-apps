@@ -1,18 +1,60 @@
-"""Utility for frozen/thawed dataclass compatibility.
+"""Utility to  create classes from which frozen or mutable dataclasses can be derived.
 
-Simplified version of Home Assistant's frozen_dataclass_compat.
+This module enabled a non-breaking transition from mutable to frozen dataclasses
+derived from EntityDescription and sub classes thereof.
 """
 
 from annotationlib import Format, get_annotations
 import dataclasses
-from typing import Any
+import sys
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
+
+def _class_fields(cls: type, kw_only: bool) -> list[tuple[str, Any, Any]]:
+    """Return a list of dataclass fields.
+
+    Extracted from dataclasses._process_class.
+    """
+    cls_annotations = get_annotations(cls, format=Format.FORWARDREF)
+
+    cls_fields: list[dataclasses.Field[Any]] = []
+
+    _dataclasses = sys.modules[dataclasses.__name__]
+    for name, _type in cls_annotations.items():
+        # See if this is a marker to change the value of kw_only.
+        if dataclasses._is_kw_only(type, _dataclasses) or (  # type: ignore[attr-defined]  # noqa: SLF001
+            isinstance(_type, str)
+            and dataclasses._is_type(  # type: ignore[attr-defined]  # noqa: SLF001
+                _type,
+                cls,
+                _dataclasses,
+                dataclasses.KW_ONLY,
+                dataclasses._is_kw_only,  # type: ignore[attr-defined]  # noqa: SLF001
+            )
+        ):
+            kw_only = True
+        else:
+            # Otherwise it's a field of some type.
+            cls_fields.append(dataclasses._get_field(cls, name, _type, kw_only))  # type: ignore[attr-defined]  # noqa: SLF001
+
+    return [(field.name, field.type, field) for field in cls_fields]
 
 
 class FrozenOrThawed(type):
-    """Metaclass which allows frozen or mutable dataclasses to be derived.
+    """Metaclass which which makes classes which behave like a dataclass.
 
     This allows child classes to be either mutable or frozen dataclasses.
     """
+
+    def _make_dataclass(cls, name: str, bases: tuple[type, ...], kw_only: bool) -> None:
+        class_fields = _class_fields(cls, kw_only)
+        dataclass_bases = [getattr(base, "_dataclass", base) for base in bases]
+        cls._dataclass = dataclasses.make_dataclass(
+            name, class_fields, bases=tuple(dataclass_bases), frozen=True
+        )
 
     def __new__(
         mcs,
@@ -22,8 +64,8 @@ class FrozenOrThawed(type):
         frozen_or_thawed: bool = False,
         **kwargs: Any,
     ) -> Any:
-        """Create new class."""
-        namespace["_frozen_or_thawed"] = frozen_or_thawed
+        """Pop frozen_or_thawed and store it in the namespace."""
+        namespace["_FrozenOrThawed__frozen_or_thawed"] = frozen_or_thawed
         return super().__new__(mcs, name, bases, namespace)
 
     def __init__(
@@ -33,129 +75,50 @@ class FrozenOrThawed(type):
         namespace: dict[Any, Any],
         **kwargs: Any,
     ) -> None:
-        """Initialize the class.
+        """Optionally create a dataclass and store it in cls._dataclass.
 
-        If frozen_or_thawed is set, create a dataclass and set up __init__ and __new__.
-        If not, inject parent annotations to allow dataclass inheritance.
+        A dataclass will be created if frozen_or_thawed is set, if not we assume the
+        class will be a real dataclass, i.e. it's decorated with @dataclass.
         """
-        if namespace.get("_frozen_or_thawed"):
-            # This class uses frozen_or_thawed, create a dataclass
-            # Collect annotations from parents first (in reverse MRO order), then this class
-            # This ensures parent fields come before child fields
+        if not namespace["_FrozenOrThawed__frozen_or_thawed"]:
+            # This class is a real dataclass, optionally inject the parent's annotations
+            if all(dataclasses.is_dataclass(base) for base in bases):
+                # All direct parents are dataclasses, rely on dataclass inheritance
+                return
+            # Parent is not a dataclass, inject all parents' annotations
             annotations: dict[str, Any] = {}
-            # Process in reverse MRO so base classes come first
-            for parent in reversed(cls.__mro__):
-                if parent is object or parent is cls:
-                    continue
-                try:
-                    parent_annotations = get_annotations(
-                        parent, format=Format.FORWARDREF
-                    )
-                    # Only add annotations that aren't already defined
-                    for key, value in parent_annotations.items():
-                        if key not in annotations:
-                            annotations[key] = value
-                except Exception:
-                    pass
-
-            # Now add this class's annotations (they come after parent annotations)
-            try:
-                class_annotations = get_annotations(cls, format=Format.FORWARDREF)
-                for key, value in class_annotations.items():
-                    if key not in annotations:
-                        annotations[key] = value
-            except Exception:
-                pass
-
-            # Create the dataclass fields with defaults
-            fields = []
-            field_defaults = {
-                "device_class": None,
-                "entity_category": None,
-                "entity_registry_enabled_default": True,
-                "entity_registry_visible_default": True,
-                "has_entity_name": False,
-                "icon": None,
-                "name": None,
-                "translation_key": None,
-                "unit_of_measurement": None,
-                "state_class": None,
-                "native_unit_of_measurement": None,
-                "options": None,
-                "preset_modes": None,
-                "supported_features": 0,
-                # Humidifier entity description fields
-                "max_humidity": 100,
-                "min_humidity": 0,
-                # Text entity description fields
-                "pattern": None,
-                "mode": "text",
-                "min": 0,
-                "max": 255,
-            }
-
-            # Mutable defaults need factory functions
-            field_factories = {
-                "fan_speed_list": list,
-                "modes": list,
-                "options": list,
-            }
-
-            for field_name, field_type in annotations.items():
-                if field_name in field_factories:
-                    # Use dataclasses.field with default_factory for mutable types
-                    fields.append(
-                        (
-                            field_name,
-                            field_type,
-                            dataclasses.field(
-                                default_factory=field_factories[field_name]
-                            ),
-                        )
-                    )
-                elif field_name in field_defaults:
-                    fields.append((field_name, field_type, field_defaults[field_name]))
-                else:
-                    fields.append((field_name, field_type))
-
-            # Create a dataclass with the annotations
-            dataclass_cls = dataclasses.make_dataclass(
-                name,
-                fields,
-                frozen=True,
-            )
-
-            # Store the dataclass and set up __init__ and __new__
-            cls._dataclass = dataclass_cls
-            cls.__init__ = dataclass_cls.__init__
-
-            def __new__(cls_, *args, **kwargs):
-                """Create instance using the dataclass."""
-                if dataclasses.is_dataclass(cls_):
-                    return object.__new__(cls_)
-                return cls_._dataclass(*args, **kwargs)
-
-            cls.__new__ = __new__
-        else:
-            # This class is a real dataclass, inject parent's annotations
-            annotations = {}
             for parent in cls.__mro__[::-1]:
                 if parent is object:
                     continue
-                try:
-                    parent_annotations = get_annotations(
-                        parent, format=Format.FORWARDREF
-                    )
-                    annotations |= parent_annotations
-                except Exception:
-                    pass
+                annotations |= get_annotations(parent, format=Format.FORWARDREF)
 
-            if annotations:
-                if "__annotations__" in cls.__dict__:
-                    cls.__annotations__ = annotations
-                else:
+            if "__annotations__" in cls.__dict__:
+                cls.__annotations__ = annotations
+            else:
 
-                    def wrapped_annotate(format: Format) -> dict[str, Any]:
-                        return annotations
+                def wrapped_annotate(format: Format) -> dict[str, Any]:
+                    # Note: to avoid complicating things, we only support FORWARDREF
+                    return annotations
 
-                    cls.__annotate__ = wrapped_annotate
+                cls.__annotate__ = wrapped_annotate
+            return
+
+        # First try without setting the kw_only flag, and if that fails, try setting it
+        try:
+            cls._make_dataclass(name, bases, False)
+        except TypeError:
+            cls._make_dataclass(name, bases, True)
+
+        def __new__(*args: Any, **kwargs: Any) -> object:
+            """Create a new instance.
+
+            The function has no named arguments to avoid name collisions with dataclass
+            field names.
+            """
+            cls, *_args = args
+            if dataclasses.is_dataclass(cls):
+                return object.__new__(cls)
+            return cls._dataclass(*_args, **kwargs)
+
+        cls.__init__ = cls._dataclass.__init__  # type: ignore[misc]
+        cls.__new__ = __new__  # type: ignore[method-assign]

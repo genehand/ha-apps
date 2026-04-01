@@ -217,15 +217,15 @@ class TestGetEntityNameForDiscovery:
         result = get_entity_name_for_discovery(entity_name, device_info)
         assert result == "Kitchen Light"
 
-    def test_preserves_name_when_same_as_device(self):
-        """Test that exact device name is preserved."""
+    def test_returns_none_when_same_as_device(self):
+        """Test that None is returned when entity name equals device name (HA convention)."""
         from shim.entity import get_entity_name_for_discovery
 
         entity_name = "Living Room"
         device_info = {"name": "Living Room"}
 
         result = get_entity_name_for_discovery(entity_name, device_info)
-        assert result == "Living Room"
+        assert result is None
 
     def test_returns_none_for_none_input(self):
         """Test that None is returned for None input."""

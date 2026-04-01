@@ -114,6 +114,35 @@ class IntegrationManager:
         self._integrations_dir = self._shim_dir / "custom_components"
         self._integrations_dir.mkdir(parents=True, exist_ok=True)
 
+        # Check if running in container (addon mode) or locally
+        self._is_addon = Path("/data").exists() and Path("/data").is_dir()
+
+        # In container mode, use /data for persistent packages that survive restarts
+        # In local dev mode, use the venv's site-packages
+        if self._is_addon:
+            # Use dynamic Python version in path (e.g., python3.11, python3.12)
+            # Note: When using PYTHONUSERBASE=/data, pip installs to /data/lib/ not /data/.local/lib/
+            python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+            self._persistent_packages_dir = Path(
+                f"/data/lib/{python_version}/site-packages"
+            )
+            self._persistent_packages_dir.mkdir(parents=True, exist_ok=True)
+
+            # Add persistent packages to Python path so they can be imported
+            if str(self._persistent_packages_dir) not in sys.path:
+                sys.path.insert(0, str(self._persistent_packages_dir))
+                importlib.invalidate_caches()
+            _LOGGER.info(
+                f"Using persistent packages dir: {self._persistent_packages_dir} "
+                f"(Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})"
+            )
+            _LOGGER.debug(
+                f"sys.path includes: {[p for p in sys.path if 'site-packages' in p]}"
+            )
+        else:
+            self._persistent_packages_dir = None
+            _LOGGER.info("Running in local dev mode - using venv packages")
+
         # Callback for sending notifications to HA
         self._notification_callback = notification_callback
 
@@ -145,6 +174,7 @@ class IntegrationManager:
 
         self._load_integrations()
         self._load_custom_repos()
+        self._load_hacs_cache()
 
     def _load_integrations(self) -> None:
         """Load installed integrations from storage."""
@@ -166,6 +196,46 @@ class IntegrationManager:
     def _save_custom_repos(self) -> None:
         """Save custom repositories to storage."""
         self._storage.save_custom_repos(self._custom_repos)
+
+    def _load_hacs_cache(self) -> None:
+        """Load HACS repository cache from disk."""
+        try:
+            cache_file = Path(self._storage._shim_dir) / "hacs_cache.json"
+            if cache_file.exists():
+                with open(cache_file, "r") as f:
+                    cache = json.load(f)
+                    self._hacs_repos = cache.get("repos", {})
+                    self._hacs_etag = cache.get("etag")
+                    self._hacs_last_fetched = (
+                        datetime.fromisoformat(cache.get("last_fetched"))
+                        if cache.get("last_fetched")
+                        else None
+                    )
+                    _LOGGER.info(
+                        f"Loaded HACS cache from disk: {len(self._hacs_repos)} repos"
+                    )
+        except Exception as e:
+            _LOGGER.warning(f"Failed to load HACS cache: {e}")
+            self._hacs_repos = {}
+            self._hacs_etag = None
+            self._hacs_last_fetched = None
+
+    def _save_hacs_cache(self) -> None:
+        """Save HACS repository cache to disk."""
+        try:
+            cache_file = Path(self._storage._shim_dir) / "hacs_cache.json"
+            cache = {
+                "repos": self._hacs_repos,
+                "etag": self._hacs_etag,
+                "last_fetched": self._hacs_last_fetched.isoformat()
+                if self._hacs_last_fetched
+                else None,
+            }
+            with open(cache_file, "w") as f:
+                json.dump(cache, f)
+            _LOGGER.debug("Saved HACS cache to disk")
+        except Exception as e:
+            _LOGGER.warning(f"Failed to save HACS cache: {e}")
 
     async def add_custom_repository(self, repo_url: str) -> Tuple[bool, str]:
         """Add a custom repository by URL.
@@ -206,16 +276,20 @@ class IntegrationManager:
             if not domain:
                 return False, "Could not determine integration domain from manifest"
 
-            # Check if domain conflicts with HACS default
-            if domain in self._hacs_repos:
-                return (
-                    False,
-                    f"Integration {domain} is already available in HACS default repositories",
-                )
+            # Check if domain is already installed from a different repository
+            if domain in self._integrations:
+                installed = self._integrations[domain]
+                if installed.repository_url != repo_url:
+                    return (
+                        False,
+                        f"Integration {domain} is already installed from {installed.repository_url}",
+                    )
 
             # Check if domain conflicts with existing custom repo
             if domain in self._custom_repos:
-                return False, f"Custom repository for {domain} already exists"
+                existing = self._custom_repos[domain]
+                if existing.get("repository_url") != repo_url:
+                    return False, f"Custom repository for {domain} already exists"
 
             # Store the custom repo
             self._custom_repos[domain] = {
@@ -358,6 +432,7 @@ class IntegrationManager:
                             }
 
                         self._hacs_repos = repos
+                        self._save_hacs_cache()
                         _LOGGER.info(f"Fetched {len(repos)} HACS repositories from CDN")
                         return repos
                     else:
@@ -854,18 +929,19 @@ class IntegrationManager:
     ) -> bool:
         """Perform the actual installation (used by queue worker)."""
         if source == "hacs_default":
-            if domain in self._hacs_repos:
-                repo_info = self._hacs_repos[domain]
-                repo_url = repo_info["repository_url"]
-            elif domain in self._custom_repos:
-                # Check custom repos if not in HACS defaults
+            # Check custom repos first (they take priority over HACS defaults)
+            if domain in self._custom_repos:
                 _LOGGER.info(f"Found {domain} in custom repositories")
                 repo_info = self._custom_repos[domain]
                 repo_url = repo_info["repository_url"]
                 source = "custom"
+            elif domain in self._hacs_repos:
+                # Fall back to HACS defaults
+                repo_info = self._hacs_repos[domain]
+                repo_url = repo_info["repository_url"]
             else:
                 _LOGGER.error(
-                    f"Integration {domain} not found in HACS default or custom repositories"
+                    f"Integration {domain} not found in custom or HACS default repositories"
                 )
                 return False
         elif source == "custom":
@@ -1141,6 +1217,9 @@ class IntegrationManager:
 
     async def remove_integration(self, domain: str) -> bool:
         """Remove an integration completely."""
+        # Uninstall requirements before removing
+        await self.uninstall_requirements(domain)
+
         if domain in self._integrations:
             del self._integrations[domain]
             self._save_integrations()
@@ -1177,8 +1256,6 @@ class IntegrationManager:
 
         _LOGGER.info(f"Integration {domain} has requirements: {info.requirements}")
 
-        import sys
-
         # Use the venv pip to ensure packages are installed in the right environment
         venv_pip = self._shim_dir.parent / ".venv" / "bin" / "pip"
         if venv_pip.exists():
@@ -1191,15 +1268,28 @@ class IntegrationManager:
 
         installed_any = False
 
+        # Prepare environment for pip commands in container mode
+        if self._is_addon:
+            pip_env = os.environ.copy()
+            pip_env["PYTHONUSERBASE"] = "/data"
+        else:
+            pip_env = os.environ.copy()
+
         for requirement in info.requirements:
             try:
-                # Check if requirement is already installed
+                # Parse package name (without version specifiers)
+                pkg_name = (
+                    requirement.split("==")[0].split(">=")[0].split("<=")[0].strip()
+                )
+
+                # Check if requirement is already installed (in venv or persistent location)
                 check_proc = await asyncio.create_subprocess_exec(
                     *pip_cmd,
                     "show",
-                    requirement.split("==")[0].split(">=")[0].split("<=")[0].strip(),
+                    pkg_name,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=pip_env,
                 )
                 stdout, _ = await check_proc.communicate()
 
@@ -1236,12 +1326,20 @@ class IntegrationManager:
                         continue
 
                 _LOGGER.info(f"Installing requirement: {requirement}")
+
+                # Build pip command based on environment
+                if self._is_addon:
+                    # In container: use --user with PYTHONUSERBASE to persist across restarts
+                    install_cmd = [*pip_cmd, "install", "--user", requirement]
+                else:
+                    # Local dev: install directly to venv without --user
+                    install_cmd = [*pip_cmd, "install", requirement]
+
                 proc = await asyncio.create_subprocess_exec(
-                    *pip_cmd,
-                    "install",
-                    requirement,
+                    *install_cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=pip_env,
                 )
                 stdout, stderr = await proc.communicate()
                 if proc.returncode != 0:
@@ -1249,6 +1347,7 @@ class IntegrationManager:
                     return False
                 _LOGGER.info(f"Successfully installed {requirement}")
                 _LOGGER.debug(f"pip output: {stdout.decode()}")
+
                 installed_any = True
             except Exception as e:
                 _LOGGER.error(f"Failed to install {requirement}: {e}")
@@ -1265,6 +1364,99 @@ class IntegrationManager:
         else:
             _LOGGER.debug(
                 f"All requirements already satisfied for {domain}, no cache invalidation needed"
+            )
+
+        return True
+
+    async def uninstall_requirements(self, domain: str) -> bool:
+        """Uninstall Python requirements for an integration.
+
+        Called when removing an integration to clean up its dependencies.
+        """
+        info = self._integrations.get(domain)
+        if not info:
+            _LOGGER.debug(
+                f"Integration {domain} not found, no requirements to uninstall"
+            )
+            return True
+
+        if not info.requirements:
+            _LOGGER.debug(f"Integration {domain} has no requirements to uninstall")
+            return True
+
+        _LOGGER.info(f"Uninstalling requirements for {domain}: {info.requirements}")
+
+        import sys
+        import subprocess
+
+        # Get the venv pip path
+        venv_path = Path(sys.executable).parent
+        pip_path = venv_path / "pip"
+
+        # Set up environment based on mode
+        if self._is_addon:
+            # In container: target persistent packages with PYTHONUSERBASE
+            env = os.environ.copy()
+            env["PYTHONUSERBASE"] = "/data"
+        else:
+            # Local dev: use normal environment
+            env = os.environ.copy()
+
+        uninstalled_any = False
+        for requirement in info.requirements:
+            try:
+                # Extract just the package name (strip version specifiers like ==1.0.0, >=1.0, etc.)
+                package_name = (
+                    requirement.split("==")[0]
+                    .split(">=")[0]
+                    .split("<=")[0]
+                    .split(">")[0]
+                    .split("<")[0]
+                    .split("~=")[0]
+                    .split("!=")[0]
+                    .strip()
+                )
+
+                # Check if package is installed (in venv or persistent location)
+                result = subprocess.run(
+                    [str(pip_path), "show", package_name],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                if result.returncode != 0:
+                    _LOGGER.debug(
+                        f"Package {package_name} (from {requirement}) not installed, skipping"
+                    )
+                    continue
+
+                _LOGGER.info(
+                    f"Uninstalling {package_name} (from requirement: {requirement})"
+                )
+                # Run pip uninstall
+                subprocess.run(
+                    [str(pip_path), "uninstall", "-y", package_name],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                _LOGGER.info(f"Successfully uninstalled {package_name}")
+                uninstalled_any = True
+            except subprocess.CalledProcessError as e:
+                _LOGGER.warning(f"Failed to uninstall {package_name}: {e.stderr}")
+                # Continue trying to uninstall other requirements
+            except Exception as e:
+                _LOGGER.error(f"Error uninstalling requirement {requirement}: {e}")
+                return False
+
+        # Invalidate import cache if we uninstalled anything
+        if uninstalled_any:
+            import importlib
+
+            importlib.invalidate_caches()
+            _LOGGER.info(
+                f"Invalidated import cache after uninstalling requirements for {domain}"
             )
 
         return True

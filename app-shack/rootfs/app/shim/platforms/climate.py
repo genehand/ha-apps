@@ -7,18 +7,21 @@ from typing import Any, List, Optional
 
 from ..entity import (
     Entity,
+    EntityDescription,
     format_device_identifiers,
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
+    get_mqtt_safe_unique_id,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
 DOMAIN = "climate"
 
-# HVAC modes
+# HVAC modes (string constants for compatibility)
 HVAC_MODE_OFF = "off"
 HVAC_MODE_HEAT = "heat"
 HVAC_MODE_COOL = "cool"
@@ -27,6 +30,26 @@ HVAC_MODE_AUTO = "auto"
 HVAC_MODE_DRY = "dry"
 HVAC_MODE_FAN_ONLY = "fan_only"
 
+# Fan modes
+FAN_AUTO = "auto"
+FAN_LOW = "low"
+FAN_MEDIUM = "medium"
+FAN_HIGH = "high"
+
+
+# HVACMode enum class for modern integrations
+class HVACMode:
+    """HVAC mode enum for Home Assistant compatibility."""
+
+    OFF = HVAC_MODE_OFF
+    HEAT = HVAC_MODE_HEAT
+    COOL = HVAC_MODE_COOL
+    HEAT_COOL = HVAC_MODE_HEAT_COOL
+    AUTO = HVAC_MODE_AUTO
+    DRY = HVAC_MODE_DRY
+    FAN_ONLY = HVAC_MODE_FAN_ONLY
+
+
 # HVAC actions
 CURRENT_HVAC_OFF = "off"
 CURRENT_HVAC_HEAT = "heating"
@@ -34,6 +57,26 @@ CURRENT_HVAC_COOL = "cooling"
 CURRENT_HVAC_DRY = "drying"
 CURRENT_HVAC_IDLE = "idle"
 CURRENT_HVAC_FAN = "fan"
+
+
+# HVACAction enum class for modern integrations
+class HVACAction:
+    """HVAC action enum for Home Assistant compatibility."""
+
+    OFF = CURRENT_HVAC_OFF
+    HEATING = CURRENT_HVAC_HEAT
+    COOLING = CURRENT_HVAC_COOL
+    DRYING = CURRENT_HVAC_DRY
+    IDLE = CURRENT_HVAC_IDLE
+    FAN = CURRENT_HVAC_FAN
+
+
+# Swing modes
+SWING_OFF = "off"
+SWING_ON = "on"
+SWING_VERTICAL = "vertical"
+SWING_HORIZONTAL = "horizontal"
+SWING_BOTH = "both"
 
 # Preset modes
 PRESET_NONE = "none"
@@ -53,6 +96,27 @@ SUPPORT_FAN_MODE = 8
 SUPPORT_PRESET_MODE = 16
 SUPPORT_SWING_MODE = 32
 SUPPORT_AUX_HEAT = 64
+
+
+# ClimateEntityFeature enum class for modern integrations
+class ClimateEntityFeature:
+    """Climate entity feature flags for Home Assistant compatibility."""
+
+    TARGET_TEMPERATURE = SUPPORT_TARGET_TEMPERATURE
+    TARGET_TEMPERATURE_RANGE = SUPPORT_TARGET_TEMPERATURE_RANGE
+    TARGET_HUMIDITY = SUPPORT_TARGET_HUMIDITY
+    FAN_MODE = SUPPORT_FAN_MODE
+    PRESET_MODE = SUPPORT_PRESET_MODE
+    SWING_MODE = SUPPORT_SWING_MODE
+    AUX_HEAT = SUPPORT_AUX_HEAT
+
+
+# ClimateEntityDescription for integrations that use descriptions
+from ..frozen_dataclass_compat import FrozenOrThawed
+
+
+class ClimateEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
+    """Describe a climate entity."""
 
 
 class ClimateEntity(Entity):
@@ -335,7 +399,7 @@ class ClimateEntity(Entity):
         entity_name = get_entity_name_for_discovery(self.name, self.device_info)
         config = {
             "name": entity_name,
-            "unique_id": self.unique_id,
+            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
             "mode_state_topic": f"{base_topic}/state",
             "mode_command_topic": f"{base_topic}/mode_set",
             "current_temperature_topic": f"{base_topic}/current_temperature",

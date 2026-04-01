@@ -9,12 +9,11 @@ import asyncio
 from datetime import datetime
 
 from .logging import get_logger
+from .frozen_dataclass_compat import FrozenOrThawed
 
 # STATE_UNAVAILABLE is a constant from homeassistant.const
 # Define it locally to avoid circular import during module load
 STATE_UNAVAILABLE = "unavailable"
-
-from .frozen_dataclass_compat import FrozenOrThawed
 
 _LOGGER = get_logger(__name__)
 
@@ -42,22 +41,39 @@ def format_device_identifiers(identifiers: Set[Union[tuple, list, str]]) -> List
                      device identifiers.
 
     Returns:
-        A list of strings with identifiers joined by dashes.
+        A list of strings with identifiers joined by dashes, with colons
+        converted to dashes for MQTT compatibility.
     """
     id_list = []
     for item in identifiers:
         if isinstance(item, (list, tuple)):
-            id_list.append("-".join(str(x) for x in item))
+            identifier = "-".join(str(x) for x in item)
         else:
-            id_list.append(str(item))
+            identifier = str(item)
+        # Convert colons to dashes for MQTT topic compatibility
+        id_list.append(identifier.replace(":", "-"))
     return id_list
+
+
+def get_mqtt_safe_unique_id(unique_id: str) -> str:
+    """Convert a unique_id to an MQTT-safe format.
+
+    Replaces colons and spaces with dashes for valid MQTT topic names and identifiers.
+
+    Args:
+        unique_id: The original unique_id (may contain colons/spaces from device serials).
+
+    Returns:
+        The unique_id with colons and spaces replaced by dashes.
+    """
+    return unique_id.replace(":", "-").replace(" ", "-")
 
 
 def get_mqtt_entity_id(entity_id: str) -> str:
     """Extract the MQTT-safe entity ID without domain prefix.
 
     Converts 'fan.living_room' to 'living-room' for MQTT topics.
-    Replaces dots and underscores with dashes for valid MQTT topic names.
+    Replaces dots, underscores, colons, and spaces with dashes for valid MQTT topic names.
     Removes duplicate domain segments to avoid redundancy (e.g., integration
     unique_ids that include the domain twice).
 
@@ -65,14 +81,19 @@ def get_mqtt_entity_id(entity_id: str) -> str:
         entity_id: The full entity ID (e.g., 'fan.living_room').
 
     Returns:
-        The entity ID without domain prefix, with dots/underscores replaced by dashes,
+        The entity ID without domain prefix, with dots/underscores/colons/spaces replaced by dashes,
         and duplicate domain segments removed.
     """
     if "." in entity_id:
         entity_id = entity_id.split(".", 1)[1]
 
-    # Replace dots and underscores with dashes for MQTT topic compatibility
-    dashed = entity_id.replace(".", "-").replace("_", "-")
+    # Replace dots, underscores, colons, and spaces with dashes for MQTT topic compatibility
+    dashed = (
+        entity_id.replace(".", "-")
+        .replace("_", "-")
+        .replace(":", "-")
+        .replace(" ", "-")
+    )
 
     # Remove duplicate segments that appear later in the string
     # This handles cases like "flightradar24-40897-75808525-flightradar24-in-area"
@@ -92,7 +113,7 @@ def get_mqtt_object_id(entity_id: str) -> str:
     """Get the MQTT-safe object_id from an entity_id.
 
     This is used for looking up entities from MQTT topics. The object_id
-    is the entity_id without the domain prefix, with dots and underscores
+    is the entity_id without the domain prefix, with dots, underscores, and colons
     converted to dashes, and duplicate segments removed.
 
     Args:
@@ -171,18 +192,30 @@ def get_entity_name_for_discovery(
     an entity is named "Living Room Temperature", the returned name will be
     "Temperature".
 
+    If the entity name is exactly the same as the device name, returns None
+    to indicate the entity should use the device name directly (HA convention).
+
     Args:
         entity_name: The full entity name.
         device_info: Device info containing the device name.
 
     Returns:
-        The entity name with device prefix stripped, or the original name.
+        The entity name with device prefix stripped, or None if entity name
+        matches device name exactly.
     """
     if not entity_name:
         return entity_name
 
     device_name = get_device_info_attr(device_info, "name")
-    if device_name and entity_name.startswith(f"{device_name} "):
+    if not device_name:
+        return entity_name
+
+    # If entity name equals device name exactly, return None (HA convention)
+    if entity_name == device_name:
+        return None
+
+    # Strip device name prefix if present (e.g., "Device Name Entity Name" -> "Entity Name")
+    if entity_name.startswith(f"{device_name} "):
         return entity_name[len(f"{device_name} ") :]
 
     return entity_name

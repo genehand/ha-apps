@@ -25,6 +25,53 @@ _LOGGER = get_logger(__name__)
 T = TypeVar("T")
 
 
+def _slugify_name(name: str) -> str:
+    """Create a safe entity_id slug from a name.
+
+    Handles unicode characters by normalizing and mapping to ASCII.
+    Converts to lowercase and replaces spaces/dashes with underscores.
+    Removes other punctuation.
+    """
+    import re
+    import unicodedata
+
+    # Map common unicode punctuation to ASCII equivalents
+    unicode_map = {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": ",",
+        "\u201b": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u2026": "...",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+    }
+
+    text = str(name)
+
+    # Normalize unicode
+    text = unicodedata.normalize("NFKD", text)
+
+    # Map unicode chars to ASCII
+    for unicode_char, ascii_char in unicode_map.items():
+        text = text.replace(unicode_char, ascii_char)
+
+    # Encode to ASCII, dropping remaining non-ASCII
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # Convert to lowercase and replace spaces/dashes with underscores
+    text = re.sub(r"[-\s]+", "_", text.strip().lower())
+
+    # Remove any remaining non-word characters (except underscores)
+    text = re.sub(r"[^\w]", "", text)
+
+    return text
+
+
 class SupportsResponse(Enum):
     """Enum for service call response support."""
 
@@ -484,12 +531,11 @@ class ConfigEntries:
                                         )
                                     elif name:
                                         # Clean up name for entity_id
-                                        clean_name = (
-                                            name.lower()
-                                            .replace(" ", "_")
-                                            .replace("-", "_")
-                                        )
+                                        clean_name = _slugify_name(name)
                                         entity.entity_id = f"{platform}.{clean_name}"
+                                        _LOGGER.debug(
+                                            f"Generated entity_id from name: {entity.entity_id}"
+                                        )
                                     else:
                                         # Fallback
                                         entity.entity_id = (

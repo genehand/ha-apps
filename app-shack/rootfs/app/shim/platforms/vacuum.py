@@ -3,6 +3,7 @@
 Provides compatibility for homeassistant.components.vacuum imports.
 """
 
+from dataclasses import field
 from enum import Enum
 from typing import Any, List, Optional
 
@@ -118,12 +119,10 @@ class StateVacuumEntity(Entity):
         raise NotImplementedError()
 
 
-class VacuumEntityDescription(
-    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
-):
+class VacuumEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
     """Describe a vacuum entity."""
 
-    fan_speed_list: List[str] = []
+    fan_speed_list: List[str] = field(default_factory=list)
     supported_features: int = 0
 
 

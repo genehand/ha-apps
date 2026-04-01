@@ -291,6 +291,9 @@ class ImportPatcher:
         homeassistant.helpers.entity = entity
         sys.modules["homeassistant.helpers.entity"] = entity
 
+        # Also add DeviceInfo to homeassistant.helpers.entity for compatibility
+        entity.DeviceInfo = DeviceInfo
+
         # Create config_validation stub module
         config_validation = types.ModuleType("homeassistant.helpers.config_validation")
         config_validation.string = lambda x: x
@@ -400,6 +403,12 @@ class ImportPatcher:
         entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
         entity_registry.async_get = lambda *args, **kwargs: None
         entity_registry.RegistryEntry = type("RegistryEntry", (), {"entity_id": None})
+
+        async def async_entries_for_config_entry(hass, config_entry_id):
+            """Return all entity registry entries for a config entry."""
+            return []
+
+        entity_registry.async_entries_for_config_entry = async_entries_for_config_entry
         homeassistant.helpers.entity_registry = entity_registry
         sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
 
@@ -419,6 +428,23 @@ class ImportPatcher:
         event.EventStateChangedData = type("EventStateChangedData", (), {})
         homeassistant.helpers.event = event
         sys.modules["homeassistant.helpers.event"] = event
+
+        # Create dispatcher stub module for signal/slot pattern
+        dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
+
+        async def async_dispatcher_connect(hass, signal, target):
+            """Connect a receiver to a signal."""
+            _LOGGER.debug(f"Dispatcher connect: {signal}")
+            return lambda: None
+
+        async def async_dispatcher_send(hass, signal, *args):
+            """Send a signal to all receivers."""
+            _LOGGER.debug(f"Dispatcher send: {signal}")
+
+        dispatcher.async_dispatcher_connect = async_dispatcher_connect
+        dispatcher.async_dispatcher_send = async_dispatcher_send
+        homeassistant.helpers.dispatcher = dispatcher
+        sys.modules["homeassistant.helpers.dispatcher"] = dispatcher
 
         # Create service_info stub module with submodules
         service_info = types.ModuleType("homeassistant.helpers.service_info")
@@ -544,10 +570,42 @@ class ImportPatcher:
 
         # Create util.slugify function
         def slugify(text):
-            """Create a slug from text."""
+            """Create a slug from text.
+
+            Handles unicode characters by normalizing them to ASCII equivalents
+            where possible (e.g., curly quotes -> straight quotes).
+            """
             import re
+            import unicodedata
 
             text = str(text)
+
+            # Normalize unicode to decompose characters
+            text = unicodedata.normalize("NFKD", text)
+
+            # Map common unicode punctuation to ASCII equivalents
+            # Curly/smart quotes and other typographic characters
+            unicode_map = {
+                "\u2018": "'",  # LEFT SINGLE QUOTATION MARK -> APOSTROPHE
+                "\u2019": "'",  # RIGHT SINGLE QUOTATION MARK -> APOSTROPHE
+                "\u201a": ",",  # SINGLE LOW-9 QUOTATION MARK -> COMMA
+                "\u201b": "'",  # SINGLE HIGH-REVERSED-9 QUOTATION MARK -> APOSTROPHE
+                "\u201c": '"',  # LEFT DOUBLE QUOTATION MARK -> QUOTATION MARK
+                "\u201d": '"',  # RIGHT DOUBLE QUOTATION MARK -> QUOTATION MARK
+                "\u201e": '"',  # DOUBLE LOW-9 QUOTATION MARK -> QUOTATION MARK
+                "\u201f": '"',  # DOUBLE HIGH-REVERSED-9 QUOTATION MARK -> QUOTATION MARK
+                "\u2026": "...",  # HORIZONTAL ELLIPSIS -> ...
+                "\u2013": "-",  # EN DASH -> HYPHEN-MINUS
+                "\u2014": "-",  # EM DASH -> HYPHEN-MINUS
+                "\u2212": "-",  # MINUS SIGN -> HYPHEN-MINUS
+            }
+            for unicode_char, ascii_char in unicode_map.items():
+                text = text.replace(unicode_char, ascii_char)
+
+            # Encode to ASCII, dropping any remaining non-ASCII chars
+            text = text.encode("ascii", "ignore").decode("ascii")
+
+            # Remove non-word chars (except spaces and dashes), lowercase, replace spaces/dashes with underscore
             text = re.sub(r"[^\w\s-]", "", text).strip().lower()
             text = re.sub(r"[-\s]+", "_", text)
             return text
@@ -738,6 +796,12 @@ class ImportPatcher:
                 """Perform first refresh on config entry setup."""
                 await self.async_refresh()
 
+            def async_set_updated_data(self, data):
+                """Manually update data, notify listeners and reset update failure."""
+                self.data = data
+                self._last_update_success = True
+                self.async_update_listeners()
+
             @property
             def last_update_success(self):
                 """Return True if last update was successful."""
@@ -834,6 +898,7 @@ class ImportPatcher:
         homeassistant.components.text = platforms.text
         homeassistant.components.vacuum = platforms.vacuum
         homeassistant.components.humidifier = platforms.humidifier
+        homeassistant.components.number = platforms.number
 
         # Create persistent_notification stub module
         persistent_notification = types.ModuleType(
@@ -847,6 +912,14 @@ class ImportPatcher:
         sys.modules["homeassistant.components.persistent_notification"] = (
             persistent_notification
         )
+
+        # Create diagnostics stub module
+        diagnostics = types.ModuleType("homeassistant.components.diagnostics")
+        diagnostics.async_get_config_entry_diagnostics = lambda hass, config_entry: {}
+        diagnostics.async_get_device_diagnostics = lambda hass, config_entry, device: {}
+        diagnostics.REDACTED = "**REDACTED**"
+        homeassistant.components.diagnostics = diagnostics
+        sys.modules["homeassistant.components.diagnostics"] = diagnostics
 
         # Add to sys.modules
         sys.modules["homeassistant.components.fan"] = platforms.fan
@@ -870,6 +943,7 @@ class ImportPatcher:
         sys.modules["homeassistant.components.text"] = platforms.text
         sys.modules["homeassistant.components.vacuum"] = platforms.vacuum
         sys.modules["homeassistant.components.humidifier"] = platforms.humidifier
+        sys.modules["homeassistant.components.number"] = platforms.number
 
         _LOGGER.debug("Platform modules patched")
 
@@ -914,44 +988,52 @@ class ImportPatcher:
         # Create missing component stubs
         from dataclasses import make_dataclass, field
 
+        from shim.frozen_dataclass_compat import FrozenOrThawed
+
         image_stub = types.ModuleType("homeassistant.components.image")
         image_stub.ImageEntity = type("ImageEntity", (), {})
-        # Create ImageEntityDescription as a frozen dataclass with all common fields
-        ImageEntityDescription = make_dataclass(
-            "ImageEntityDescription",
-            [
-                ("key", str),
-                ("name", Optional[str], None),
-                ("icon", Optional[str], None),
-                ("device_class", Optional[str], None),
-                ("entity_category", Optional[str], None),
-                ("entity_registry_enabled_default", bool, True),
-            ],
-            frozen=True,
-        )
+
+        # Create ImageEntityDescription using FrozenOrThawed for compatibility
+        class ImageEntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
+            """Image entity description."""
+
+            key: str
+            name: Optional[str] = None
+            icon: Optional[str] = None
+            device_class: Optional[str] = None
+            entity_category: Optional[str] = None
+            entity_registry_enabled_default: bool = True
+
         image_stub.ImageEntityDescription = ImageEntityDescription
         homeassistant.components.image = image_stub
         sys.modules["homeassistant.components.image"] = image_stub
 
         number_stub = types.ModuleType("homeassistant.components.number")
-        number_stub.NumberEntity = type("NumberEntity", (), {})
-        # Create NumberEntityDescription as a frozen dataclass with all common fields
-        NumberEntityDescription = make_dataclass(
-            "NumberEntityDescription",
-            [
-                ("key", str),
-                ("name", Optional[str], None),
-                ("icon", Optional[str], None),
-                ("device_class", Optional[str], None),
-                ("entity_category", Optional[str], None),
-                ("entity_registry_enabled_default", bool, True),
-                ("native_unit_of_measurement", Optional[str], None),
-                ("native_max_value", Optional[float], None),
-                ("native_min_value", Optional[float], None),
-                ("native_step", Optional[float], None),
-            ],
-            frozen=True,
-        )
+        # Use the real NumberEntity from shim.platforms.number
+        import shim.platforms.number as number_platform
+
+        number_stub.NumberEntity = number_platform.NumberEntity
+
+        # Create NumberEntityDescription using FrozenOrThawed for compatibility
+        class NumberEntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
+            """Number entity description."""
+
+            key: str
+            name: Optional[str] = None
+            translation_key: Optional[str] = None
+            icon: Optional[str] = None
+            device_class: Optional[str] = None
+            entity_category: Optional[str] = None
+            entity_registry_enabled_default: bool = True
+            native_unit_of_measurement: Optional[str] = None
+            native_max_value: Optional[float] = None
+            native_min_value: Optional[float] = None
+            native_step: Optional[float] = None
+            # Legacy field names for compatibility
+            min_value: Optional[float] = None
+            max_value: Optional[float] = None
+            step: Optional[float] = None
+
         number_stub.NumberEntityDescription = NumberEntityDescription
         # Create NumberDeviceClass enum
         number_device_class_enum = Enum(
@@ -1015,6 +1097,16 @@ class ImportPatcher:
             ],
         )
         number_stub.NumberDeviceClass = number_device_class_enum
+        # Create NumberMode enum for entity display modes
+        number_mode_enum = Enum(
+            "NumberMode",
+            [
+                ("AUTO", "auto"),
+                ("BOX", "box"),
+                ("SLIDER", "slider"),
+            ],
+        )
+        number_stub.NumberMode = number_mode_enum
         homeassistant.components.number = number_stub
         sys.modules["homeassistant.components.number"] = number_stub
 
@@ -1028,6 +1120,15 @@ class ImportPatcher:
         typing_stub = types.ModuleType("homeassistant.helpers.typing")
         typing_stub.EventType = type("EventType", (), {})
         typing_stub.StateType = type("StateType", (), {})
+
+        # UNDEFINED sentinel for optional values
+        class UNDEFINED:
+            """Sentinel class for undefined values."""
+
+            pass
+
+        typing_stub.UNDEFINED = UNDEFINED
+        typing_stub.UndefinedType = type
         homeassistant.helpers.typing = typing_stub
         sys.modules["homeassistant.helpers.typing"] = typing_stub
 

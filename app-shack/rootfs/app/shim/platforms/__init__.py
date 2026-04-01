@@ -16,6 +16,7 @@ from . import device_tracker
 from . import text
 from . import vacuum
 from . import humidifier
+from . import number
 
 __all__ = [
     "fan",
@@ -31,4 +32,5 @@ __all__ = [
     "text",
     "vacuum",
     "humidifier",
+    "number",
 ]

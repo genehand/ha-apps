@@ -1,7 +1,8 @@
 """Tests for shim platform additions."""
 
+import dataclasses
+
 import pytest
-from dataclasses import FrozenInstanceError
 
 
 class TestVacuumEntity:
@@ -77,14 +78,16 @@ class TestVacuumEntity:
         assert desc.fan_speed_list == []
         assert desc.supported_features == 0
 
-    def test_vacuum_entity_description_immutable(self):
-        """Test that VacuumEntityDescription is immutable (frozen dataclass)."""
+    def test_vacuum_entity_description_frozen(self):
+        """Test that VacuumEntityDescription is frozen (immutable dataclass)."""
+        import dataclasses
         from shim.platforms.vacuum import VacuumEntityDescription
 
-        desc = VacuumEntityDescription(key="immutable_test")
-
-        with pytest.raises(FrozenInstanceError):
+        desc = VacuumEntityDescription(key="frozen_test")
+        # Should NOT be able to modify attributes
+        with pytest.raises(dataclasses.FrozenInstanceError):
             desc.key = "modified"
+        assert desc.key == "frozen_test"
 
     def test_vacuum_entity_description_separate_instances(self):
         """Test that separate instances don't share mutable defaults."""
@@ -170,14 +173,16 @@ class TestHumidifierEntity:
         assert desc.modes == []
         assert desc.supported_features == 0
 
-    def test_humidifier_entity_description_immutable(self):
-        """Test that HumidifierEntityDescription is immutable."""
+    def test_humidifier_entity_description_frozen(self):
+        """Test that HumidifierEntityDescription is frozen (immutable dataclass)."""
+        import dataclasses
         from shim.platforms.humidifier import HumidifierEntityDescription
 
-        desc = HumidifierEntityDescription(key="immutable_test")
-
-        with pytest.raises(FrozenInstanceError):
+        desc = HumidifierEntityDescription(key="frozen_test")
+        # Should NOT be able to modify attributes
+        with pytest.raises(dataclasses.FrozenInstanceError):
             desc.key = "modified"
+        assert desc.key == "frozen_test"
 
     def test_humidifier_entity_description_separate_instances(self):
         """Test that separate instances don't share mutable defaults."""
@@ -337,3 +342,304 @@ class TestServiceCall:
         # Ensure call2's data is not affected
         assert call2.data == {}
         assert call1.data == {"entity_id": "switch.one", "extra": "value"}
+
+
+class TestSelectEntityOptionsMap:
+    """Tests for select entity options_map functionality."""
+
+    def test_select_entity_description_with_options_map(self):
+        """Test SelectEntityDescription with options_map field."""
+        from shim.platforms.select import SelectEntityDescription
+
+        options_map = {
+            "5_seconds": "5 seconds",
+            "10_seconds": "10 seconds",
+        }
+        desc = SelectEntityDescription(
+            key="test_select",
+            options=["5_seconds", "10_seconds"],
+            options_map=options_map,
+        )
+
+        assert desc.key == "test_select"
+        assert desc.options == ["5_seconds", "10_seconds"]
+        assert desc.options_map == options_map
+
+    def test_select_entity_without_options_map(self):
+        """Test SelectEntityDescription without options_map (backward compatible)."""
+        from shim.platforms.select import SelectEntityDescription
+
+        desc = SelectEntityDescription(
+            key="simple_select",
+            options=["option1", "option2"],
+        )
+
+        assert desc.key == "simple_select"
+        assert desc.options == ["option1", "option2"]
+        assert desc.options_map is None
+
+    def test_select_entity_get_options_map(self):
+        """Test SelectEntity._get_options_map method."""
+        from shim.platforms.select import SelectEntity, SelectEntityDescription
+
+        options_map = {
+            "raw_value": "Display Value",
+        }
+        desc = SelectEntityDescription(
+            key="test",
+            options=["raw_value"],
+            options_map=options_map,
+        )
+
+        class TestSelect(SelectEntity):
+            def __init__(self):
+                self.entity_description = desc
+
+        entity = TestSelect()
+        result = entity._get_options_map()
+
+        assert result == options_map
+
+    def test_select_entity_get_options_map_without_description(self):
+        """Test SelectEntity._get_options_map returns None without description."""
+        from shim.platforms.select import SelectEntity
+
+        class TestSelect(SelectEntity):
+            pass
+
+        entity = TestSelect()
+        result = entity._get_options_map()
+
+        assert result is None
+
+    def test_select_entity_frozen_dataclass_with_options_map(self):
+        """Test that SelectEntityDescription with options_map is still frozen."""
+        import dataclasses
+        from shim.platforms.select import SelectEntityDescription
+
+        options_map = {"a": "A"}
+        desc = SelectEntityDescription(
+            key="frozen_test",
+            options=["a"],
+            options_map=options_map,
+        )
+
+        # Should NOT be able to modify attributes
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            desc.options_map = {"b": "B"}
+
+    def test_select_entity_frozen_dataclass_patch_with_object_setattr(self):
+        """Test that we can patch frozen dataclass instances using object.__setattr__."""
+        import dataclasses
+        from shim.platforms.select import SelectEntityDescription
+
+        # Create a frozen description without options_map
+        desc = SelectEntityDescription(
+            key="patch_test",
+            options=["a"],
+        )
+
+        # Verify it doesn't have options_map initially
+        assert not hasattr(desc, "options_map") or desc.options_map is None
+
+        # Patch using object.__setattr__ (this is what our integration loader does)
+        test_map = {"a": "A Value", "b": "B Value"}
+        object.__setattr__(desc, "options_map", test_map)
+
+        # Verify the patch worked
+        assert hasattr(desc, "options_map")
+        assert desc.options_map == test_map
+        assert desc.options_map["a"] == "A Value"
+
+
+class TestOptionsMapRegistry:
+    """Tests for the options_map registry."""
+
+    def test_load_integration_translations(self):
+        """Test loading translations from integration files."""
+        import tempfile
+        import json
+        from pathlib import Path
+        from shim.options_map import (
+            load_integration_translations,
+            clear_translations_cache,
+        )
+
+        # Clear cache for clean test
+        clear_translations_cache()
+
+        try:
+            # Create a temp integration with translations
+            with tempfile.TemporaryDirectory() as tmpdir:
+                integration_path = Path(tmpdir)
+                translations_dir = integration_path / "translations"
+                translations_dir.mkdir()
+
+                translations = {
+                    "entity": {
+                        "select": {
+                            "all": {
+                                "state": {
+                                    "5_seconds": "5 seconds",
+                                    "10_seconds": "10 seconds",
+                                }
+                            }
+                        }
+                    }
+                }
+
+                with open(translations_dir / "en.json", "w") as f:
+                    json.dump(translations, f)
+
+                result = load_integration_translations(
+                    "test_integration", integration_path
+                )
+
+                assert result == translations
+                assert (
+                    result["entity"]["select"]["all"]["state"]["5_seconds"]
+                    == "5 seconds"
+                )
+        finally:
+            clear_translations_cache()
+
+    def test_get_select_state_translations(self):
+        """Test extracting select state translations from translation data."""
+        from shim.options_map import get_select_state_translations
+
+        translations = {
+            "entity": {
+                "select": {
+                    "all": {
+                        "state": {
+                            "5_seconds": "5 seconds",
+                            "always_on": "Always On",
+                        }
+                    }
+                }
+            }
+        }
+
+        result = get_select_state_translations(translations)
+
+        assert result["5_seconds"] == "5 seconds"
+        assert result["always_on"] == "Always On"
+
+    def test_get_select_state_translations_empty(self):
+        """Test extracting translations when no select translations exist."""
+        from shim.options_map import get_select_state_translations
+
+        translations = {"config": {}}
+        result = get_select_state_translations(translations)
+
+        assert result == {}
+
+    def test_load_strings_json_fallback(self):
+        """Test loading strings.json as fallback when translations not present."""
+        import tempfile
+        import json
+        from pathlib import Path
+        from shim.options_map import (
+            load_integration_translations,
+            clear_translations_cache,
+        )
+
+        clear_translations_cache()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                integration_path = Path(tmpdir)
+
+                strings = {
+                    "entity": {
+                        "select": {"test": {"state": {"raw_value": "Display Value"}}}
+                    }
+                }
+
+                with open(integration_path / "strings.json", "w") as f:
+                    json.dump(strings, f)
+
+                result = load_integration_translations(
+                    "test_integration", integration_path
+                )
+
+                assert (
+                    result["entity"]["select"]["test"]["state"]["raw_value"]
+                    == "Display Value"
+                )
+        finally:
+            clear_translations_cache()
+
+    def test_patch_select_descriptions_with_frozen_dataclass(self):
+        """Test patching select descriptions that are frozen dataclass instances."""
+        import dataclasses
+        import tempfile
+        import json
+        from pathlib import Path
+        from shim.options_map import (
+            load_integration_translations,
+            patch_select_descriptions,
+            clear_translations_cache,
+        )
+
+        # Clear cache for clean test
+        clear_translations_cache()
+
+        try:
+            # Create a frozen dataclass like Leviton uses
+            @dataclasses.dataclass(frozen=True)
+            class TestDescription:
+                key: str
+                options_key: str = None
+
+            # Create a temp integration with translations
+            with tempfile.TemporaryDirectory() as tmpdir:
+                integration_path = Path(tmpdir)
+                translations_dir = integration_path / "translations"
+                translations_dir.mkdir()
+
+                translations = {
+                    "entity": {
+                        "select": {
+                            "all": {
+                                "state": {
+                                    "5_seconds": "5 seconds",
+                                    "10_seconds": "10 seconds",
+                                }
+                            }
+                        }
+                    }
+                }
+
+                with open(translations_dir / "en.json", "w") as f:
+                    json.dump(translations, f)
+
+                # Create mock module with frozen descriptions
+                class FakeModule:
+                    SELECT_DESCRIPTIONS = [
+                        TestDescription(
+                            key="led_bar_behavior",
+                            options_key="led_bar_behavior_options",
+                        ),
+                        TestDescription(
+                            key="other_entity", options_key="other_options"
+                        ),
+                    ]
+
+                # Verify descriptions don't have options_map before patch
+                desc1 = FakeModule.SELECT_DESCRIPTIONS[0]
+                assert not hasattr(desc1, "options_map")
+
+                # Patch
+                patch_select_descriptions(
+                    "test_integration", FakeModule, integration_path
+                )
+
+                # Verify led_bar_behavior was patched
+                assert hasattr(desc1, "options_map")
+                assert desc1.options_map is not None
+                assert "5_seconds" in desc1.options_map
+                assert desc1.options_map["5_seconds"] == "5 seconds"
+
+        finally:
+            clear_translations_cache()

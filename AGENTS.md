@@ -29,6 +29,18 @@ We maintain scripts to fetch code from upstream Home Assistant and HACS reposito
 - `app-shack/scripts/fetch_ha_files.py`: Downloads HA core files (const.py, exceptions.py, utils)
 - `app-shack/scripts/fetch_hacs_files.py`: Downloads HACS utility modules (version, validation, queue management)
 
+### Integration Code Policy
+
+**IMPORTANT: Never edit integration code directly.**
+
+The files in `app-shack/rootfs/app/data/shim/custom_components/` are external integrations (Leviton, Dreo, etc.) that come from upstream sources. Do not modify them directly. Instead:
+
+1. **For bugs in integrations**: Report them upstream or work around them in the shim code
+2. **For missing features**: Implement them in the shim layer (`app-shack/rootfs/app/shim/`)
+3. **For display/translations issues**: Handle them in the MQTT discovery layer
+
+The shim layer (in `app-shack/rootfs/app/shim/`) is where we add compatibility code, bridges, and workarounds. That's the appropriate place to fix integration issues.
+
 ### When to Use
 
 **Check upstream first when:**
@@ -114,6 +126,66 @@ cargo test -- --nocapture
 # Run specific test
 cargo test test_name
 ```
+
+### Automated Testing Workflow
+
+**All code changes must include corresponding tests. Never commit without running tests.**
+
+#### Before Making Changes:
+1. Identify what you're changing and why
+2. Determine if existing tests cover this scenario
+3. If modifying code that affects external integrations (like EntityDescription, MQTT, platform classes), add tests for ALL integration patterns
+
+#### During Implementation:
+1. Write or update tests FIRST or concurrently with the implementation
+2. For EntityDescription/dataclass changes, test:
+   - Base class behavior
+   - All platform EntityDescription patterns
+   - External integration patterns (frozen and non-frozen @dataclass)
+   - Import patch stub behavior if affected
+3. For MQTT changes, test:
+   - Topic naming conventions
+   - Entity ID conversions
+   - State/command topic handling
+
+#### After Implementation - Mandatory Test Checklist:
+
+```bash
+# 1. Run unit tests (fast)
+cd app-shack/rootfs/app && python3 -m pytest tests/ -v -m "not integration"
+
+# 2. Run all tests
+python3 -m pytest tests/ -v
+
+# 3. Run specific tests for what you changed
+# Example for EntityDescription changes:
+python3 -m pytest tests/test_dataclass_inheritance.py -v
+python3 -m pytest tests/test_shim_additions.py::TestEntityDescriptionWorksWithIntegrations -v
+
+# 4. Check test counts - should increase or stay same, never decrease
+python3 -m pytest tests/ --tb=no -q
+```
+
+#### Test Coverage Requirements:
+- **New functionality**: Must have comprehensive unit tests covering happy path and edge cases
+- **Bug fixes**: Must have a test that would have caught the bug
+- **Refactoring**: All existing tests must pass, add tests if coverage gaps exposed
+- **External integration compatibility**: For any changes to integration interfaces, test with patterns from real integrations (flightradar24, dreo, leviton, etc.)
+
+#### Red Flags - Stop and Add Tests:
+- Changing core classes without tests
+- Modifying platform descriptions without testing external integration patterns
+- Any change to import patches without verifying stub behavior
+- Tests failing or count decreasing
+- "It should work" without test verification
+
+#### Integration Test Patterns to Always Test:
+When modifying EntityDescription or related classes, verify these patterns work:
+1. `@dataclass` (non-frozen) on platform descriptions - Flightradar24/Dreo style
+2. `@dataclass(frozen=True)` on platform descriptions - Leviton style
+3. Custom methods in descriptions (like Dreo's `__repr__`)
+4. Multiple inheritance with mixins
+5. Import patch stub behavior when homeassistant.components.X is used
 
 ### Python (app-shack/)
 
@@ -339,9 +411,10 @@ Examples:
 
 ### Naming Rules
 
-1. **Use dashes (`-`) not underscores (`_`)** in MQTT topic names
+1. **Use dashes (`-`) not underscores (`_`) or colons (`:`)** in MQTT topic names
    - Entity ID: `sensor.living_room` (Home Assistant format)
    - MQTT topic: `living-room` (MQTT format)
+   - Entity IDs with colons (e.g., from some integrations) also get converted: `device:001:section` → `device-001-section`
 
 2. **Conversion function**: Use `get_mqtt_entity_id()` from `shim/entity.py`:
    ```python
@@ -350,15 +423,71 @@ Examples:
    entity_id = "fan.living_room"
    mqtt_id = get_mqtt_entity_id(entity_id)  # Returns: "living-room"
    topic = f"homeassistant/fan/{mqtt_id}/state"
+
+   # Also handles colons from integrations like Dreo
+   entity_id = "fan.device:001:section"
+   mqtt_id = get_mqtt_entity_id(entity_id)  # Returns: "device-001-section"
    ```
 
-3. **Reverse conversion**: When receiving commands from HA, convert dashes back to underscores:
+3. **Reverse conversion**: When receiving commands from HA, convert dashes back to underscores (for dots and underscores in entity IDs):
    ```python
    # MQTT topic: homeassistant/fan/living-room/set
    parts = topic.split("/")
    object_id = parts[2].replace("-", "_")  # "living-room" -> "living_room"
    entity_id = f"{parts[1]}.{object_id}"   # "fan.living_room"
    ```
+
+4. **Why convert colons too?**
+   - Home Assistant doesn't handle colons well in MQTT discovery topic names
+   - Dashes are safe for MQTT topics while colons can cause issues with discovery
+   - The Entity base class has an `mqtt_object_id` property that handles this conversion automatically
+
+### Entity Descriptions and FrozenOrThawed
+
+When creating `EntityDescription` subclasses for platform entities, use the `FrozenOrThawed` metaclass with `frozen_or_thawed=True`:
+
+```python
+from ..entity import EntityDescription
+from ..frozen_dataclass_compat import FrozenOrThawed
+
+class MyEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
+    """Description for my entity type."""
+
+    custom_field: Optional[str] = None
+```
+
+**Why use FrozenOrThawed?**
+- `EntityDescription` uses `FrozenOrThawed` metaclass to create frozen dataclasses internally
+- This allows child classes to be either frozen or non-frozen via standard `@dataclass` decorator
+- All platform EntityDescriptions should use `frozen_or_thawed=True` for consistency with Home Assistant
+- External integrations can use either `@dataclass(frozen=True)` or `@dataclass` (non-frozen)
+
+**For external integrations:**
+External integrations can use standard `@dataclass` decorator with either frozen or non-frozen:
+
+1. **Using `@dataclass` (non-frozen) - for maximum compatibility:**
+```python
+from dataclasses import dataclass
+from homeassistant.backports.entity import EntityDescription
+
+@dataclass  # Non-frozen (default)
+class CustomEntityDescription(EntityDescription):
+    """Custom entity description."""
+    custom_field: str = "default"
+```
+
+2. **Using `@dataclass(frozen=True)`:**
+```python
+from dataclasses import dataclass
+from homeassistant.backports.entity import EntityDescription
+
+@dataclass(frozen=True)
+class CustomEntityDescription(EntityDescription):
+    """Custom entity description."""
+    custom_field: str = "default"
+```
+
+**Note:** The `FrozenOrThawed` metaclass works around Python dataclass inheritance rules by creating frozen dataclasses internally while allowing subclasses to choose their frozen status via `@dataclass` decorator.
 
 ### Why Dashes?
 

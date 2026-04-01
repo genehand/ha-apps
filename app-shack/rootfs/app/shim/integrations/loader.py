@@ -14,6 +14,7 @@ from ..logging import get_logger, set_current_integration
 from ..core import HomeAssistant, ConfigEntry
 from ..entity import EntityRegistry
 from ..import_patch import setup_import_patching
+from ..options_map import patch_select_descriptions
 from .manager import IntegrationManager, IntegrationInfo
 
 _LOGGER = get_logger(__name__)
@@ -57,14 +58,28 @@ class IntegrationLoader:
             _LOGGER.error(f"Integration {domain} files not found")
             return False
 
+        # custom_components is the parent directory of the integration
+        custom_components_path = integration_path.parent
+
         try:
             set_current_integration(domain)
             _LOGGER.info(f"Loading integration {domain}")
 
-            # Get the custom_components path
-            custom_components_path = integration_path.parent
+            # Ensure persistent packages are in sys.path (for container mode)
+            # This needs to happen before importing the integration
+            if (
+                hasattr(self._integration_manager, "_persistent_packages_dir")
+                and self._integration_manager._persistent_packages_dir
+            ):
+                persistent_path = str(
+                    self._integration_manager._persistent_packages_dir
+                )
+                if persistent_path not in sys.path:
+                    sys.path.insert(0, persistent_path)
+                    importlib.invalidate_caches()
+                    _LOGGER.debug(f"Added persistent packages path: {persistent_path}")
 
-            # Ensure custom_components has __init__.py FIRST (before import)
+            # Check for __init__.py
             init_file = custom_components_path / "__init__.py"
             if not init_file.exists():
                 init_file.write_text("# custom_components package\n")
@@ -85,6 +100,10 @@ class IntegrationLoader:
             )
             module = importlib.import_module(f"custom_components.{domain}")
             self._loaded_integrations[domain] = module
+
+            # Patch select descriptions to add options_map for display value translation
+            # Pass the integration path so we can load translations
+            patch_select_descriptions(domain, module, integration_path)
 
             _LOGGER.info(f"Successfully loaded integration {domain}")
             return True

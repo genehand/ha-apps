@@ -15,6 +15,7 @@ from ..entity import (
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
+    get_mqtt_safe_unique_id,
 )
 from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
@@ -30,9 +31,7 @@ class UpdateDeviceClass(StrEnum):
     FIRMWARE = "firmware"
 
 
-class UpdateEntityDescription(
-    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
-):
+class UpdateEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
     """Describe a update entity."""
 
     device_class: Optional[str] = None
@@ -220,7 +219,7 @@ class UpdateEntity(Entity):
         entity_name = get_entity_name_for_discovery(self.name, self.device_info)
         config = {
             "name": entity_name,
-            "unique_id": self.unique_id,
+            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
             "state_topic": f"{base_topic}/state",
         }
 

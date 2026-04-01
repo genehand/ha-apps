@@ -12,6 +12,7 @@ from ..entity import (
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
+    get_mqtt_safe_unique_id,
 )
 from ..frozen_dataclass_compat import FrozenOrThawed
 
@@ -24,6 +25,9 @@ class SelectEntityDescription(
     """Describe a select entity."""
 
     options: List[str] = None
+    options_map: dict = (
+        None  # Maps internal values to display values for MQTT discovery
+    )
 
 
 class SelectEntity(Entity):
@@ -50,8 +54,18 @@ class SelectEntity(Entity):
         """Change the selected option."""
         await self.hass.async_add_executor_job(self.select_option, option)
 
+    def _get_options_map(self) -> Optional[dict]:
+        """Get the options map if available."""
+        if hasattr(self, "entity_description") and self.entity_description:
+            return getattr(self.entity_description, "options_map", None)
+        return None
+
     def _mqtt_publish(self) -> None:
         """Publish state to MQTT."""
+        import logging
+
+        _LOGGER = logging.getLogger(__name__)
+
         if not hasattr(self.hass, "_mqtt_client"):
             return
 
@@ -63,10 +77,21 @@ class SelectEntity(Entity):
         if not base_topic:
             return
 
-        # Publish state
+        # Publish state (map internal value to display value if options_map exists)
         state_topic = f"{base_topic}/state"
         state = self.current_option
         if state is not None:
+            options_map = self._get_options_map()
+            _LOGGER.debug(
+                f"_mqtt_publish: state={state}, options_map={options_map is not None}"
+            )
+            if options_map:
+                _LOGGER.debug(
+                    f"_mqtt_publish: options_map keys={list(options_map.keys())[:5]}"
+                )
+                if state in options_map:
+                    state = options_map[state]
+                    _LOGGER.debug(f"_mqtt_publish: translated state={state}")
             mqtt.publish(state_topic, state, qos=0, retain=True)
 
         # Publish attributes using base class helper
@@ -87,12 +112,19 @@ class SelectEntity(Entity):
         # Build discovery config
         # Strip device name prefix from entity name if present
         entity_name = get_entity_name_for_discovery(self.name, self.device_info)
+
+        # Map options to display values if options_map is available
+        options = self.options
+        options_map = self._get_options_map()
+        if options_map:
+            options = [options_map.get(opt, opt) for opt in options]
+
         config = {
             "name": entity_name,
-            "unique_id": self.unique_id,
+            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
             "state_topic": f"{base_topic}/state",
             "command_topic": f"{base_topic}/set",
-            "options": self.options,
+            "options": options,
         }
 
         if self.device_info:

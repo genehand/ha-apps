@@ -11,6 +11,7 @@ from ..entity import (
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
+    get_mqtt_safe_unique_id,
 )
 from ..logging import get_logger
 
@@ -167,7 +168,7 @@ class TextEntity(Entity):
         entity_name = get_entity_name_for_discovery(self.name, self.device_info)
         config: Dict[str, Any] = {
             "name": entity_name,
-            "unique_id": self.unique_id,
+            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
             "state_topic": f"{base_topic}/state",
             "command_topic": f"{base_topic}/set",
         }

@@ -3,6 +3,7 @@
 Provides compatibility for homeassistant.components.humidifier imports.
 """
 
+from dataclasses import field
 from enum import Enum
 from typing import Any, List, Optional
 
@@ -106,15 +107,13 @@ class HumidifierEntity(Entity):
         raise NotImplementedError()
 
 
-class HumidifierEntityDescription(
-    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
-):
+class HumidifierEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
     """Describe a humidifier entity."""
 
     device_class: Optional[HumidifierDeviceClass] = None
     max_humidity: int = 100
     min_humidity: int = 0
-    modes: List[str] = []
+    modes: List[str] = field(default_factory=list)
     supported_features: int = 0
 
 

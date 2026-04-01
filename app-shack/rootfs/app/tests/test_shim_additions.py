@@ -477,3 +477,125 @@ class TestEntityDescriptionWorksWithIntegrations:
         assert desc.state_class == "measurement"
         assert desc.native_unit_of_measurement == "°C"
         assert desc.options == ["option1", "option2"]
+
+    def test_external_integration_with_frozenorthawed_metaclass(self):
+        """Test that external integrations can use FrozenOrThawed metaclass."""
+        from dataclasses import FrozenInstanceError
+        from shim.entity import EntityDescription
+        from shim.frozen_dataclass_compat import FrozenOrThawed
+
+        class ExternalEntityDescription(
+            EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+        ):
+            """External integration description using FrozenOrThawed."""
+
+            custom_field: str = "default"
+
+        desc = ExternalEntityDescription(
+            key="external_key",
+            custom_field="custom_value",
+        )
+        assert desc.key == "external_key"
+        assert desc.custom_field == "custom_value"
+        # Verify frozen behavior
+        with pytest.raises(FrozenInstanceError):
+            desc.key = "modified"
+
+    def test_external_integration_with_frozenorthawed_metaclass(self):
+        """Test that external integrations can use FrozenOrThawed metaclass."""
+        from dataclasses import FrozenInstanceError
+        from shim.entity import EntityDescription
+        from shim.frozen_dataclass_compat import FrozenOrThawed
+
+        class ExternalEntityDescription(
+            EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+        ):
+            """External integration description using FrozenOrThawed."""
+
+            custom_field: str = "default"
+
+        desc = ExternalEntityDescription(
+            key="external_key",
+            custom_field="custom_value",
+        )
+        assert desc.key == "external_key"
+        assert desc.custom_field == "custom_value"
+        # Verify frozen behavior
+        with pytest.raises(FrozenInstanceError):
+            desc.key = "modified"
+
+    def test_external_integration_with_dataclass_decorator(self):
+        """Test that external integrations can use @dataclass(frozen=True).
+        
+        This tests the flightradar24, Leviton, and Dreo integration patterns.
+        """
+        from dataclasses import dataclass, FrozenInstanceError
+        from shim.entity import EntityDescription
+
+        @dataclass(frozen=True)
+        class ExternalEntityDescription(EntityDescription):
+            """External integration description using @dataclass decorator."""
+            custom_field: str = "default"
+            another_field: int = 42
+
+        desc = ExternalEntityDescription(
+            key="external_key",
+            name="Test Entity",
+            custom_field="custom_value",
+            another_field=100,
+        )
+        assert desc.key == "external_key"
+        assert desc.name == "Test Entity"
+        assert desc.custom_field == "custom_value"
+        assert desc.another_field == 100
+        # Verify frozen behavior
+        with pytest.raises(FrozenInstanceError):
+            desc.key = "modified"
+
+    def test_external_integration_inherits_parent_fields(self):
+        """Test that external integrations inherit all parent EntityDescription fields."""
+        from dataclasses import dataclass
+        from shim.entity import EntityDescription
+
+        @dataclass(frozen=True)
+        class CustomDescription(EntityDescription):
+            """Custom description with additional fields."""
+            extra: str = "extra_default"
+
+        desc = CustomDescription(
+            key="test_key",
+            device_class="temperature",
+            entity_category="diagnostic",
+            icon="mdi:test",
+            extra="extra_value",
+        )
+        
+        # Verify all parent fields are accessible
+        assert desc.key == "test_key"
+        assert desc.device_class == "temperature"
+        assert desc.entity_category == "diagnostic"
+        assert desc.icon == "mdi:test"
+        assert desc.extra == "extra_value"
+        # Verify default values from parent
+        assert desc.has_entity_name is False
+        assert desc.entity_registry_enabled_default is True
+
+    def test_platform_entity_description_frozen_behavior(self):
+        """Test that platform EntityDescriptions are frozen and immutable."""
+        from dataclasses import FrozenInstanceError
+        from shim.platforms.sensor import SensorEntityDescription
+
+        desc = SensorEntityDescription(
+            key="test_sensor",
+            state_class="measurement",
+            native_unit_of_measurement="°C",
+        )
+        
+        assert desc.key == "test_sensor"
+        assert desc.state_class == "measurement"
+        
+        # Verify frozen behavior
+        with pytest.raises(FrozenInstanceError):
+            desc.key = "modified"
+        with pytest.raises(FrozenInstanceError):
+            desc.state_class = "total"

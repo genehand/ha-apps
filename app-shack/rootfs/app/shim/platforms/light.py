@@ -13,7 +13,9 @@ from ..entity import (
     get_device_info_attr,
     build_mqtt_device_config,
     get_entity_name_for_discovery,
+    get_mqtt_safe_unique_id,
 )
+from ..frozen_dataclass_compat import FrozenOrThawed
 from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
 
@@ -37,9 +39,7 @@ class ColorMode(StrEnum):
     WHITE = "white"
 
 
-class LightEntityDescription(
-    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
-):
+class LightEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
     """Describe a light entity."""
 
 
@@ -54,6 +54,7 @@ SUPPORT_WHITE_VALUE = 128
 
 ATTR_BRIGHTNESS = "brightness"
 ATTR_COLOR_TEMP = "color_temp"
+ATTR_COLOR_TEMP_KELVIN = "color_temp_kelvin"
 ATTR_EFFECT = "effect"
 ATTR_HS_COLOR = "hs_color"
 ATTR_RGB_COLOR = "rgb_color"
@@ -252,7 +253,7 @@ class LightEntity(ToggleEntity):
         entity_name = get_entity_name_for_discovery(self.name, self.device_info)
         config = {
             "name": entity_name,
-            "unique_id": self.unique_id,
+            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
             "state_topic": f"{base_topic}/state",
             "command_topic": f"{base_topic}/set",
         }
