@@ -526,7 +526,7 @@ class TestEntityDescriptionWorksWithIntegrations:
 
     def test_external_integration_with_dataclass_decorator(self):
         """Test that external integrations can use @dataclass(frozen=True).
-        
+
         This tests the flightradar24, Leviton, and Dreo integration patterns.
         """
         from dataclasses import dataclass, FrozenInstanceError
@@ -535,6 +535,7 @@ class TestEntityDescriptionWorksWithIntegrations:
         @dataclass(frozen=True)
         class ExternalEntityDescription(EntityDescription):
             """External integration description using @dataclass decorator."""
+
             custom_field: str = "default"
             another_field: int = 42
 
@@ -560,6 +561,7 @@ class TestEntityDescriptionWorksWithIntegrations:
         @dataclass(frozen=True)
         class CustomDescription(EntityDescription):
             """Custom description with additional fields."""
+
             extra: str = "extra_default"
 
         desc = CustomDescription(
@@ -569,7 +571,7 @@ class TestEntityDescriptionWorksWithIntegrations:
             icon="mdi:test",
             extra="extra_value",
         )
-        
+
         # Verify all parent fields are accessible
         assert desc.key == "test_key"
         assert desc.device_class == "temperature"
@@ -590,12 +592,356 @@ class TestEntityDescriptionWorksWithIntegrations:
             state_class="measurement",
             native_unit_of_measurement="°C",
         )
-        
+
         assert desc.key == "test_sensor"
         assert desc.state_class == "measurement"
-        
+
         # Verify frozen behavior
         with pytest.raises(FrozenInstanceError):
             desc.key = "modified"
         with pytest.raises(FrozenInstanceError):
             desc.state_class = "total"
+
+
+class TestWebUISchemaParsing:
+    """Tests for web UI schema parsing, including suggested_value support."""
+
+    def test_parse_field_with_suggested_value(self):
+        """Test that suggested_value from description is used as default."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        # Create a mock shim manager (we won't use it, just need the instance)
+        web_ui = WebUI.__new__(WebUI)
+
+        # Test vol.Optional with suggested_value (like cryptoinfo config_flow)
+        key = vol.Optional("unit_of_measurement", description={"suggested_value": "$"})
+        field = web_ui._parse_field(key, str)
+
+        assert field["name"] == "unit_of_measurement"
+        assert field["required"] is False
+        assert field["default"] == "$"
+        assert field["type"] == "text"
+
+    def test_parse_field_with_regular_default(self):
+        """Test that regular default values still work."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        web_ui = WebUI.__new__(WebUI)
+
+        # Test vol.Required with default
+        key = vol.Required("currency_name", default="usd")
+        field = web_ui._parse_field(key, str)
+
+        assert field["name"] == "currency_name"
+        assert field["required"] is True
+        assert field["default"] == "usd"
+
+    def test_parse_field_no_default_or_suggested_value(self):
+        """Test that fields without defaults have no default key (None values are cleaned)."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        web_ui = WebUI.__new__(WebUI)
+
+        # Test vol.Optional without any default
+        key = vol.Optional("precision")
+        field = web_ui._parse_field(key, str)
+
+        assert field["name"] == "precision"
+        assert field["required"] is False
+        # None values are cleaned up, so 'default' key should not exist
+        assert "default" not in field
+
+    def test_parse_field_default_overrides_suggested_value(self):
+        """Test that explicit default takes precedence over suggested_value."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        web_ui = WebUI.__new__(WebUI)
+
+        # If both default and suggested_value exist, default wins
+        key = vol.Optional(
+            "test_field",
+            default="explicit_default",
+            description={"suggested_value": "suggested_value"},
+        )
+        field = web_ui._parse_field(key, str)
+
+        assert field["default"] == "explicit_default"
+
+    def test_parse_field_basic_label_generation(self):
+        """Test basic label generation from field name."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        web_ui = WebUI.__new__(WebUI)
+
+        key = vol.Optional("test_field_name")
+        field = web_ui._parse_field(key, str)
+
+        assert field["name"] == "test_field_name"
+        assert field["label"] == "Test Field Name"
+
+    def test_parse_field_id_shows_title_case(self):
+        """Test that 'id' field shows 'Id' by default (translations will override)."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        web_ui = WebUI.__new__(WebUI)
+
+        key = vol.Optional("id")
+        field = web_ui._parse_field(key, str)
+
+        assert field["name"] == "id"
+        # Without translations, it just title-cases the name
+        assert field["label"] == "Id"
+
+    def test_parse_field_description_help_text(self):
+        """Test that description/help text is extracted from field."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        web_ui = WebUI.__new__(WebUI)
+
+        key = vol.Optional(
+            "id",
+            description={
+                "suggested_value": "my_id",
+                "description": "Unique name for this sensor.",
+            },
+        )
+        field = web_ui._parse_field(key, str)
+
+        assert field["default"] == "my_id"
+        assert field["description"] == "Unique name for this sensor."
+
+    def test_parse_field_no_description(self):
+        """Test that fields without description don't have description key."""
+        from shim.web.app import WebUI
+        import voluptuous as vol
+
+        web_ui = WebUI.__new__(WebUI)
+
+        key = vol.Optional("test_field")
+        field = web_ui._parse_field(key, str)
+
+        assert "description" not in field
+
+
+class TestWebUITranslations:
+    """Tests for web UI translation loading and application."""
+
+    def test_load_integration_translations(self):
+        """Test loading translations for an integration."""
+        from shim.web.app import WebUI
+        from pathlib import Path
+
+        web_ui = WebUI.__new__(WebUI)
+
+        # Create a mock integration manager that returns the actual path
+        class MockIntegrationManager:
+            def get_integration_path(self, domain):
+                # Return the path to bundled integrations in rootfs
+                return (
+                    Path(__file__).parent.parent
+                    / "data"
+                    / "shim"
+                    / "custom_components"
+                    / domain
+                )
+
+        web_ui._integration_manager = MockIntegrationManager()
+
+        # Test with cryptoinfo integration (which has translations)
+        translations = web_ui._load_integration_translations("cryptoinfo")
+
+        assert "config" in translations
+        assert "step" in translations["config"]
+        assert "user" in translations["config"]["step"]
+        assert "data" in translations["config"]["step"]["user"]
+        assert "id" in translations["config"]["step"]["user"]["data"]
+
+    def test_load_integration_translations_missing_integration(self):
+        """Test loading translations for non-existent integration."""
+        from shim.web.app import WebUI
+        from pathlib import Path
+
+        web_ui = WebUI.__new__(WebUI)
+
+        # Create a mock integration manager that returns None for missing integrations
+        class MockIntegrationManager:
+            def get_integration_path(self, domain):
+                return None
+
+        web_ui._integration_manager = MockIntegrationManager()
+
+        translations = web_ui._load_integration_translations("nonexistent")
+        assert translations == {}
+
+    def test_apply_field_translations_labels(self):
+        """Test applying field labels from translations."""
+        from shim.web.app import WebUI
+
+        web_ui = WebUI.__new__(WebUI)
+
+        fields = [
+            {"name": "id", "label": "Id"},
+            {"name": "cryptocurrency_ids", "label": "Cryptocurrency Ids"},
+        ]
+
+        translations = {
+            "config": {
+                "step": {
+                    "user": {
+                        "data": {
+                            "id": "Identifier",
+                            "cryptocurrency_ids": "Cryptocurrency id's",
+                        }
+                    }
+                }
+            }
+        }
+
+        web_ui._apply_field_translations(fields, translations, "user")
+
+        assert fields[0]["label"] == "Identifier"
+        assert fields[1]["label"] == "Cryptocurrency id's"
+
+    def test_apply_field_translations_descriptions(self):
+        """Test applying field descriptions from translations."""
+        from shim.web.app import WebUI
+
+        web_ui = WebUI.__new__(WebUI)
+
+        fields = [
+            {"name": "id", "label": "Id"},
+            {"name": "unit_of_measurement", "label": "Unit Of Measurement"},
+        ]
+
+        translations = {
+            "config": {
+                "step": {
+                    "user": {
+                        "data": {},
+                        "data_description": {
+                            "id": "Unique name for the sensor.",
+                            "unit_of_measurement": "Currency symbol to use.",
+                        },
+                    }
+                }
+            }
+        }
+
+        web_ui._apply_field_translations(fields, translations, "user")
+
+        assert fields[0]["description"] == "Unique name for the sensor."
+        assert fields[1]["description"] == "Currency symbol to use."
+
+    def test_apply_field_translations_missing_step(self):
+        """Test that missing step in translations doesn't crash."""
+        from shim.web.app import WebUI
+
+        web_ui = WebUI.__new__(WebUI)
+
+        fields = [{"name": "id", "label": "Id"}]
+        translations = {"config": {"step": {}}}
+
+        # Should not raise
+        web_ui._apply_field_translations(fields, translations, "nonexistent_step")
+
+        # Labels unchanged
+        assert fields[0]["label"] == "Id"
+
+    def test_apply_field_translations_reconfigure_step(self):
+        """Test applying translations for reconfigure step."""
+        from shim.web.app import WebUI
+
+        web_ui = WebUI.__new__(WebUI)
+
+        fields = [{"name": "id", "label": "Id"}]
+
+        translations = {
+            "config": {
+                "step": {
+                    "reconfigure": {
+                        "data": {"id": "Identifier"},
+                        "data_description": {"id": "Update the unique name."},
+                    }
+                }
+            }
+        }
+
+        web_ui._apply_field_translations(fields, translations, "reconfigure")
+
+        assert fields[0]["label"] == "Identifier"
+        assert fields[0]["description"] == "Update the unique name."
+
+
+class TestAiohttpClientCleanup:
+    """Tests for aiohttp client session cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_aiohttp_session_cleanup(self):
+        """Test that aiohttp sessions are properly cleaned up."""
+        from pathlib import Path
+        from shim.import_patch import setup_import_patching
+        from shim.core import HomeAssistant
+
+        # Create a mock hass instance and set up import patching
+        hass = HomeAssistant(Path("./data"))
+        patcher = setup_import_patching(hass)
+        patcher.patch()
+
+        # Now we can import from homeassistant
+        from homeassistant.helpers.aiohttp_client import (
+            async_get_clientsession,
+            _async_close_clientsessions,
+        )
+
+        # Get a client session (this should create and cache it)
+        session = async_get_clientsession(hass)
+        assert session is not None
+        assert not session.closed
+
+        # Close all sessions
+        await _async_close_clientsessions()
+
+        # Verify the session is now closed
+        assert session.closed
+
+    @pytest.mark.asyncio
+    async def test_aiohttp_multiple_sessions_cleanup(self):
+        """Test cleanup of multiple cached aiohttp sessions."""
+        from pathlib import Path
+        from shim.import_patch import setup_import_patching
+        from shim.core import HomeAssistant
+
+        # Create mock hass instances and set up import patching
+        hass1 = HomeAssistant(Path("./data"))
+        patcher = setup_import_patching(hass1)
+        patcher.patch()
+
+        # Now we can import from homeassistant
+        from homeassistant.helpers.aiohttp_client import (
+            async_get_clientsession,
+            _async_close_clientsessions,
+        )
+
+        hass2 = HomeAssistant(Path("./data"))
+
+        # Get client sessions with different verify_ssl settings
+        session1 = async_get_clientsession(hass1, verify_ssl=True)
+        session2 = async_get_clientsession(hass2, verify_ssl=False)
+
+        assert session1 is not None
+        assert session2 is not None
+        assert session1 is not session2
+
+        # Close all sessions
+        await _async_close_clientsessions()
+
+        # Verify all sessions are closed
+        assert session1.closed
+        assert session2.closed

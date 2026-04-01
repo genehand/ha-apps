@@ -119,6 +119,10 @@
                     >
                     {% endif %}
 
+                    {% if field.description %}
+                    <small style="color: var(--pico-muted-color); display: block; margin-left: 1rem; line-height: 1.3;">{{ field.description }}</small>
+                    {% endif %}
+
                     {% if errors.get(field.name) %}
                     <small class="pico-color-red-500">{{ errors[field.name] }}</small>
                     {% endif %}

@@ -378,7 +378,18 @@ class ImportPatcher:
                 _client_session_cache[key] = session
             return _client_session_cache[key]
 
+        async def _async_close_clientsessions():
+            """Close all cached aiohttp ClientSessions.
+
+            Called during shutdown to prevent 'Unclosed client session' warnings.
+            """
+            for key, session in list(_client_session_cache.items()):
+                if not session.closed:
+                    await session.close()
+            _client_session_cache.clear()
+
         aiohttp_client.async_get_clientsession = async_get_clientsession
+        aiohttp_client._async_close_clientsessions = _async_close_clientsessions
         homeassistant.helpers.aiohttp_client = aiohttp_client
         sys.modules["homeassistant.helpers.aiohttp_client"] = aiohttp_client
 
@@ -933,8 +944,14 @@ class ImportPatcher:
 
             def async_update_listeners(self):
                 """Update all registered listeners."""
+                _LOGGER.debug(
+                    f"DataUpdateCoordinator '{self.name}' updating {len(self._listeners)} listeners"
+                )
                 for update_callback, _ in list(self._listeners.values()):
-                    update_callback()
+                    try:
+                        update_callback()
+                    except Exception as e:
+                        _LOGGER.error(f"Error in listener callback: {e}")
 
             async def async_shutdown(self):
                 """Cancel any scheduled refresh and ignore new runs."""
@@ -954,11 +971,18 @@ class ImportPatcher:
             async def async_refresh(self):
                 """Refresh data and log errors."""
                 if self._shutdown_requested:
+                    _LOGGER.debug(
+                        f"Coordinator '{self.name}' refresh skipped: shutdown requested"
+                    )
                     return
 
                 try:
+                    _LOGGER.debug(f"Coordinator '{self.name}' fetching data...")
                     self.data = await self._async_update_data()
                     self._last_update_success = True
+                    _LOGGER.debug(
+                        f"Coordinator '{self.name}' data fetched successfully: {self.data}"
+                    )
                     self.async_update_listeners()
                 except Exception as e:
                     self.logger.error(f"Error fetching {self.name} data: {e}")
@@ -1010,6 +1034,9 @@ class ImportPatcher:
 
             def _handle_coordinator_update(self):
                 """Handle updated data from the coordinator."""
+                _LOGGER.debug(
+                    f"CoordinatorEntity {getattr(self, 'entity_id', 'unknown')} handling coordinator update"
+                )
                 self.async_write_ha_state()
 
             @property
@@ -1077,6 +1104,28 @@ class ImportPatcher:
         homeassistant.components.humidifier = platforms.humidifier
         homeassistant.components.number = platforms.number
         homeassistant.components.lock = platforms.lock
+
+        # Create sensor.const stub module for integrations that import from there
+        sensor_const = types.ModuleType("homeassistant.components.sensor.const")
+        sensor_const.DOMAIN = platforms.sensor.DOMAIN
+        sensor_const.CONF_STATE_CLASS = platforms.sensor.CONF_STATE_CLASS
+        sensor_const.ATTR_LAST_RESET = platforms.sensor.ATTR_LAST_RESET
+        sensor_const.ATTR_STATE_CLASS = platforms.sensor.ATTR_STATE_CLASS
+        sensor_const.ATTR_OPTIONS = platforms.sensor.ATTR_OPTIONS
+        sensor_const.SensorDeviceClass = platforms.sensor.SensorDeviceClass
+        sensor_const.SensorStateClass = platforms.sensor.SensorStateClass
+        sensor_const.DEVICE_CLASSES = platforms.sensor.DEVICE_CLASSES
+        sensor_const.STATE_CLASSES = platforms.sensor.STATE_CLASSES
+        sensor_const.NON_NUMERIC_DEVICE_CLASSES = (
+            platforms.sensor.NON_NUMERIC_DEVICE_CLASSES
+        )
+        sensor_const.STATE_CLASS_MEASUREMENT = platforms.sensor.STATE_CLASS_MEASUREMENT
+        sensor_const.STATE_CLASS_TOTAL = platforms.sensor.STATE_CLASS_TOTAL
+        sensor_const.STATE_CLASS_TOTAL_INCREASING = (
+            platforms.sensor.STATE_CLASS_TOTAL_INCREASING
+        )
+        homeassistant.components.sensor.const = sensor_const
+        sys.modules["homeassistant.components.sensor.const"] = sensor_const
 
         # Create persistent_notification stub module
         persistent_notification = types.ModuleType(

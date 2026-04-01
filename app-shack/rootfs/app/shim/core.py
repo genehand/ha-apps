@@ -600,6 +600,13 @@ class ConfigEntries:
                                 _LOGGER.debug(
                                     f"async_added_to_hass completed for {entity.entity_id}"
                                 )
+                                # Trigger state write to publish initial state
+                                # This is needed for coordinator-based entities where data
+                                # was fetched before the entity was added
+                                entity.async_write_ha_state()
+                                _LOGGER.debug(
+                                    f"Initial state written for {entity.entity_id}"
+                                )
                                 # Publish MQTT discovery if entity supports it
                                 if hasattr(entity, "_publish_mqtt_discovery"):
                                     _LOGGER.debug(

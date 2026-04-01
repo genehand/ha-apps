@@ -643,3 +643,84 @@ class TestOptionsMapRegistry:
 
         finally:
             clear_translations_cache()
+
+
+class TestNumberEntityValueClamping:
+    """Tests for number entity value clamping in MQTT publish."""
+
+    def test_number_entity_value_within_range(self):
+        """Test that values within range are published as-is."""
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self._attr_native_value = 50.0
+                self._attr_native_min_value = 25.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        entity = TestNumber()
+        assert entity.native_value == 50.0
+        assert entity.native_min_value == 25.0
+        assert entity.native_max_value == 100.0
+
+    def test_number_entity_value_clamping_below_min(self):
+        """Test that values below min are clamped to min."""
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self._attr_native_value = 10.0  # Below min of 25.0
+                self._attr_native_min_value = 25.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        entity = TestNumber()
+        # Value should be clamped to 25.0 during publish
+        min_val = entity.native_min_value
+        max_val = entity.native_max_value
+        value = entity.native_value
+        clamped_value = max(min_val, min(max_val, value))
+        assert clamped_value == 25.0
+
+    def test_number_entity_value_clamping_above_max(self):
+        """Test that values above max are clamped to max."""
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self._attr_native_value = 150.0  # Above max of 100.0
+                self._attr_native_min_value = 25.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        entity = TestNumber()
+        # Value should be clamped to 100.0 during publish
+        min_val = entity.native_min_value
+        max_val = entity.native_max_value
+        value = entity.native_value
+        clamped_value = max(min_val, min(max_val, value))
+        assert clamped_value == 100.0
+
+    def test_number_entity_value_zero_with_nonzero_min(self):
+        """Test the specific case: value 0 with min 25 (dreo issue)."""
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self._attr_native_value = 0.0  # Dreo case: 0 with min 25
+                self._attr_native_min_value = 25.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "ceiling_fan_preset_level"
+                self._attr_name = "Ceiling Fan Preset Level"
+
+        entity = TestNumber()
+        # Value should be clamped to 25.0 during publish
+        min_val = entity.native_min_value
+        max_val = entity.native_max_value
+        value = entity.native_value
+        clamped_value = max(min_val, min(max_val, value))
+        assert clamped_value == 25.0

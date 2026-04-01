@@ -50,9 +50,11 @@
             justify-content: space-between;
             align-items: center;
             padding: 12px;
-            background: var(--pico-muted-color);
-            border-radius: 4px;
+            background: color-mix(in srgb, var(--pico-primary) 6%, var(--pico-card-background-color));
+            border: 1px solid var(--pico-muted-border-color);
+            border-radius: 8px;
             margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
         .info-row {
             display: flex;
@@ -166,7 +168,7 @@
                 
                 <a href="/config/{{ integration.domain }}" role="button">Configure</a>
                 
-                <button type="button" class="contrast"
+                <button type="button" class="pico-background-red-500" style="border-color: var(--pico-color-red-500);"
                         hx-post="/integrations/{{ integration.domain }}/remove"
                         hx-confirm="Are you sure you want to remove this integration?"
                         hx-target="body"
@@ -184,9 +186,9 @@
                 <div class="entity-item">
                     <div>
                         <strong>{{ entry.title }}</strong>
-                        <div style="font-size: 12px; color: var(--pico-muted-color);">ID: {{ entry.entry_id }}</div>
+                        <div style="font-size: 12px;">ID: {{ entry.entry_id }}</div>
                     </div>
-                    <button type="button" class="contrast"
+                    <button type="button" class="pico-background-red-500" style="border-color: var(--pico-color-red-500);"
                             hx-post="/config/{{ entry.entry_id }}/remove"
                             hx-confirm="Are you sure you want to remove this configuration entry? This will also remove all associated entities and MQTT topics."
                             hx-target="body"

@@ -28,6 +28,7 @@ class WebUI:
         self._shim_manager = shim_manager
         self._host = host
         self._port = port
+        self._integration_manager = shim_manager._integration_manager
 
         # Import version locally to avoid circular import
         from .. import __version__
@@ -213,30 +214,16 @@ class WebUI:
 
             # Check if it's a task (async) or boolean (sync/legacy)
             if isinstance(result, InstallTask):
-                # Async install - return status page with auto-refresh
+                # Async install - return "Installing..." text that polls for completion
                 return HTMLResponse(
-                    f'<div class="alert alert-success" style="margin-bottom: 15px;">'
-                    f"<strong>Installation Queued</strong><br>"
-                    f"{full_name} is being installed in the background. This may take a minute..."
-                    f"</div>"
-                    f'<div hx-trigger="every 2s" hx-get="/api/install-status/{full_name}" '
-                    f'hx-target="#install-status-{full_name}" hx-swap="innerHTML">'
-                    f'<div id="install-status-{full_name}">'
-                    f'<span class="spinner"></span> Checking installation status...'
-                    f"</div></div>"
-                    f"<script>"
-                    f"setTimeout(function() {{"
-                    f'  window.location.href = "/"'
-                    f"}}, 10000);"
-                    f"</script>"
+                    f'<span class="pico-color-jade-500" style="font-weight: 600;" '
+                    f'hx-get="/api/install-status/{full_name}" '
+                    f'hx-trigger="every 2s" hx-swap="outerHTML">Installing...</span>'
                 )
             elif result:
                 # Legacy blocking install succeeded
                 return HTMLResponse(
-                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" '
-                    f'class="alert alert-success">'
-                    f"Integration {full_name} installed successfully!"
-                    f"</div>"
+                    '<span class="pico-color-jade-500" style="font-weight: 600;">✓ Installed</span>'
                 )
             else:
                 return HTMLResponse(
@@ -270,7 +257,7 @@ class WebUI:
                 return HTMLResponse(f'<span class="spinner"></span> Installing...')
             elif task.status == "complete":
                 return HTMLResponse(
-                    f'<span style="color: #4caf50;">✓ Complete! Refreshing...</span>'
+                    '<span class="pico-color-jade-500" style="font-weight: 600;">✓ Installed</span>'
                 )
             else:  # error
                 return HTMLResponse(
@@ -534,11 +521,12 @@ class WebUI:
                             f'<div class="alert alert-error">Failed to setup integration. Please check your credentials and device connection.</div>'
                         )
 
-                    # Return success with HTMX redirect
-                    return HTMLResponse(
-                        f'<div hx-trigger="load" hx-get="/integrations/{domain}" hx-target="body" hx-swap="outerHTML">'
-                        f'<div class="alert alert-success">Configuration successful!</div></div>'
+                    # Return success with HTMX redirect to integration page
+                    response = HTMLResponse(
+                        f'<div class="alert alert-success">Configuration successful!</div>'
                     )
+                    response.headers["HX-Redirect"] = f"/integrations/{domain}"
+                    return response
                 else:
                     return HTMLResponse(
                         '<div class="alert alert-error">Failed to create entry</div>'
@@ -796,6 +784,7 @@ class WebUI:
         errors = result.get("errors", {})
         description = result.get("description_placeholders", {})
         flow_id = result.get("flow_id")
+        step_id = result.get("step_id", "user")
 
         # Store schema in flow object for type conversion on submit
         if flow_id and schema:
@@ -818,6 +807,11 @@ class WebUI:
         # This is a simplified version - real implementation would need full schema parsing
         fields = self._parse_schema(schema)
 
+        # Load translations for field labels and descriptions
+        translations = self._load_integration_translations(domain)
+        if translations:
+            self._apply_field_translations(fields, translations, step_id)
+
         html = self._render_template(
             "config_form.html",
             request=request,
@@ -825,7 +819,7 @@ class WebUI:
             fields=fields,
             errors=translated_errors,
             description=description,
-            step_id=result.get("step_id", "user"),
+            step_id=step_id,
             flow_id=result.get("flow_id"),
         )
         return HTMLResponse(content=html)
@@ -934,6 +928,15 @@ class WebUI:
                             pass
                     else:
                         field["default"] = key.default
+            # Check for suggested_value in description (used by some integrations like cryptoinfo)
+            if field["default"] is None and hasattr(key, "description"):
+                description = key.description
+                if isinstance(description, dict):
+                    if "suggested_value" in description:
+                        field["default"] = description["suggested_value"]
+                    # Extract help text description if present
+                    if "description" in description:
+                        field["description"] = description["description"]
         else:
             field["name"] = key
 
@@ -1094,6 +1097,69 @@ class WebUI:
         )
 
         return field
+
+    def _load_integration_translations(self, domain: str) -> dict:
+        """Load translations for an integration.
+
+        Args:
+            domain: The integration domain
+
+        Returns:
+            The translations dictionary, or empty dict if not found
+        """
+        try:
+            # Use the integration manager to find the integration path
+            integration_path = self._integration_manager.get_integration_path(domain)
+
+            if not integration_path:
+                return {}
+
+            # Look for translations/en.json (or strings.json as fallback)
+            translations_file = integration_path / "translations" / "en.json"
+            if not translations_file.exists():
+                translations_file = integration_path / "strings.json"
+
+            if not translations_file.exists():
+                return {}
+
+            with open(translations_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            _LOGGER.debug(f"Failed to load translations for {domain}: {e}")
+            return {}
+
+    def _apply_field_translations(
+        self, fields: list, translations: dict, step_id: str
+    ) -> None:
+        """Apply field labels and descriptions from translations.
+
+        Args:
+            fields: List of field dictionaries to modify
+            translations: The loaded translations dictionary
+            step_id: The current config flow step ID (e.g., "user", "reconfigure")
+        """
+        # Get the config section for this step
+        config_section = translations.get("config", {})
+        steps = config_section.get("step", {})
+        step_data = steps.get(step_id, {})
+
+        # Get field labels from data.{field_name}
+        data_labels = step_data.get("data", {})
+        # Get field descriptions from data_description.{field_name}
+        data_descriptions = step_data.get("data_description", {})
+
+        for field in fields:
+            field_name = field.get("name", "")
+            if not field_name:
+                continue
+
+            # Apply label if available in translations
+            if field_name in data_labels:
+                field["label"] = data_labels[field_name]
+
+            # Apply description if available in translations
+            if field_name in data_descriptions:
+                field["description"] = data_descriptions[field_name]
 
     def _convert_form_value(self, value: str, validator, field_name: str = "") -> Any:
         """Convert a form string value to the appropriate type based on validator."""

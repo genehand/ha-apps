@@ -70,7 +70,7 @@ class ShimManager:
         self._setup_mqtt_subscriptions()
 
         # Fetch HACS repositories
-        _LOGGER.info("Fetching HACS repository list")
+        _LOGGER.debug("Checking HACS repository list")
         await self._integration_manager.fetch_hacs_repositories()
 
         # Load and setup enabled integrations
@@ -108,6 +108,16 @@ class ShimManager:
                 await self._integration_loader.unload_integration(
                     entry, cleanup_mqtt=False
                 )
+
+        # Close all cached aiohttp client sessions to prevent
+        # 'Unclosed client session' warnings
+        try:
+            from homeassistant.helpers.aiohttp_client import _async_close_clientsessions
+
+            await _async_close_clientsessions()
+            _LOGGER.debug("Closed aiohttp client sessions")
+        except Exception as e:
+            _LOGGER.debug(f"Error closing aiohttp sessions: {e}")
 
         _LOGGER.debug("Shim Manager stopped")
 

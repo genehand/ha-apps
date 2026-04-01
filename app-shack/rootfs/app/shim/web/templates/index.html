@@ -228,8 +228,12 @@
                                 {% else %}
                                 <button type="button"
                                         hx-post="/integrations/{{ item.full_name }}/install"
-                                        hx-target="body"
-                                        hx-swap="outerHTML">
+                                        hx-target="this"
+                                        hx-swap="outerHTML"
+                                        hx-indicator="this"
+                                        hx-disabled-elt="this"
+                                        hx-on:click="this.textContent = 'Installing...'; this.disabled = true;"
+                                        class="install-btn">
                                     Install
                                 </button>
                                 {% endif %}

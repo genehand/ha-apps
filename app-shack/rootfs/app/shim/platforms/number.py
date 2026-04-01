@@ -31,7 +31,9 @@ class NumberMode(StrEnum):
     SLIDER = "slider"
 
 
-class NumberEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
+class NumberEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a number entity."""
 
     native_min_value: Optional[float] = None
@@ -99,7 +101,16 @@ class NumberEntity(Entity):
         state_topic = f"{base_topic}/state"
         value = self.native_value
         if value is not None:
-            mqtt.publish(state_topic, str(value), qos=0, retain=True)
+            # Clamp value to min/max range to avoid MQTT rejection
+            min_val = self.native_min_value
+            max_val = self.native_max_value
+            clamped_value = max(min_val, min(max_val, value))
+            if clamped_value != value:
+                _LOGGER.debug(
+                    f"Clamping {self.entity_id} value from {value} to {clamped_value} "
+                    f"(range {min_val} - {max_val})"
+                )
+            mqtt.publish(state_topic, str(clamped_value), qos=0, retain=True)
         else:
             mqtt.publish(state_topic, "", qos=0, retain=True)
 
