@@ -1,6 +1,6 @@
 # 🏚️ HACS Shack
 
-This app creates a shim environment that lets you run HACS integrations separately from Home Assistant and publishes standalone MQTT entities.
+This app creates a shim environment that lets you run [HACS](https://www.hacs.xyz/) integrations separately from Home Assistant and publishes standalone MQTT entities.
 
 ## Features
 
@@ -41,21 +41,7 @@ The shim provides a compatibility layer that:
 
 ## Supported Entity Platforms
 
-The shim currently supports these Home Assistant platforms:
-
-| Platform | Description |
-|----------|-------------|
-| `sensor` | Temperature, humidity, AQI, and other measurements |
-| `switch` | On/off switches with state feedback |
-| `fan` | Speed control, oscillation, preset modes |
-| `light` | Brightness, color, effects |
-| `climate` | HVAC modes, temperature setpoints |
-| `binary_sensor` | Door/window sensors, motion detectors |
-| `select` | Dropdown selections |
-| `button` | Momentary action buttons |
-| `text` | Text input/output |
-| `device_tracker` | Location tracking |
-| `update` | Software update entities |
+HACS Shack aims to support all entity platforms supported by the [Home Assistant MQTT integration](https://www.home-assistant.io/integrations/mqtt/).
 
 ## How It Works
 
@@ -80,7 +66,7 @@ from shim.platforms.sensor import SensorEntity
 
 ## Adding New Integrations
 
-Most HACS integrations work out of the box. To add a new integration:
+Many HACS integrations work out of the box. To add a new integration:
 
 1. Search for it in the Web UI integration browser
 2. Click Install to download from HACS repository
