@@ -81,6 +81,8 @@ class WebUI:
                     "name": a.get("name"),
                     "description": a.get("description", ""),
                     "installed": a.get("installed", False),
+                    "unsupported": a.get("unsupported", False),
+                    "unsupported_reason": a.get("unsupported_reason"),
                     "source": a.get("source", "hacs_default"),
                     "stars": a.get("stars", 0),
                     "downloads": a.get("downloads", 0),
@@ -206,6 +208,20 @@ class WebUI:
         ):
             """Install an integration (async - returns immediately)."""
             from ..integrations import InstallTask
+
+            # Check if repository is unsupported before queuing
+            unsupported_entry = (
+                self._shim_manager.get_integration_manager().is_unsupported_repo(
+                    full_name
+                )
+            )
+            if unsupported_entry:
+                reason = unsupported_entry.get("reason", "No reason provided")
+                return HTMLResponse(
+                    f'<span class="pico-color-orange-500" style="font-weight: 600;" '
+                    f'title="{reason}">✗ Unsupported</span>',
+                    status_code=400,
+                )
 
             # Queue the install and get the task
             result = await self._shim_manager.install_integration(
@@ -644,6 +660,17 @@ class WebUI:
             repos = (
                 self._shim_manager.get_integration_manager().get_custom_repositories()
             )
+            return {"repositories": repos}
+
+        @self._app.get("/api/unsupported-repos", response_class=JSONResponse)
+        async def api_unsupported_repos():
+            """API endpoint for listing unsupported repositories.
+
+            This returns the static list of repositories that are known to be
+            incompatible with the shim. The list is maintained as a read-only
+            static file and cannot be modified via API.
+            """
+            repos = self._shim_manager.get_integration_manager().get_unsupported_repos()
             return {"repositories": repos}
 
         @self._app.post("/custom-repos")

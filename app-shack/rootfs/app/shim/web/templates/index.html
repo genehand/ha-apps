@@ -156,9 +156,10 @@
                                 </h5>
                                 <p class="pico-color-muted" style="margin-bottom: 0.5rem;">{{ integration.description or 'No description' }}</p>
                                 <div class="integration-meta">
-                                    Version: {{ integration.version }} | 
-                                    Source: {{ integration.source }} |
-                                    Status: {{ 'Enabled' if integration.enabled else 'Disabled' }}
+                                    Version: {{ integration.version }}
+                                    {% if integration.source != 'hacs_default' %}
+                                    | Source: {{ integration.source }}
+                                    {% endif %}
                                 </div>
                             </div>
                             <div style="display: flex; gap: 0.5rem;">
@@ -225,6 +226,8 @@
                             <div style="flex-shrink: 0;">
                                 {% if item.installed %}
                                 <span class="pico-color-jade-500" style="font-weight: 600;">✓ Installed</span>
+                                {% elif item.unsupported %}
+                                <span class="pico-color-grey-500" style="font-weight: 600;" title="{{ item.unsupported_reason }}">Unsupported</span>
                                 {% else %}
                                 <button type="button"
                                         hx-post="/integrations/{{ item.full_name }}/install"

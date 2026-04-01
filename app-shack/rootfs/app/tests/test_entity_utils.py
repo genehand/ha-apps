@@ -1103,3 +1103,146 @@ class TestAttributesRepublishDiscovery:
         # Second call should not trigger republish
         entity._publish_mqtt_attributes()
         assert len(jobs_added) == 1
+
+
+class TestCoordinatorEntityMqttPublishing:
+    """Test MQTT publishing for CoordinatorEntity-based entities."""
+
+    @pytest.mark.asyncio
+    async def test_coordinator_entity_has_mqtt_publish_method(self):
+        """Test that CoordinatorEntity has _mqtt_publish method via Entity base class."""
+        from shim.entity import Entity
+        from shim.import_patch import setup_import_patching
+        from shim.core import HomeAssistant
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = setup_import_patching(hass)
+            patcher.patch()
+
+            from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+            # CoordinatorEntity should have _mqtt_publish method from Entity base class
+            assert hasattr(CoordinatorEntity, "_mqtt_publish")
+            # And the generic discovery method
+            assert hasattr(CoordinatorEntity, "_publish_generic_mqtt_discovery")
+
+    @pytest.mark.asyncio
+    async def test_entity_generic_mqtt_discovery(self):
+        """Test that base Entity class can publish generic MQTT discovery."""
+        from shim.entity import Entity
+        from unittest.mock import MagicMock, patch
+        import json
+
+        # Create a mock hass with MQTT client
+        mock_hass = MagicMock()
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass._mqtt_client = mock_mqtt
+
+        # Create an entity and set it up
+        entity = Entity()
+        entity.hass = mock_hass
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_unique_id = "test_unique_id"
+        entity._attr_name = "Test Entity"
+        entity._attr_device_info = {
+            "identifiers": {("test", "device1")},
+            "name": "Test Device",
+            "manufacturer": "Test Mfg",
+            "model": "Test Model",
+        }
+
+        # Publish generic discovery
+        await entity._publish_generic_mqtt_discovery()
+
+        # Verify MQTT publish was called
+        assert mock_mqtt.publish.called
+
+        # Get the published payload
+        call_args = mock_mqtt.publish.call_args
+        topic = call_args[0][0]
+        payload = json.loads(call_args[0][1])
+
+        # Verify topic structure
+        assert topic == "homeassistant/sensor/test-entity/config"
+
+        # Verify payload content
+        assert payload["name"] == "Test Entity"
+        assert payload["unique_id"] == "test_unique_id"
+        assert payload["state_topic"] == "homeassistant/sensor/test-entity/state"
+        assert "device" in payload
+
+    def test_entity_mqtt_publish_publishes_state(self):
+        """Test that Entity._mqtt_publish publishes state to MQTT."""
+        from shim.entity import Entity, STATE_UNAVAILABLE
+        from unittest.mock import MagicMock
+
+        # Create a mock hass with MQTT client
+        mock_hass = MagicMock()
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass._mqtt_client = mock_mqtt
+
+        # Create an entity with a state by overriding the state property
+        class TestEntity(Entity):
+            @property
+            def state(self):
+                return "42"
+
+        entity = TestEntity()
+        entity.hass = mock_hass
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_unique_id = "test_unique_id"
+        entity._attr_name = "Test Entity"
+
+        # Publish state via _mqtt_publish
+        entity._mqtt_publish()
+
+        # Verify MQTT publish was called for state
+        mock_mqtt.publish.assert_called()
+
+        # Check that state topic was published with correct value
+        call_args_list = mock_mqtt.publish.call_args_list
+        topics_and_values = [(call[0][0], call[0][1]) for call in call_args_list]
+        state_calls = [(t, v) for t, v in topics_and_values if t.endswith("/state")]
+        assert len(state_calls) > 0
+        assert state_calls[0][1] == "42"
+
+    def test_entity_mqtt_publish_skips_when_no_mqtt_client(self):
+        """Test that _mqtt_publish skips when no MQTT client."""
+        from shim.entity import Entity
+        from unittest.mock import MagicMock
+
+        # Create a mock hass without MQTT client
+        mock_hass = MagicMock()
+        # No _mqtt_client attribute
+
+        entity = Entity()
+        entity.hass = mock_hass
+        entity.entity_id = "sensor.test_entity"
+
+        # Should not raise exception
+        entity._mqtt_publish()
+
+    def test_entity_mqtt_publish_skips_when_not_connected(self):
+        """Test that _mqtt_publish skips when MQTT not connected."""
+        from shim.entity import Entity
+        from unittest.mock import MagicMock
+
+        # Create a mock hass with disconnected MQTT client
+        mock_hass = MagicMock()
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = False
+        mock_hass._mqtt_client = mock_mqtt
+
+        entity = Entity()
+        entity.hass = mock_hass
+        entity.entity_id = "sensor.test_entity"
+
+        # Publish should skip when not connected
+        entity._mqtt_publish()
+
+        # Verify no publish calls were made
+        assert not mock_mqtt.publish.called

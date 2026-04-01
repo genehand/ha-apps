@@ -10,7 +10,6 @@ import colorlog
 from paho.mqtt.client import Client
 
 from config import Config
-from credentials import CredentialsManager
 from mqtt_bridge import MqttBridge
 from shim import ShimManager, __version__
 from shim.web import WebUI

@@ -1,0 +1,5 @@
+{
+  "alandtse/alexa_media_player": {
+    "reason": "MQTT component doesn't support the media_player platform"
+  }
+}

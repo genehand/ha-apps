@@ -608,11 +608,25 @@ class ConfigEntries:
                                     f"Initial state written for {entity.entity_id}"
                                 )
                                 # Publish MQTT discovery if entity supports it
+                                from .entity import Entity
+
                                 if hasattr(entity, "_publish_mqtt_discovery"):
-                                    _LOGGER.debug(
-                                        f"Publishing MQTT discovery for {entity.entity_id}"
+                                    # Check if this is a platform-specific implementation
+                                    is_platform_specific = (
+                                        type(entity)._publish_mqtt_discovery
+                                        is not Entity._publish_mqtt_discovery
                                     )
-                                    await entity._publish_mqtt_discovery()
+                                    if is_platform_specific:
+                                        _LOGGER.debug(
+                                            f"Publishing MQTT discovery for {entity.entity_id} (platform-specific)"
+                                        )
+                                        await entity._publish_mqtt_discovery()
+                                    else:
+                                        # Use generic discovery for base Entity classes
+                                        _LOGGER.debug(
+                                            f"Publishing generic MQTT discovery for {entity.entity_id}"
+                                        )
+                                        await entity._publish_generic_mqtt_discovery()
                                     _LOGGER.debug(
                                         f"MQTT discovery published for {entity.entity_id}"
                                     )

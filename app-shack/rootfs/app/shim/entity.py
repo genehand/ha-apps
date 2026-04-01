@@ -454,6 +454,88 @@ class Entity:
         """
         pass
 
+    def _mqtt_publish(self) -> None:
+        """Publish state to MQTT.
+
+        This generic implementation works for any entity with a proper entity_id.
+        Platform-specific subclasses may override this for specialized behavior.
+        """
+        if not self.entity_id:
+            return
+
+        if not hasattr(self.hass, "_mqtt_client"):
+            return
+
+        mqtt = self.hass._mqtt_client
+        if not mqtt.is_connected():
+            return
+
+        base_topic = self._get_mqtt_base_topic()
+        if not base_topic:
+            return
+
+        # Publish state
+        state_topic = f"{base_topic}/state"
+        state = self.state
+        if state is not None:
+            mqtt.publish(state_topic, str(state), qos=0, retain=True)
+
+        # Publish attributes if present
+        self._publish_mqtt_attributes()
+
+    async def _publish_generic_mqtt_discovery(self) -> None:
+        """Publish generic MQTT discovery config for any entity type.
+
+        This method provides basic MQTT discovery for entities that don't have
+        platform-specific discovery (like CoordinatorEntity-based sensors).
+        It extracts the platform from the entity_id (e.g., 'sensor.xyz' -> 'sensor').
+        """
+        if not self.entity_id:
+            return
+
+        if not hasattr(self.hass, "_mqtt_client"):
+            return
+
+        mqtt = self.hass._mqtt_client
+        if not mqtt.is_connected():
+            return
+
+        base_topic = self._get_mqtt_base_topic()
+        if not base_topic:
+            return
+
+        discovery_topic = f"{base_topic}/config"
+
+        # Build basic discovery config
+        config = {
+            "name": get_entity_name_for_discovery(self.name, self.device_info),
+            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
+            "state_topic": f"{base_topic}/state",
+        }
+
+        if self.device_info:
+            config["device"] = build_mqtt_device_config(self.device_info)
+
+        if self.device_class:
+            config["device_class"] = self.device_class
+
+        if self.icon:
+            config["icon"] = self.icon
+
+        if self.unit_of_measurement:
+            config["unit_of_measurement"] = self.unit_of_measurement
+
+        if self.entity_category:
+            config["entity_category"] = self.entity_category
+
+        # Add attributes topic if present
+        self._add_mqtt_attributes_to_config(config)
+
+        # Publish discovery
+        import json
+
+        mqtt.publish(discovery_topic, json.dumps(config), qos=0, retain=True)
+
     def _check_and_publish_discovery_update(self, properties: list[str]) -> bool:
         """Check if any discovery properties changed and republish if needed.
 
@@ -685,8 +767,20 @@ class Entity:
 
         # Publish MQTT discovery if entity supports it
         if hasattr(self, "_publish_mqtt_discovery"):
-            _LOGGER.debug(f"Publishing MQTT discovery for {self.entity_id}")
-            await self._publish_mqtt_discovery()
+            # Check if this is a platform-specific implementation (not the base class no-op)
+            # by checking if the method is overridden in a subclass
+            is_platform_specific = (
+                type(self)._publish_mqtt_discovery is not Entity._publish_mqtt_discovery
+            )
+            if is_platform_specific:
+                _LOGGER.debug(
+                    f"Publishing MQTT discovery for {self.entity_id} (platform-specific)"
+                )
+                await self._publish_mqtt_discovery()
+            else:
+                # Use generic discovery for base Entity classes (like CoordinatorEntity)
+                _LOGGER.debug(f"Publishing generic MQTT discovery for {self.entity_id}")
+                await self._publish_generic_mqtt_discovery()
 
         self.async_write_ha_state()
 

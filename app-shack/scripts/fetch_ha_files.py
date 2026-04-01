@@ -160,6 +160,75 @@ def clean_const_py(content: str) -> str:
         flags=re.MULTILINE,
     )
 
+    # Wrap the homeassistant imports in try/except with stub fallback
+    # This allows the module to work when homeassistant is not installed (e.g., during testing)
+    old_imports = """from homeassistant.generated.entity_platforms import EntityPlatforms
+from homeassistant.util.event_type import EventType
+from homeassistant.util.hass_dict import HassKey as _HassKey
+HassKey = _HassKey
+from homeassistant.util.signal_type import SignalType as _SignalType
+SignalType = _SignalType"""
+
+    new_imports = '''try:
+    from homeassistant.generated.entity_platforms import EntityPlatforms
+    from homeassistant.util.event_type import EventType
+    from homeassistant.util.hass_dict import HassKey as _HassKey
+    HassKey = _HassKey
+    from homeassistant.util.signal_type import SignalType as _SignalType
+    SignalType = _SignalType
+except ImportError:
+    # Shim: fallback stubs for standalone use outside HA core
+    class EntityPlatforms(StrEnum):
+        """Shim: EntityPlatforms for standalone use outside HA core."""
+
+        BINARY_SENSOR = "binary_sensor"
+        BUTTON = "button"
+        CALENDAR = "calendar"
+        CAMERA = "camera"
+        CLIMATE = "climate"
+        COVER = "cover"
+        DEVICE_TRACKER = "device_tracker"
+        FAN = "fan"
+        HUMIDIFIER = "humidifier"
+        IMAGE = "image"
+        LAWN_MOWER = "lawn_mower"
+        LIGHT = "light"
+        LOCK = "lock"
+        MEDIA_PLAYER = "media_player"
+        NOTIFY = "notify"
+        NUMBER = "number"
+        REMOTE = "remote"
+        SCENE = "scene"
+        SELECT = "select"
+        SENSOR = "sensor"
+        SIREN = "siren"
+        SWITCH = "switch"
+        TEXT = "text"
+        TIME = "time"
+        UPDATE = "update"
+        VACUUM = "vacuum"
+        VALVE = "valve"
+        WATER_HEATER = "water_heater"
+        WEATHER = "weather"
+
+    class _StubType:
+        """Shim: generic type wrapper for standalone use outside HA core."""
+
+        def __init__(self, name: str):
+            self._name = name
+
+        def __class_getitem__(cls, item):
+            return item
+
+        def __call__(self, *args, **kwargs):
+            return self
+
+    EventType = _StubType("EventType")
+    HassKey = _StubType("HassKey")
+    SignalType = _StubType("SignalType")'''
+
+    content = content.replace(old_imports, new_imports)
+
     return content
 
 
@@ -302,7 +371,7 @@ def main():
         else:
             write_file(dest_dir, f"_stub_{local_name}", stub_content)
 
-    # Write __init__.py to make it a proper package
+    # Write __init__.py to make it a proper package with lazy loading
     init_content = f'''"""Auto-fetched Home Assistant compatibility files.
 
 This package contains files fetched from Home Assistant {version}.
@@ -315,17 +384,30 @@ Files fetched:
 Run `python3 fetch_ha_files.py` to update to latest HA release.
 """
 
+
 # Re-export main modules for convenience
-from . import const
-from . import exceptions
+# These are loaded lazily to avoid circular imports during import_patch.py setup
+def __getattr__(name):
+    """Lazy module loading to avoid circular import issues."""
+    if name == "const":
+        from . import const
+        return const
+    elif name == "exceptions":
+        from . import exceptions
+        return exceptions
+    elif name == "util":
+        try:
+            from . import util
+            return util
+        except ImportError:
+            pass
+    elif name == "generated":
+        from . import generated
+        return generated
+    raise AttributeError(f"module '{{__name__}}' has no attribute '{{name}}'")
 
-try:
-    from . import util
-except ImportError:
-    pass
 
-__version__ = "{version}"
-'''
+__version__ = "{version}"'''
 
     if args.dry_run:
         print(f"  → Would write __init__.py")

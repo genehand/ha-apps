@@ -175,6 +175,7 @@ class IntegrationManager:
 
         self._load_integrations()
         self._load_custom_repos()
+        self._load_unsupported_repos()
         self._load_hacs_cache()
 
     def _load_integrations(self) -> None:
@@ -197,6 +198,51 @@ class IntegrationManager:
     def _save_custom_repos(self) -> None:
         """Save custom repositories to storage."""
         self._storage.save_custom_repos(self._custom_repos)
+
+    def _load_unsupported_repos(self) -> None:
+        """Load unsupported repositories from static file.
+
+        This is a read-only static file that lists repositories known to be
+        incompatible with the shim.
+        """
+        self._unsupported_repos: Dict[str, dict] = (
+            self._storage.load_unsupported_repos()
+        )
+
+    def get_unsupported_repos(self) -> List[dict]:
+        """Get all unsupported repositories."""
+        return [
+            {
+                "full_name": full_name,
+                "reason": info.get("reason", "No reason provided"),
+            }
+            for full_name, info in self._unsupported_repos.items()
+        ]
+
+    def is_unsupported_repo(self, full_name: str) -> Optional[dict]:
+        """Check if a repository is unsupported.
+
+        Args:
+            full_name: The full name of the repository (e.g., "owner/repo")
+
+        Returns:
+            The unsupported entry if found, None otherwise.
+        """
+        return self._unsupported_repos.get(full_name)
+
+    def is_unsupported_repo_by_url(self, repo_url: str) -> Optional[dict]:
+        """Check if a repository URL is unsupported.
+
+        Args:
+            repo_url: The repository URL to check
+
+        Returns:
+            The unsupported entry if found, None otherwise.
+        """
+        for full_name, entry in self._unsupported_repos.items():
+            if full_name in repo_url or entry.get("repository_url") == repo_url:
+                return entry
+        return None
 
     def _load_hacs_cache(self) -> None:
         """Load HACS repository cache from disk."""
@@ -269,6 +315,16 @@ class IntegrationManager:
             return False, "Invalid GitHub URL format"
 
         owner, repo = match.groups()
+        full_name = f"{owner}/{repo}"
+
+        # Check if repository is on the unsupported list
+        unsupported_entry = self.is_unsupported_repo(full_name)
+        if unsupported_entry:
+            reason = unsupported_entry.get("reason", "No reason provided")
+            return (
+                False,
+                f"Repository {full_name} is not supported: {reason}",
+            )
 
         # Check if already exists
         for domain, existing in self._custom_repos.items():
@@ -985,6 +1041,16 @@ class IntegrationManager:
         if source == "hacs_default":
             # For HACS default repos, full_name_or_domain is the full_name
             full_name = full_name_or_domain
+
+            # Check if repository is on the unsupported list
+            unsupported_entry = self.is_unsupported_repo(full_name)
+            if unsupported_entry:
+                reason = unsupported_entry.get("reason", "No reason provided")
+                _LOGGER.error(
+                    f"Cannot install {full_name}: Repository is not supported - {reason}"
+                )
+                return False
+
             if full_name in self._hacs_repos:
                 repo_info = self._hacs_repos[full_name]
                 repo_url = repo_info["repository_url"]
@@ -1210,12 +1276,18 @@ class IntegrationManager:
         for full_name, info in self._hacs_repos.items():
             domain = info.get("domain", "")
             repo_url = info.get("repository_url", "")
+            # Check if this repo is unsupported
+            unsupported_entry = self.is_unsupported_repo(full_name)
             integration = {
                 "full_name": full_name,  # Unique identifier for install links
                 "domain": domain,
                 "name": info.get("name", domain),
                 "description": info.get("description", ""),
                 "installed": repo_url in installed_repos,
+                "unsupported": bool(unsupported_entry),
+                "unsupported_reason": unsupported_entry.get("reason")
+                if unsupported_entry
+                else None,
                 "source": "hacs_default",
                 # Rich metadata from CDN
                 "repository_url": repo_url,
@@ -1232,12 +1304,18 @@ class IntegrationManager:
         for domain, info in self._custom_repos.items():
             full_name = info.get("full_name", "")
             repo_url = info.get("repository_url", "")
+            # Check if this custom repo is unsupported
+            unsupported_entry = self.is_unsupported_repo(full_name)
             integration = {
                 "full_name": full_name,
                 "domain": domain,
                 "name": info.get("name", domain),
                 "description": info.get("description", ""),
                 "installed": repo_url in installed_repos,
+                "unsupported": bool(unsupported_entry),
+                "unsupported_reason": unsupported_entry.get("reason")
+                if unsupported_entry
+                else None,
                 "source": "custom",
                 "repository_url": repo_url,
                 "downloads": 0,
