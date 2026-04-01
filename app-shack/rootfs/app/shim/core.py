@@ -209,6 +209,10 @@ class ServiceCall:
         return self.data.get(key, default)
 
 
+# ServiceResponse type - typically a dict response from services
+ServiceResponse = Dict[str, Any]
+
+
 class StateMachine:
     """Manages entity states."""
 

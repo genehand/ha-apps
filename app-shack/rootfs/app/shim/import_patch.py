@@ -412,6 +412,174 @@ class ImportPatcher:
         homeassistant.helpers.entity_registry = entity_registry
         sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
 
+        # Create entity_component stub module
+        entity_component = types.ModuleType("homeassistant.helpers.entity_component")
+        entity_component.DATA_INSTANCES = {}
+        homeassistant.helpers.entity_component = entity_component
+        sys.modules["homeassistant.helpers.entity_component"] = entity_component
+
+        # Create config_entry_oauth2_flow stub - needed for OAuth2 integrations like smartcar
+        oauth2_flow = types.ModuleType("homeassistant.helpers.config_entry_oauth2_flow")
+
+        # Create OAuth2Session class
+        class OAuth2Session:
+            """OAuth2 session stub."""
+
+            def __init__(self, hass, config_entry, implementation):
+                self.hass = hass
+                self.config_entry = config_entry
+                self.implementation = implementation
+                self.token = {}
+
+            async def async_ensure_token_valid(self):
+                """Ensure token is valid."""
+                pass
+
+            @property
+            def valid_token(self):
+                """Return valid token."""
+                return self.token.get("access_token", "")
+
+        oauth2_flow.OAuth2Session = OAuth2Session
+
+        # Create AbstractOAuth2Implementation class
+        class AbstractOAuth2Implementation:
+            """Abstract OAuth2 implementation stub."""
+
+            @property
+            def name(self):
+                return "stub"
+
+            @property
+            def domain(self):
+                return "stub"
+
+            async def async_generate_authorize_url(self, flow_id):
+                """Generate authorize URL."""
+                return "http://localhost/auth"
+
+            async def async_resolve_external_data(self, external_data):
+                """Resolve external data."""
+                return {"access_token": "stub_token"}
+
+        oauth2_flow.AbstractOAuth2Implementation = AbstractOAuth2Implementation
+
+        # Create LocalOAuth2Implementation
+        class LocalOAuth2Implementation(AbstractOAuth2Implementation):
+            """Local OAuth2 implementation stub."""
+
+            def __init__(
+                self, hass, domain, client_id, client_secret, authorize_url, token_url
+            ):
+                self.hass = hass
+                self._domain = domain
+                self.client_id = client_id
+                self.client_secret = client_secret
+                self._authorize_url = authorize_url
+                self._token_url = token_url
+
+            @property
+            def name(self):
+                return self._domain
+
+            @property
+            def domain(self):
+                return self._domain
+
+            async def async_generate_authorize_url(self, flow_id):
+                """Generate authorize URL."""
+                return f"{self._authorize_url}?client_id={self.client_id}&response_type=code"
+
+            async def async_resolve_external_data(self, external_data):
+                """Resolve external data."""
+                return {"access_token": "stub_token", "token_type": "bearer"}
+
+        oauth2_flow.LocalOAuth2Implementation = LocalOAuth2Implementation
+
+        # Create OAuth2FlowHandler base class
+        from .config_entries import ConfigFlow
+
+        class OAuth2FlowHandler(ConfigFlow):
+            """OAuth2 Flow Handler base class with manual token entry support."""
+
+            DOMAIN = ""
+            VERSION = 1
+
+            def __init__(self):
+                super().__init__()
+                self._oauth2_session = None
+                self._oauth2_implementation = None
+
+            async def async_step_user(self, user_input=None):
+                """Handle user step - show manual token entry form."""
+                if user_input is not None:
+                    # User provided manual tokens
+                    return await self.async_oauth_create_entry(user_input)
+
+                # Show a form for manual token entry
+                from homeassistant.helpers.selector import (
+                    TextSelector,
+                    TextSelectorConfig,
+                    TextSelectorType,
+                )
+                import voluptuous as vol
+
+                data_schema = vol.Schema(
+                    {
+                        vol.Required("access_token"): TextSelector(
+                            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                        ),
+                        vol.Optional("refresh_token"): TextSelector(
+                            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                        ),
+                        vol.Optional("expires_at"): TextSelector(
+                            TextSelectorConfig(type=TextSelectorType.NUMBER)
+                        ),
+                    }
+                )
+
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=data_schema,
+                    description_placeholders={
+                        "info": "OAuth2 authentication is not supported in this environment. You can manually enter access token for testing purposes."
+                    },
+                )
+
+            async def async_step_auth(self, user_input=None):
+                """Handle auth step - redirect to manual entry."""
+                return await self.async_step_user(user_input)
+
+            async def async_oauth_create_entry(self, data):
+                """Create entry from OAuth data."""
+                return self.async_create_entry(title="OAuth2 Manual Entry", data=data)
+
+            async def async_step_pick_implementation(self, user_input=None):
+                """Pick implementation step - redirect to manual entry."""
+                return await self.async_step_user(user_input)
+
+        oauth2_flow.OAuth2FlowHandler = OAuth2FlowHandler
+
+        # AbstractOAuth2FlowHandler is an alias for OAuth2FlowHandler
+        oauth2_flow.AbstractOAuth2FlowHandler = OAuth2FlowHandler
+
+        # Add helper functions
+        oauth2_flow.async_get_implementations = lambda hass, domain: []
+        oauth2_flow.async_register_implementation = (
+            lambda hass, domain, implementation: None
+        )
+
+        async def async_get_config_entry_implementation(hass, config_entry):
+            """Get OAuth2 implementation for a config entry."""
+            return None
+
+        oauth2_flow.async_get_config_entry_implementation = (
+            async_get_config_entry_implementation
+        )
+
+        homeassistant.helpers.config_entry_oauth2_flow = oauth2_flow
+        sys.modules["homeassistant.helpers.config_entry_oauth2_flow"] = oauth2_flow
+
         # Create event stub module
         event = types.ModuleType("homeassistant.helpers.event")
 
@@ -428,6 +596,15 @@ class ImportPatcher:
         event.EventStateChangedData = type("EventStateChangedData", (), {})
         homeassistant.helpers.event = event
         sys.modules["homeassistant.helpers.event"] = event
+
+        # Create restore_state stub module
+        restore_state = types.ModuleType("homeassistant.helpers.restore_state")
+        restore_state.RestoreEntity = type("RestoreEntity", (), {})
+        restore_state.ExtraStoredData = type("ExtraStoredData", (), {})
+        restore_state.RestoredExtraData = type("RestoredExtraData", (), {})
+        restore_state.async_get = lambda hass: None
+        homeassistant.helpers.restore_state = restore_state
+        sys.modules["homeassistant.helpers.restore_state"] = restore_state
 
         # Create dispatcher stub module for signal/slot pattern
         dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
@@ -899,6 +1076,7 @@ class ImportPatcher:
         homeassistant.components.vacuum = platforms.vacuum
         homeassistant.components.humidifier = platforms.humidifier
         homeassistant.components.number = platforms.number
+        homeassistant.components.lock = platforms.lock
 
         # Create persistent_notification stub module
         persistent_notification = types.ModuleType(
@@ -944,6 +1122,7 @@ class ImportPatcher:
         sys.modules["homeassistant.components.vacuum"] = platforms.vacuum
         sys.modules["homeassistant.components.humidifier"] = platforms.humidifier
         sys.modules["homeassistant.components.number"] = platforms.number
+        sys.modules["homeassistant.components.lock"] = platforms.lock
 
         _LOGGER.debug("Platform modules patched")
 
@@ -957,6 +1136,30 @@ class ImportPatcher:
 
         homeassistant.components.zeroconf = zeroconf_stub
         sys.modules["homeassistant.components.zeroconf"] = zeroconf_stub
+
+        # Create cloud stub - some integrations (like smartcar) depend on this
+        cloud_stub = types.ModuleType("homeassistant.components.cloud")
+        cloud_stub.async_active_subscription = lambda hass: False
+        cloud_stub.async_is_logged_in = lambda hass: False
+        cloud_stub.async_create_cloudhook = lambda hass, webhook_id: None
+        cloud_stub.async_delete_cloudhook = lambda hass, webhook_id: None
+        cloud_stub.async_listen_connection_change = lambda hass, callback: lambda: None
+        cloud_stub.CloudNotAvailable = type("CloudNotAvailable", (Exception,), {})
+        homeassistant.components.cloud = cloud_stub
+        sys.modules["homeassistant.components.cloud"] = cloud_stub
+
+        # Create webhook stub - some integrations (like smartcar) depend on this
+        webhook_stub = types.ModuleType("homeassistant.components.webhook")
+        webhook_stub.async_register = (
+            lambda hass, webhook_id, handler, *args, **kwargs: None
+        )
+        webhook_stub.async_unregister = lambda hass, webhook_id: None
+        webhook_stub.async_generate_id = lambda: "test_webhook_id"
+        webhook_stub.async_generate_url = (
+            lambda hass, webhook_id: f"http://localhost:8123/api/webhook/{webhook_id}"
+        )
+        homeassistant.components.webhook = webhook_stub
+        sys.modules["homeassistant.components.webhook"] = webhook_stub
 
         # Create homeassistant.util.percentage stub
         percentage_stub = types.ModuleType("homeassistant.util.percentage")
@@ -1120,6 +1323,7 @@ class ImportPatcher:
         typing_stub = types.ModuleType("homeassistant.helpers.typing")
         typing_stub.EventType = type("EventType", (), {})
         typing_stub.StateType = type("StateType", (), {})
+        typing_stub.ConfigType = dict  # Config is typically a dict
 
         # UNDEFINED sentinel for optional values
         class UNDEFINED:

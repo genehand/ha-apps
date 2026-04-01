@@ -346,6 +346,21 @@ class LabelSelector(Selector):
         self.config["multiple"] = multiple
 
 
+class ConfigEntrySelector(Selector):
+    """Selector for config entries."""
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        integration: Optional[str] = None,
+    ):
+        """Initialize config entry selector."""
+        super().__init__(config)
+        if integration:
+            self.config["integration"] = integration
+
+
 # Selector config type aliases (used by config flows)
 EntitySelectorConfig = dict
 DeviceSelectorConfig = dict

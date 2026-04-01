@@ -17,6 +17,7 @@ from . import text
 from . import vacuum
 from . import humidifier
 from . import number
+from . import lock
 
 __all__ = [
     "fan",
@@ -33,4 +34,5 @@ __all__ = [
     "vacuum",
     "humidifier",
     "number",
+    "lock",
 ]
