@@ -29,8 +29,11 @@ class WebUI:
         self._host = host
         self._port = port
 
+        # Import version locally to avoid circular import
+        from .. import __version__
+
         # Setup FastAPI
-        self._app = FastAPI(title="HA Shim", version="0.1.0")
+        self._app = FastAPI(title="HA Shim", version=__version__)
 
         # Setup templates - store directory path and load manually
         self._template_dir = Path(__file__).parent / "templates"
@@ -1257,19 +1260,79 @@ class WebUI:
 
     async def start(self) -> None:
         """Start the web server."""
+        import logging
         import uvicorn
+
+        # Custom formatter that cleans up uvicorn logger names for display
+        class UvicornFormatter(logging.Formatter):
+            def format(self, record):
+                # Show uvicorn.error as just uvicorn for cleaner logs
+                if record.name == "uvicorn.error":
+                    record.name = "uvicorn"
+                return super().format(record)
+
+        # Custom logging config to match main app format
+        log_format = "%(asctime)s %(levelname)s: %(name)s - %(message)s"
+        date_format = "%Y-%m-%d %H:%M:%S"
+
+        log_config = {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "()": UvicornFormatter,
+                    "format": log_format,
+                    "datefmt": date_format,
+                },
+                "access": {
+                    "()": UvicornFormatter,
+                    "format": log_format,
+                    "datefmt": date_format,
+                },
+            },
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr",
+                },
+                "access": {
+                    "formatter": "access",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stdout",
+                },
+            },
+            "loggers": {
+                "uvicorn": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+                "uvicorn.error": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+                "uvicorn.access": {
+                    "handlers": ["access"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+            },
+        }
 
         config = uvicorn.Config(
             self._app,
             host=self._host,
             port=self._port,
             log_level="info",
+            log_config=log_config,
         )
         server = uvicorn.Server(config)
         try:
             await server.serve()
         except asyncio.CancelledError:
             # Graceful shutdown
-            _LOGGER.info("Web server shutting down...")
+            _LOGGER.debug("Web server shutting down...")
             await server.shutdown()
             raise

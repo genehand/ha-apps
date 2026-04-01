@@ -12,7 +12,7 @@ from paho.mqtt.client import Client
 from config import Config
 from credentials import CredentialsManager
 from mqtt_bridge import MqttBridge
-from shim import ShimManager
+from shim import ShimManager, __version__
 from shim.web import WebUI
 
 # Configuration paths
@@ -42,7 +42,7 @@ def setup_logging(log_level: str) -> logging.Logger:
     handler = colorlog.StreamHandler(sys.stdout)
     handler.setFormatter(
         colorlog.ColoredFormatter(
-            "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            "%(log_color)s%(asctime)s %(levelname)s: %(name)s - %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
             log_colors={
                 "DEBUG": "cyan",
@@ -69,7 +69,7 @@ async def main():
 
     # Setup logging
     logger = setup_logging(config.log_level)
-    logger.info("Starting Shack with HA Shim v0.1.0")
+    logger.info(f"Starting Shack with HA Shim v{__version__}")
 
     # Initialize MQTT bridge
     mqtt_bridge = MqttBridge(
@@ -116,13 +116,9 @@ async def main():
         # Start web UI in background
         web_task = asyncio.create_task(web_ui.start())
 
-        logger.info("Shack with HA Shim is running")
-        logger.info(f"Web UI available at http://localhost:8080")
-        logger.info("Press Ctrl+C to stop")
-
         # Wait for shutdown signal
         await shutdown_event.wait()
-        logger.info("Shutdown requested, stopping services...")
+        logger.debug("Shutdown requested, stopping services...")
 
         # Cancel the web task
         web_task.cancel()
@@ -150,7 +146,7 @@ async def main():
 async def shutdown(shim_manager: ShimManager, mqtt_bridge: MqttBridge):
     """Graceful shutdown."""
     logger = logging.getLogger("shack")
-    logger.info("Shutting down Shack...")
+    logger.debug("Shutting down Shack...")
 
     try:
         await shim_manager.stop()

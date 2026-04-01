@@ -730,7 +730,7 @@ class HomeAssistant:
         # This is needed for integrations that use run_coroutine_threadsafe from other threads
         self._loop = asyncio.get_event_loop()
 
-        _LOGGER.info("HomeAssistant shim initialized")
+        _LOGGER.debug("HomeAssistant shim initialized")
 
     @property
     def loop(self):

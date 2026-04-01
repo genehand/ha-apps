@@ -35,7 +35,7 @@ class ShimManager:
         self._mqtt_base_topic = mqtt_base_topic
 
         # Initialize core HA shim
-        _LOGGER.info("Initializing Home Assistant shim")
+        _LOGGER.debug("Initializing Home Assistant shim")
         self._hass = HomeAssistant(self._config_dir)
         self._hass._mqtt_client = mqtt_client  # Give hass access to MQTT
 
@@ -63,7 +63,7 @@ class ShimManager:
 
     async def start(self) -> None:
         """Start the shim manager."""
-        _LOGGER.info("Starting Shim Manager")
+        _LOGGER.debug("Starting Shim Manager")
         self._running = True
 
         # Setup MQTT subscriptions
@@ -82,7 +82,7 @@ class ShimManager:
         # Start integration manager background tasks
         await self._integration_manager.start_background_tasks()
 
-        _LOGGER.info("Shim Manager started successfully")
+        _LOGGER.debug("Shim Manager started successfully")
 
     async def stop(self) -> None:
         """Stop the shim manager."""
@@ -109,7 +109,7 @@ class ShimManager:
                     entry, cleanup_mqtt=False
                 )
 
-        _LOGGER.info("Shim Manager stopped")
+        _LOGGER.debug("Shim Manager stopped")
 
     def _setup_mqtt_subscriptions(self) -> None:
         """Setup MQTT command subscriptions."""
@@ -414,7 +414,7 @@ class ShimManager:
         _LOGGER.info(f"Loading {len(enabled)} enabled integrations")
 
         for info in enabled:
-            _LOGGER.info(f"Loading enabled integration: {info.domain}")
+            _LOGGER.debug(f"Loading enabled integration: {info.domain}")
 
             # Get config entries for this integration
             entries = self._hass.config_entries.async_entries(info.domain)

@@ -1,4 +1,4 @@
-<div class="status-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+<div class="status-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
     <article style="padding: 1rem; text-align: center; margin: 0;">
         <div style="font-size: 1.75rem; margin-bottom: 0.5rem; color: var(--pico-primary);">{{ loaded_integrations|length }}</div>
         <div style="font-size: 0.875rem; color: var(--pico-muted-color);">Loaded Integrations</div>
@@ -9,20 +9,3 @@
         <div style="font-size: 0.875rem; color: var(--pico-muted-color);">Total Entities</div>
     </article>
 </div>
-
-{% if loaded_integrations %}
-<div class="integration-chips" style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
-    {% for integration in loaded_integrations %}
-    <span style="
-        background: var(--pico-primary-background);
-        color: var(--pico-primary);
-        padding: 0.25rem 0.75rem;
-        border-radius: 1rem;
-        font-size: 0.875rem;
-        border: 1px solid var(--pico-primary-border);
-    ">{{ integration }}</span>
-    {% endfor %}
-</div>
-{% else %}
-<p style="color: var(--pico-muted-color); text-align: center; margin-top: 1rem;">No integrations loaded yet</p>
-{% endif %}

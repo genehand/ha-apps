@@ -38,7 +38,7 @@ class MqttBridge:
         def on_connect(client, userdata, flags, rc):
             if rc == 0:
                 self._connected = True
-                logger.info("Connected to MQTT broker")
+                logger.debug("Connected to MQTT broker")
             else:
                 error_codes = {
                     1: "incorrect protocol version",

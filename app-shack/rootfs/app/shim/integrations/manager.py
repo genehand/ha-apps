@@ -133,7 +133,7 @@ class IntegrationManager:
             if str(self._persistent_packages_dir) not in sys.path:
                 sys.path.insert(0, str(self._persistent_packages_dir))
                 importlib.invalidate_caches()
-            _LOGGER.info(
+            _LOGGER.debug(
                 f"Using persistent packages dir: {self._persistent_packages_dir} "
                 f"(Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})"
             )
@@ -770,11 +770,11 @@ class IntegrationManager:
         """Start background tasks for install queue and update checking."""
         if self._install_worker_task is None or self._install_worker_task.done():
             self._install_worker_task = asyncio.create_task(self._install_worker())
-            _LOGGER.info("Started install queue worker")
+            _LOGGER.debug("Started install queue worker")
 
         if self._update_check_task is None or self._update_check_task.done():
             self._update_check_task = asyncio.create_task(self._periodic_update_check())
-            _LOGGER.info("Started periodic update check task")
+            _LOGGER.debug("Started periodic update check task")
 
     async def stop_background_tasks(self):
         """Stop background tasks."""
@@ -1315,7 +1315,7 @@ class IntegrationManager:
             _LOGGER.debug(f"Integration {domain} has no requirements to install")
             return True
 
-        _LOGGER.info(f"Integration {domain} has requirements: {info.requirements}")
+        _LOGGER.debug(f"Integration {domain} has requirements: {info.requirements}")
 
         # Use the venv pip to ensure packages are installed in the right environment
         venv_pip = self._shim_dir.parent / ".venv" / "bin" / "pip"

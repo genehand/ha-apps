@@ -105,7 +105,7 @@ class IntegrationLoader:
             # Pass the integration path so we can load translations
             patch_select_descriptions(domain, module, integration_path)
 
-            _LOGGER.info(f"Successfully loaded integration {domain}")
+            _LOGGER.debug(f"Successfully loaded integration {domain}")
             return True
 
         except Exception as e:
@@ -151,7 +151,7 @@ class IntegrationLoader:
                 current_entry.reset(token)
 
             if result:
-                _LOGGER.info(f"Successfully setup {domain}")
+                _LOGGER.debug(f"Successfully setup {domain}")
                 return True
             else:
                 _LOGGER.error(f"Integration {domain} setup returned False")

@@ -1055,7 +1055,7 @@ class ImportPatcher:
         self._create_stubs(homeassistant)
 
         self._patched = True
-        _LOGGER.info("Import patching complete")
+        _LOGGER.debug("Import patching complete")
 
     def _patch_platforms(self, homeassistant) -> None:
         """Patch entity platform modules."""
