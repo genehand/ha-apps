@@ -84,14 +84,36 @@ class FrozenOrThawed(type):
                 "options": None,
                 "preset_modes": None,
                 "supported_features": 0,
+                # Humidifier entity description fields
+                "max_humidity": 100,
+                "min_humidity": 0,
                 # Text entity description fields
                 "pattern": None,
                 "mode": "text",
                 "min": 0,
                 "max": 255,
             }
+
+            # Mutable defaults need factory functions
+            field_factories = {
+                "fan_speed_list": list,
+                "modes": list,
+                "options": list,
+            }
+
             for field_name, field_type in annotations.items():
-                if field_name in field_defaults:
+                if field_name in field_factories:
+                    # Use dataclasses.field with default_factory for mutable types
+                    fields.append(
+                        (
+                            field_name,
+                            field_type,
+                            dataclasses.field(
+                                default_factory=field_factories[field_name]
+                            ),
+                        )
+                    )
+                elif field_name in field_defaults:
                     fields.append((field_name, field_type, field_defaults[field_name]))
                 else:
                     fields.append((field_name, field_type))

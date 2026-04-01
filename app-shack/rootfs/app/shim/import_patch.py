@@ -304,6 +304,15 @@ class ImportPatcher:
         config_validation.date = lambda x: x
         config_validation.time = lambda x: x
 
+        # ensure_list validator - wraps single values in a list
+        def ensure_list(value):
+            """Wrap value in list if it is not one."""
+            if value is None:
+                return []
+            return value if isinstance(value, list) else [value]
+
+        config_validation.ensure_list = ensure_list
+
         # Latitude and longitude validators
         def latitude_validator(value):
             """Validate latitude is between -90 and 90."""
@@ -823,6 +832,8 @@ class ImportPatcher:
         homeassistant.components.button = platforms.button
         homeassistant.components.device_tracker = platforms.device_tracker
         homeassistant.components.text = platforms.text
+        homeassistant.components.vacuum = platforms.vacuum
+        homeassistant.components.humidifier = platforms.humidifier
 
         # Create persistent_notification stub module
         persistent_notification = types.ModuleType(
@@ -857,6 +868,8 @@ class ImportPatcher:
             platforms.device_tracker.const
         )
         sys.modules["homeassistant.components.text"] = platforms.text
+        sys.modules["homeassistant.components.vacuum"] = platforms.vacuum
+        sys.modules["homeassistant.components.humidifier"] = platforms.humidifier
 
         _LOGGER.debug("Platform modules patched")
 
@@ -873,9 +886,27 @@ class ImportPatcher:
 
         # Create homeassistant.util.percentage stub
         percentage_stub = types.ModuleType("homeassistant.util.percentage")
-        percentage_stub.int_states_in_range = lambda *args, **kwargs: 100
-        percentage_stub.percentage_to_ranged_value = lambda *args, **kwargs: 0
-        percentage_stub.ranged_value_to_percentage = lambda *args, **kwargs: 0
+
+        def int_states_in_range(low_high_range):
+            """Return the number of integer states in a range."""
+            low, high = low_high_range
+            return high - low + 1
+
+        def percentage_to_ranged_value(low_high_range, percentage):
+            """Map a percentage to a value within a range."""
+            low, high = low_high_range
+            return low + (high - low) * percentage / 100
+
+        def ranged_value_to_percentage(low_high_range, value):
+            """Map a value within a range to a percentage."""
+            low, high = low_high_range
+            if value is None:
+                return None
+            return round((value - low) / (high - low) * 100)
+
+        percentage_stub.int_states_in_range = int_states_in_range
+        percentage_stub.percentage_to_ranged_value = percentage_to_ranged_value
+        percentage_stub.ranged_value_to_percentage = ranged_value_to_percentage
 
         homeassistant.util.percentage = percentage_stub
         sys.modules["homeassistant.util.percentage"] = percentage_stub

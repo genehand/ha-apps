@@ -191,6 +191,7 @@ class ShimManager:
                 return
 
             _LOGGER.debug(f"Found entity {entity_id}, routing command")
+            _LOGGER.debug(f"  Command type: {command_type}, payload: '{payload}'")
             # Route command to entity (thread-safe)
             self._hass.async_run_job(self._route_command, entity, command_type, payload)
 
@@ -236,9 +237,14 @@ class ShimManager:
 
             elif command_type == "percentage_set":
                 # Fan speed
+                _LOGGER.debug(
+                    f"  Routing percentage_set: payload='{payload}', int={int(payload)}"
+                )
                 if hasattr(entity, "async_set_percentage"):
+                    _LOGGER.debug(f"  Calling async_set_percentage with {int(payload)}")
                     await entity.async_set_percentage(int(payload))
                 elif hasattr(entity, "set_percentage"):
+                    _LOGGER.debug(f"  Calling set_percentage with {int(payload)}")
                     entity.set_percentage(int(payload))
 
             elif command_type == "preset_mode_set":
@@ -277,7 +283,10 @@ class ShimManager:
                     entity.set_hvac_mode(payload)
 
         except Exception as e:
-            _LOGGER.error(f"Error routing command to {entity.entity_id}: {e}")
+            _LOGGER.error(
+                f"Error routing command to {getattr(entity, 'entity_id', 'unknown')}: {e}"
+            )
+            _LOGGER.exception("Full traceback:")
 
     def _find_entity(
         self, entity_id: str, object_id: Optional[str] = None

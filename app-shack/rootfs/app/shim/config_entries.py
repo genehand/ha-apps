@@ -347,3 +347,7 @@ class FlowResultType(Enum):
 
 
 FlowResult = Dict[str, Any]
+
+
+# ConfigFlowResult is an alias for FlowResult used by newer integrations
+ConfigFlowResult = FlowResult

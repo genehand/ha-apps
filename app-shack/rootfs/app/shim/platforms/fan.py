@@ -298,9 +298,8 @@ class FanEntity(Entity):
         if self.supported_features & SUPPORT_SET_SPEED:
             config["percentage_command_topic"] = f"{base_topic}/percentage_set"
             config["percentage_state_topic"] = f"{base_topic}/percentage_state"
-            if self.speed_count:
-                config["speed_range_min"] = 1
-                config["speed_range_max"] = self.speed_count
+            # Don't set speed_range_min/max - let HA use default percentage (0-100)
+            # The Dyson integration will convert percentage to speed internally
 
         if self.supported_features & SUPPORT_PRESET_MODE and self.preset_modes:
             config["preset_mode_command_topic"] = f"{base_topic}/preset_mode_set"

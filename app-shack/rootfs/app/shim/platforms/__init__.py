@@ -14,6 +14,8 @@ from . import select
 from . import button
 from . import device_tracker
 from . import text
+from . import vacuum
+from . import humidifier
 
 __all__ = [
     "fan",
@@ -27,4 +29,6 @@ __all__ = [
     "button",
     "device_tracker",
     "text",
+    "vacuum",
+    "humidifier",
 ]

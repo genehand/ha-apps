@@ -112,24 +112,54 @@ class ConfigEntry:
                 _LOGGER.error(f"Error in unload callback: {e}")
 
 
+@dataclass
 class State:
     """Represents an entity state."""
 
-    def __init__(
-        self,
-        entity_id: str,
-        state: str,
-        attributes: Optional[dict] = None,
-        last_changed: Optional[datetime] = None,
-        last_updated: Optional[datetime] = None,
-        context: Optional[dict] = None,
-    ):
-        self.entity_id = entity_id
-        self.state = state
-        self.attributes = attributes or {}
-        self.last_changed = last_changed or datetime.now()
-        self.last_updated = last_updated or datetime.now()
-        self.context = context or {}
+    entity_id: str
+    state: str
+    attributes: dict = field(default_factory=dict)
+    last_changed: Optional[datetime] = None
+    last_updated: Optional[datetime] = None
+    context: Optional[dict] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.last_changed:
+            self.last_changed = datetime.now()
+        if not self.last_updated:
+            self.last_updated = datetime.now()
+
+
+@dataclass
+class Context:
+    """Context of a service call."""
+
+    id: str = field(default_factory=lambda: str(id(object())))
+    user_id: Optional[str] = None
+    parent_id: Optional[str] = None
+
+
+@dataclass
+class ServiceCall:
+    """Represents a service call.
+
+    This is passed to service handlers and contains all the information
+    about the service being called.
+    """
+
+    domain: str
+    service: str
+    data: Dict[str, Any] = field(default_factory=dict)
+    target: Optional[Dict[str, Any]] = None
+    context: Optional[Context] = None
+
+    def __getitem__(self, key: str) -> Any:
+        """Allow accessing data dict directly."""
+        return self.data[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get value from data dict with default."""
+        return self.data.get(key, default)
 
 
 class StateMachine:

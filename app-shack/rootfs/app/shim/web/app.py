@@ -148,12 +148,15 @@ class WebUI:
                     await self._shim_manager.get_integration_loader().setup_integration(
                         entry
                     )
-                # Return HTML redirect to refresh the page
-                return HTMLResponse(
-                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" class="alert alert-success">'
+                # Use HTMX redirect to properly change the URL
+                html = (
+                    f'<div class="alert alert-success">'
                     f"Integration {domain} enabled successfully!"
                     f"</div>"
                 )
+                response = HTMLResponse(content=html)
+                response.headers["HX-Redirect"] = "/"
+                return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to enable {domain}</div>',
                 status_code=400,
@@ -175,12 +178,15 @@ class WebUI:
                 )
             )
             if success:
-                # Return HTML redirect to refresh the page
-                return HTMLResponse(
-                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" class="alert alert-success">'
+                # Use HTMX redirect to properly change the URL
+                html = (
+                    f'<div class="alert alert-success">'
                     f"Integration {domain} disabled successfully!"
                     f"</div>"
                 )
+                response = HTMLResponse(content=html)
+                response.headers["HX-Redirect"] = "/"
+                return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to disable {domain}</div>',
                 status_code=400,
@@ -300,12 +306,15 @@ class WebUI:
                 )
             )
             if success:
-                return HTMLResponse(
-                    f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" '
-                    f'class="alert alert-success">'
+                # Use HTMX redirect to properly change the URL
+                html = (
+                    f'<div class="alert alert-success">'
                     f"Integration {domain} removed successfully!"
                     f"</div>"
                 )
+                response = HTMLResponse(content=html)
+                response.headers["HX-Redirect"] = "/"
+                return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to remove {domain}</div>',
                 status_code=400,
@@ -323,12 +332,15 @@ class WebUI:
 
             # This triggers the update process
             await self._shim_manager._update_integration(domain)
-            return HTMLResponse(
-                f'<div hx-trigger="load" hx-get="/integrations/{domain}" hx-target="body" hx-swap="outerHTML" '
-                f'class="alert alert-success">'
+            # Use HTMX redirect to refresh the integration detail page
+            html = (
+                f'<div class="alert alert-success">'
                 f"Integration {domain} updated successfully!"
                 f"</div>"
             )
+            response = HTMLResponse(content=html)
+            response.headers["HX-Redirect"] = f"/integrations/{domain}"
+            return response
 
         @self._app.post("/config/{entry_id}/remove")
         async def remove_config_entry(entry_id: str):
@@ -350,11 +362,14 @@ class WebUI:
             )
 
             if success:
-                # Return redirect to integration detail page
-                return HTMLResponse(
-                    f'<div hx-trigger="load" hx-get="/integrations/{domain}" hx-target="body" hx-swap="outerHTML">'
-                    f'<div class="alert alert-success">Configuration entry removed successfully!</div></div>'
+                # Use HTMX redirect to refresh the integration detail page
+                html = (
+                    f'<div class="alert alert-success">Configuration entry removed '
+                    f"successfully!</div>"
                 )
+                response = HTMLResponse(content=html)
+                response.headers["HX-Redirect"] = f"/integrations/{domain}"
+                return response
             else:
                 return HTMLResponse(
                     '<div class="alert alert-error">Failed to remove configuration entry</div>',
