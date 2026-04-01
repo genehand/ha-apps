@@ -340,11 +340,9 @@
                             <span style="color: #4caf50;">✓ Installed</span>
                             {% else %}
                             <button type="button" class="btn btn-success"
-                                    hx-post="/integrations/{{ item.domain }}/install"
+                                    hx-post="/integrations/{{ item.full_name }}/install"
                                     hx-target="body"
-                                    hx-swap="outerHTML"
-                                    hx-indicator="#spinner-{{ item.domain }}">
-                                <span id="spinner-{{ item.domain }}" class="spinner" style="display: none;"></span>
+                                    hx-swap="outerHTML">
                                 Install
                             </button>
                             {% endif %}

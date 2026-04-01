@@ -36,13 +36,14 @@ UPDATE_CHECK_INTERVAL_HOURS = 4
 class InstallTask:
     """Task for async installation."""
 
-    domain: str
+    full_name_or_domain: str  # full_name for HACS repos, domain for custom repos
     version: Optional[str]
     source: str
     custom_url: Optional[str]
     callback: Optional[callable] = None
     status: str = "pending"  # pending, downloading, installing, complete, error
     error_message: Optional[str] = None
+    domain: Optional[str] = None  # Will be set after manifest is read
 
 
 class IntegrationInfo:
@@ -204,6 +205,18 @@ class IntegrationManager:
             if cache_file.exists():
                 with open(cache_file, "r") as f:
                     cache = json.load(f)
+
+                    # Check cache format version - if old format (keyed by domain), invalidate it
+                    cache_version = cache.get("version", 1)
+                    if cache_version < 2:
+                        _LOGGER.info(
+                            "HACS cache is old format (v1), invalidating to support duplicate domains"
+                        )
+                        self._hacs_repos = {}
+                        self._hacs_etag = None
+                        self._hacs_last_fetched = None
+                        return
+
                     self._hacs_repos = cache.get("repos", {})
                     self._hacs_etag = cache.get("etag")
                     self._hacs_last_fetched = (
@@ -225,6 +238,7 @@ class IntegrationManager:
         try:
             cache_file = Path(self._storage._shim_dir) / "hacs_cache.json"
             cache = {
+                "version": 2,  # Cache format version (v2 = keyed by full_name)
                 "repos": self._hacs_repos,
                 "etag": self._hacs_etag,
                 "last_fetched": self._hacs_last_fetched.isoformat()
@@ -409,7 +423,9 @@ class IntegrationManager:
                             # Extract manifest data if available
                             manifest = repo_data.get("manifest", {})
 
-                            repos[domain] = {
+                            # Use full_name as the unique key to track all repos
+                            # (allows multiple repos with same domain)
+                            repos[full_name] = {
                                 "domain": domain,
                                 "name": (
                                     repo_data.get("manifest_name")
@@ -455,15 +471,15 @@ class IntegrationManager:
                 return self._hacs_repos
             return {}
 
-    async def get_repo_details(self, domain: str) -> Optional[dict]:
-        """Get detailed info for a specific repository.
+    async def get_repo_details(self, full_name: str) -> Optional[dict]:
+        """Get detailed info for a specific repository by full_name.
 
         Uses cached CDN data which already contains manifest details.
         Only fetches from GitHub if additional info is needed.
         """
-        # Check HACS default repos first
-        if domain in self._hacs_repos:
-            repo_info = self._hacs_repos[domain].copy()
+        # Check HACS default repos first (keyed by full_name)
+        if full_name in self._hacs_repos:
+            repo_info = self._hacs_repos[full_name].copy()
 
             # Add additional computed fields
             manifest = repo_info.get("manifest", {})
@@ -475,21 +491,37 @@ class IntegrationManager:
 
             return repo_info
 
-        # Check custom repos
-        if domain in self._custom_repos:
-            repo_info = self._custom_repos[domain].copy()
+        # Check custom repos (keyed by domain, but we can look up by full_name)
+        for domain, info in self._custom_repos.items():
+            if info.get("full_name") == full_name:
+                repo_info = info.copy()
 
-            # Add additional computed fields
-            manifest = repo_info.get("manifest", {})
-            repo_info["config_flow"] = manifest.get("config_flow", False)
-            repo_info["requirements"] = manifest.get("requirements", [])
-            repo_info["dependencies"] = manifest.get("dependencies", [])
-            repo_info["documentation"] = manifest.get("documentation", "")
-            repo_info["iot_class"] = manifest.get("iot_class", "")
+                # Add additional computed fields
+                manifest = repo_info.get("manifest", {})
+                repo_info["config_flow"] = manifest.get("config_flow", False)
+                repo_info["requirements"] = manifest.get("requirements", [])
+                repo_info["dependencies"] = manifest.get("dependencies", [])
+                repo_info["documentation"] = manifest.get("documentation", "")
+                repo_info["iot_class"] = manifest.get("iot_class", "")
 
-            return repo_info
+                return repo_info
 
         return None
+
+    def get_repos_by_domain(self, domain: str) -> List[dict]:
+        """Get all repositories for a specific domain."""
+        repos = []
+        for full_name, info in self._hacs_repos.items():
+            if info.get("domain") == domain:
+                repo_copy = info.copy()
+                manifest = repo_copy.get("manifest", {})
+                repo_copy["config_flow"] = manifest.get("config_flow", False)
+                repo_copy["requirements"] = manifest.get("requirements", [])
+                repo_copy["dependencies"] = manifest.get("dependencies", [])
+                repo_copy["documentation"] = manifest.get("documentation", "")
+                repo_copy["iot_class"] = manifest.get("iot_class", "")
+                repos.append(repo_copy)
+        return repos
 
     async def _fetch_repo_info(
         self, session: aiohttp.ClientSession, repo_url: str
@@ -679,14 +711,19 @@ class IntegrationManager:
         # Refresh CDN data if stale
         await self.fetch_hacs_repositories()
 
+        # Build a lookup by repository_url for quick matching
+        hacs_repos_by_url = {
+            info.get("repository_url"): info for info in self._hacs_repos.values()
+        }
+
         for domain, info in self._integrations.items():
             if not info.enabled:
                 continue
 
             try:
-                # Use CDN data for version checking
-                if domain in self._hacs_repos:
-                    hacs_repo = self._hacs_repos[domain]
+                # Use CDN data for version checking - match by repository_url
+                if info.repository_url in hacs_repos_by_url:
+                    hacs_repo = hacs_repos_by_url[info.repository_url]
                     latest = hacs_repo.get("last_version")
                     if latest and self._compare_versions(info.version, latest):
                         info.latest_version = latest
@@ -776,30 +813,32 @@ class IntegrationManager:
 
         try:
             success = await self._do_install(
-                task.domain, task.version, task.source, task.custom_url
+                task.full_name_or_domain, task.version, task.source, task.custom_url
             )
             if success:
                 task.status = "complete"
-                _LOGGER.info(f"Successfully installed {task.domain}")
+                _LOGGER.info(f"Successfully installed {task.full_name_or_domain}")
             else:
                 task.status = "error"
                 task.error_message = "Installation failed"
-                _LOGGER.error(f"Failed to install {task.domain}")
+                _LOGGER.error(f"Failed to install {task.full_name_or_domain}")
         except Exception as e:
             task.status = "error"
             task.error_message = str(e)
-            _LOGGER.error(f"Exception installing {task.domain}: {e}")
+            _LOGGER.error(f"Exception installing {task.full_name_or_domain}: {e}")
         finally:
             # Call callback if provided
             if task.callback:
                 try:
-                    task.callback(task.domain, task.status, task.error_message)
+                    task.callback(
+                        task.full_name_or_domain, task.status, task.error_message
+                    )
                 except Exception as e:
                     _LOGGER.error(f"Install callback error: {e}")
 
     def queue_install(
         self,
-        domain: str,
+        full_name_or_domain: str,
         version: Optional[str] = None,
         source: str = "hacs_default",
         custom_url: Optional[str] = None,
@@ -810,20 +849,20 @@ class IntegrationManager:
         Returns immediately with a task object that can be used to track progress.
         """
         task = InstallTask(
-            domain=domain,
+            full_name_or_domain=full_name_or_domain,
             version=version,
             source=source,
             custom_url=custom_url,
             callback=callback,
         )
-        self._install_tasks[domain] = task
+        self._install_tasks[full_name_or_domain] = task
         self._install_queue.put_nowait(task)
-        _LOGGER.info(f"Queued {domain} for installation")
+        _LOGGER.info(f"Queued {full_name_or_domain} for installation")
         return task
 
-    def get_install_status(self, domain: str) -> Optional[InstallTask]:
-        """Get the current installation status for a domain."""
-        return self._install_tasks.get(domain)
+    def get_install_status(self, full_name_or_domain: str) -> Optional[InstallTask]:
+        """Get the current installation status for a full_name or domain."""
+        return self._install_tasks.get(full_name_or_domain)
 
     async def _periodic_update_check(self):
         """Periodically check for updates and send aggregated notifications."""
@@ -901,7 +940,7 @@ class IntegrationManager:
 
     async def install_integration(
         self,
-        domain: str,
+        full_name_or_domain: str,
         version: Optional[str] = None,
         source: str = "hacs_default",
         custom_url: Optional[str] = None,
@@ -909,42 +948,55 @@ class IntegrationManager:
     ) -> Union[bool, InstallTask]:
         """Queue an integration for installation.
 
-        By default, returns immediately with an InstallTask for async tracking.
-        Set wait=True to block until installation completes (old behavior).
+        Args:
+            full_name_or_domain: For HACS repos, the full_name (e.g., "owner/repo").
+                               For custom repos, the domain.
+            version: Optional specific version to install
+            source: "hacs_default" or "custom"
+            custom_url: Direct URL for custom repos not in the list
+            wait: If True, block until installation completes (legacy behavior)
+
+        Returns:
+            InstallTask for async tracking, or bool for legacy blocking installs.
         """
         if wait:
             # Synchronous (blocking) install - old behavior
-            return await self._do_install(domain, version, source, custom_url)
+            return await self._do_install(
+                full_name_or_domain, version, source, custom_url
+            )
 
         # Async install - queue and return task immediately
-        task = self.queue_install(domain, version, source, custom_url)
+        task = self.queue_install(full_name_or_domain, version, source, custom_url)
         return task
 
     async def _do_install(
         self,
-        domain: str,
+        full_name_or_domain: str,
         version: Optional[str] = None,
         source: str = "hacs_default",
         custom_url: Optional[str] = None,
     ) -> bool:
-        """Perform the actual installation (used by queue worker)."""
+        """Perform the actual installation (used by queue worker).
+
+        Args:
+            full_name_or_domain: For HACS repos, the full_name (e.g., "owner/repo").
+                               For custom repos, the domain.
+        """
         if source == "hacs_default":
-            # Check custom repos first (they take priority over HACS defaults)
-            if domain in self._custom_repos:
-                _LOGGER.info(f"Found {domain} in custom repositories")
-                repo_info = self._custom_repos[domain]
+            # For HACS default repos, full_name_or_domain is the full_name
+            full_name = full_name_or_domain
+            if full_name in self._hacs_repos:
+                repo_info = self._hacs_repos[full_name]
                 repo_url = repo_info["repository_url"]
-                source = "custom"
-            elif domain in self._hacs_repos:
-                # Fall back to HACS defaults
-                repo_info = self._hacs_repos[domain]
-                repo_url = repo_info["repository_url"]
+                domain = repo_info.get("domain", "")
             else:
                 _LOGGER.error(
-                    f"Integration {domain} not found in custom or HACS default repositories"
+                    f"Repository {full_name} not found in HACS default repositories"
                 )
                 return False
         elif source == "custom":
+            # For custom repos, full_name_or_domain is the domain
+            domain = full_name_or_domain
             # Check custom repositories first
             if domain in self._custom_repos:
                 repo_info = self._custom_repos[domain]
@@ -965,6 +1017,7 @@ class IntegrationManager:
             if not repo_info:
                 _LOGGER.error(f"Failed to fetch info for {repo_url}")
                 return False
+            domain = repo_info.get("domain", "")
 
         try:
             _LOGGER.info(f"Installing {domain} from {repo_url}")
@@ -1150,16 +1203,22 @@ class IntegrationManager:
     def get_available_integrations(self) -> List[dict]:
         """Get integrations available from HACS with rich metadata."""
         integrations = []
-        for domain, info in self._hacs_repos.items():
+
+        # Build a set of installed repository URLs for quick lookup
+        installed_repos = {info.repository_url for info in self._integrations.values()}
+
+        for full_name, info in self._hacs_repos.items():
+            domain = info.get("domain", "")
+            repo_url = info.get("repository_url", "")
             integration = {
-                "domain": domain,  # Needed for links/buttons
+                "full_name": full_name,  # Unique identifier for install links
+                "domain": domain,
                 "name": info.get("name", domain),
                 "description": info.get("description", ""),
-                "installed": domain in self._integrations,
+                "installed": repo_url in installed_repos,
                 "source": "hacs_default",
                 # Rich metadata from CDN
-                "full_name": info.get("full_name", ""),
-                "repository_url": info.get("repository_url", ""),
+                "repository_url": repo_url,
                 "downloads": info.get("downloads", 0),
                 "stars": info.get("stars", 0),
                 "topics": info.get("topics", []),
@@ -1171,14 +1230,16 @@ class IntegrationManager:
 
         # Add custom repositories
         for domain, info in self._custom_repos.items():
+            full_name = info.get("full_name", "")
+            repo_url = info.get("repository_url", "")
             integration = {
+                "full_name": full_name,
                 "domain": domain,
                 "name": info.get("name", domain),
                 "description": info.get("description", ""),
-                "installed": domain in self._integrations,
+                "installed": repo_url in installed_repos,
                 "source": "custom",
-                "full_name": info.get("full_name", ""),
-                "repository_url": info.get("repository_url", ""),
+                "repository_url": repo_url,
                 "downloads": 0,
                 "stars": 0,
                 "topics": [],

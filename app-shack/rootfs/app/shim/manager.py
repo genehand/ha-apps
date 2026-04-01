@@ -561,12 +561,14 @@ class ShimManager:
         """Get the integration loader."""
         return self._integration_loader
 
-    async def install_integration(self, domain: str, **kwargs):
+    async def install_integration(self, full_name_or_domain: str, **kwargs):
         """Install an integration.
 
         Returns InstallTask for async installs or bool for legacy blocking installs.
         """
-        return await self._integration_manager.install_integration(domain, **kwargs)
+        return await self._integration_manager.install_integration(
+            full_name_or_domain, **kwargs
+        )
 
     async def create_config_entry(
         self, domain: str, data: dict

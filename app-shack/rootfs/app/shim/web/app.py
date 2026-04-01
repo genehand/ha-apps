@@ -72,6 +72,7 @@ class WebUI:
             integrations_dicts = [i.to_dict() for i in integrations]
             available_dicts = [
                 {
+                    "full_name": a.get("full_name"),
                     "domain": a.get("domain"),
                     "name": a.get("name"),
                     "description": a.get("description", ""),
@@ -192,16 +193,16 @@ class WebUI:
                 status_code=400,
             )
 
-        @self._app.post("/integrations/{domain}/install")
+        @self._app.post("/integrations/{full_name:path}/install")
         async def install_integration(
-            request: Request, domain: str, version: Optional[str] = Form(None)
+            request: Request, full_name: str, version: Optional[str] = Form(None)
         ):
             """Install an integration (async - returns immediately)."""
             from ..integrations import InstallTask
 
             # Queue the install and get the task
             result = await self._shim_manager.install_integration(
-                domain, version=version
+                full_name, version=version
             )
 
             # Check if it's a task (async) or boolean (sync/legacy)
@@ -210,11 +211,11 @@ class WebUI:
                 return HTMLResponse(
                     f'<div class="alert alert-success" style="margin-bottom: 15px;">'
                     f"<strong>Installation Queued</strong><br>"
-                    f"{domain} is being installed in the background. This may take a minute..."
+                    f"{full_name} is being installed in the background. This may take a minute..."
                     f"</div>"
-                    f'<div hx-trigger="every 2s" hx-get="/api/install-status/{domain}" '
-                    f'hx-target="#install-status-{domain}" hx-swap="innerHTML">'
-                    f'<div id="install-status-{domain}">'
+                    f'<div hx-trigger="every 2s" hx-get="/api/install-status/{full_name}" '
+                    f'hx-target="#install-status-{full_name}" hx-swap="innerHTML">'
+                    f'<div id="install-status-{full_name}">'
                     f'<span class="spinner"></span> Checking installation status...'
                     f"</div></div>"
                     f"<script>"
@@ -228,21 +229,47 @@ class WebUI:
                 return HTMLResponse(
                     f'<div hx-trigger="load" hx-get="/" hx-target="body" hx-swap="outerHTML" '
                     f'class="alert alert-success">'
-                    f"Integration {domain} installed successfully!"
+                    f"Integration {full_name} installed successfully!"
                     f"</div>"
                 )
             else:
                 return HTMLResponse(
-                    f'<div class="alert alert-error">Failed to install {domain}</div>',
+                    f'<div class="alert alert-error">Failed to install {full_name}</div>',
                     status_code=400,
                 )
 
-        @self._app.get("/api/install-status/{domain}")
-        async def get_install_status(request: Request, domain: str):
-            """Get the installation status for a domain (returns HTML for HTMX)."""
+        @self._app.get("/api/install-status/{full_name:path}")
+        async def get_install_status(request: Request, full_name: str):
+            """Get the installation status for a full_name (returns HTML for HTMX)."""
             task = self._shim_manager.get_integration_manager().get_install_status(
-                domain
+                full_name
             )
+
+            if not task:
+                # Check if already installed
+                info = self._shim_manager.get_integration_manager().get_integration(
+                    full_name
+                )
+                if info:
+                    return HTMLResponse(
+                        f'<span style="color: #4caf50;">✓ Installed</span>'
+                    )
+                return HTMLResponse(f'<span style="color: #999;">Not found</span>')
+
+            if task.status == "pending":
+                return HTMLResponse(f'<span class="spinner"></span> Pending...')
+            elif task.status == "downloading":
+                return HTMLResponse(f'<span class="spinner"></span> Downloading...')
+            elif task.status == "installing":
+                return HTMLResponse(f'<span class="spinner"></span> Installing...')
+            elif task.status == "complete":
+                return HTMLResponse(
+                    f'<span style="color: #4caf50;">✓ Complete! Refreshing...</span>'
+                )
+            else:  # error
+                return HTMLResponse(
+                    f'<span style="color: #f44336;">✗ Error: {task.error_message or "Unknown error"}</span>'
+                )
 
             if not task:
                 # Check if already installed
@@ -551,6 +578,7 @@ class WebUI:
                 ],
                 "available": [
                     {
+                        "full_name": a.get("full_name"),
                         "domain": a["domain"],
                         "name": a["name"],
                         "description": a.get("description", ""),
