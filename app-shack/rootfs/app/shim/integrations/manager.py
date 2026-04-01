@@ -864,12 +864,31 @@ class IntegrationManager:
 
     async def _process_install_task(self, task: InstallTask):
         """Process a single install task."""
+        # Set initial status and determine domain early for better logging/UI
         task.status = "downloading"
-        _LOGGER.info(f"Processing install task for {task.domain}")
+
+        # Determine domain early for better logging and status tracking
+        if (
+            task.source == "hacs_default"
+            and task.full_name_or_domain in self._hacs_repos
+        ):
+            task.domain = self._hacs_repos[task.full_name_or_domain].get("domain", "")
+        elif task.source == "custom":
+            task.domain = (
+                task.full_name_or_domain
+            )  # For custom repos, this is the domain
+
+        _LOGGER.info(
+            f"Processing install task for {task.domain or task.full_name_or_domain}"
+        )
 
         try:
             success = await self._do_install(
-                task.full_name_or_domain, task.version, task.source, task.custom_url
+                task.full_name_or_domain,
+                task.version,
+                task.source,
+                task.custom_url,
+                task,
             )
             if success:
                 task.status = "complete"
@@ -1031,12 +1050,14 @@ class IntegrationManager:
         version: Optional[str] = None,
         source: str = "hacs_default",
         custom_url: Optional[str] = None,
+        task: Optional[InstallTask] = None,
     ) -> bool:
         """Perform the actual installation (used by queue worker).
 
         Args:
             full_name_or_domain: For HACS repos, the full_name (e.g., "owner/repo").
                                For custom repos, the domain.
+            task: Optional InstallTask to update with progress/domain info.
         """
         if source == "hacs_default":
             # For HACS default repos, full_name_or_domain is the full_name
@@ -1091,6 +1112,11 @@ class IntegrationManager:
             # Download and extract - this returns the actual domain from manifest
             actual_domain = await self._download_integration(repo_url, domain, version)
 
+            # Update task domain with actual domain from manifest for accurate status tracking
+            if task:
+                task.domain = actual_domain
+                _LOGGER.debug(f"Updated task domain to {actual_domain} from manifest")
+
             # Load manifest from the actual domain folder
             manifest = self._load_manifest(actual_domain)
             if not manifest:
@@ -1114,6 +1140,13 @@ class IntegrationManager:
 
             self._integrations[actual_domain] = info
             self._save_integrations()
+
+            # Update status to installing while we install requirements
+            if task:
+                task.status = "installing"
+                _LOGGER.debug(
+                    f"Updated task status to 'installing' for {actual_domain}"
+                )
 
             # Install requirements
             await self.install_requirements(actual_domain)

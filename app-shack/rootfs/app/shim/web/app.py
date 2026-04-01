@@ -255,13 +255,13 @@ class WebUI:
             )
 
             if not task:
-                # Check if already installed
+                # Check if already installed (by full_name as domain)
                 info = self._shim_manager.get_integration_manager().get_integration(
                     full_name
                 )
                 if info:
                     return HTMLResponse(
-                        f'<span style="color: #4caf50;">✓ Installed</span>'
+                        '<span class="pico-color-jade-500" style="font-weight: 600;">✓ Installed</span>'
                     )
                 return HTMLResponse(f'<span style="color: #999;">Not found</span>')
 
@@ -278,51 +278,6 @@ class WebUI:
             else:  # error
                 return HTMLResponse(
                     f'<span style="color: #f44336;">✗ Error: {task.error_message or "Unknown error"}</span>'
-                )
-
-            if not task:
-                # Check if already installed
-                info = self._shim_manager.get_integration_manager().get_integration(
-                    domain
-                )
-                if info:
-                    return HTMLResponse(
-                        f'<div class="alert alert-success">'
-                        f"<strong>✓ Complete!</strong> {info.name} v{info.version} is now installed."
-                        f"</div>"
-                        f'<button type="button" class="btn btn-primary" '
-                        f"onclick=\"window.location.href='/'\">Back to Installed</button>"
-                    )
-                return HTMLResponse(
-                    f'<div class="alert alert-error">Installation not found</div>',
-                    status_code=404,
-                )
-
-            if task.status == "complete":
-                return HTMLResponse(
-                    f'<div class="alert alert-success">'
-                    f"<strong>✓ Complete!</strong> Installation finished successfully."
-                    f"</div>"
-                    f'<button type="button" class="btn btn-primary" '
-                    f"onclick=\"window.location.href='/'\">Back to Installed</button>"
-                )
-            elif task.status == "error":
-                return HTMLResponse(
-                    f'<div class="alert alert-error">'
-                    f"<strong>✗ Installation Failed</strong><br>"
-                    f"{task.error_message or 'Unknown error'}"
-                    f"</div>"
-                    f'<button type="button" class="btn btn-secondary" '
-                    f"onclick=\"window.location.href='/'\">Back</button>"
-                )
-            else:
-                # Still processing
-                return HTMLResponse(
-                    f'<div class="alert" style="background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9;">'
-                    f'<span class="spinner"></span> '
-                    f"<strong>Installing {domain}...</strong><br>"
-                    f"Status: {task.status}"
-                    f"</div>"
                 )
 
         @self._app.post("/integrations/{domain}/remove")
