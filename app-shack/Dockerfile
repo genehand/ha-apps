@@ -1,24 +1,35 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:trixie
 FROM $BUILD_FROM
 
-COPY rootfs / 
+ARG BUILD_VERSION
+ENV BUILD_VERSION=${BUILD_VERSION}
+
+# Install uv
+ADD https://astral.sh/uv/install.sh /uv-install.sh
+RUN sh uv-install.sh && rm uv-install.sh
+ENV PATH="/root/.local/bin:${PATH}"
+ENV UV_LINK_MODE=copy
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    gcc \
+    g++ \
+    libyaml-dev \
+    cmake \
+    make \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN pip3 install -r requirements.txt
+
+COPY rootfs/app/pyproject.toml rootfs/app/uv.lock rootfs/app/.python-version /app
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY rootfs /
+
+RUN uv sync --frozen --no-dev
 
 LABEL \
-    io.hass.name="${BUILD_NAME}" \
-    io.hass.description="${BUILD_DESCRIPTION}" \
-    io.hass.arch="${BUILD_ARCH}" \
-    io.hass.type="addon" \
-    io.hass.version=${BUILD_VERSION} \
-    maintainer="Gene Hand" \
-    org.opencontainers.image.title="${BUILD_NAME}" \
-    org.opencontainers.image.description="${BUILD_DESCRIPTION}" \
-    org.opencontainers.image.authors="Gene Hand" \
-    org.opencontainers.image.licenses="MIT" \
-    org.opencontainers.image.source="https://github.com/${BUILD_REPOSITORY}" \
-    org.opencontainers.image.documentation="https://github.com/${BUILD_REPOSITORY}/blob/main/README.md" \
-    org.opencontainers.image.created=${BUILD_DATE} \
-    org.opencontainers.image.revision=${BUILD_REF} \
-    org.opencontainers.image.version=${BUILD_VERSION}
+    org.opencontainers.image.title="Home Assistant App: HACS Shack" \
+    org.opencontainers.image.description="Run HACS integrations separately" \
+    org.opencontainers.image.source="https://github.com/genehand/ha-apps"

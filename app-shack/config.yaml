@@ -1,5 +1,5 @@
 name: Shack
-version: 0.3.13
+version: 0.4.0
 slug: shack
 description: HACS Shack - Run HACS integrations outside Home Assistant via MQTT
 url: https://github.com/genehand/ha-apps
@@ -17,9 +17,13 @@ options:
   mqtt_username: ""
   mqtt_password: ""
   log_level: INFO
+  integration_log_levels:
+    custom_components.dreo.pydreo.pydreobasedevice: WARNING
 schema:
   mqtt_host: str
   mqtt_port: int
   mqtt_username: str?
   mqtt_password: password?
   log_level: list(DEBUG|INFO|WARNING|ERROR|CRITICAL)
+  integration_log_levels:
+    match(.+): list(DEBUG|INFO|WARNING|ERROR|CRITICAL)

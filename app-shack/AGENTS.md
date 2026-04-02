@@ -38,6 +38,7 @@ The shim layer (in `shim/`) is where we add compatibility code, bridges, and wor
 ### When to Use
 
 **Check upstream first when:**
+
 - Implementing version comparison logic → use HACS's `utils/version.py`
 - Need validation schemas → use HACS's `utils/validate.py`
 - Building download/management systems → use HACS's `utils/queue_manager.py`
@@ -63,114 +64,53 @@ Files are written to `shim/ha_fetched/` and `shim/hacs_fetched/` with necessary 
 ## Build Commands
 
 ```bash
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
+# Sync dependencies (install from lock file)
+uv sync
 
 # Run the application
-python3 main.py
+uv run python3 main.py
 ```
 
-**Important**: The `.venv` directory is local to this directory (not at repo root). Always activate the venv before running or testing. Many imports fail without the venv due to missing dependencies (fastapi, paho-mqtt, etc.).
+**Important**: Always use `uv sync` and `uv run` to ensure consistent dependencies. The `.venv` is managed by uv.
 
 ## Testing
 
 ### Requirements
 
 - **New code**: All new functionality must include unit tests
-- **Modified code**: When modifying existing code, add or update tests to cover the changes
-- **Goal**: Maintain test coverage for critical paths and edge cases
-
-### Automated Testing Workflow
-
-**All code changes must include corresponding tests. Never commit without running tests.**
-
-#### Before Making Changes:
-1. Identify what you're changing and why
-2. Determine if existing tests cover this scenario
-3. If modifying code that affects external integrations (like EntityDescription, MQTT, platform classes), add tests for ALL integration patterns
-
-#### During Implementation:
-1. Write or update tests FIRST or concurrently with the implementation
-2. For EntityDescription/dataclass changes, test:
-   - Base class behavior
-   - All platform EntityDescription patterns
-   - External integration patterns (frozen and non-frozen @dataclass)
-   - Import patch stub behavior if affected
-3. For MQTT changes, test:
-   - Topic naming conventions
-   - Entity ID conversions
-   - State/command topic handling
-
-#### After Implementation - Mandatory Test Checklist:
-
-```bash
-# 1. Run unit tests (fast)
-python3 -m pytest tests/ -v -m "not integration"
-
-# 2. Run all tests
-python3 -m pytest tests/ -v
-
-# 3. Run specific tests for what you changed
-# Example for EntityDescription changes:
-python3 -m pytest tests/test_dataclass_inheritance.py -v
-python3 -m pytest tests/test_shim_additions.py::TestEntityDescriptionWorksWithIntegrations -v
-
-# 4. Check test counts - should increase or stay same, never decrease
-python3 -m pytest tests/ --tb=no -q
-```
-
-#### Test Coverage Requirements:
-- **New functionality**: Must have comprehensive unit tests covering happy path and edge cases
-- **Bug fixes**: Must have a test that would have caught the bug
-- **Refactoring**: All existing tests must pass, add tests if coverage gaps exposed
-- **External integration compatibility**: For any changes to integration interfaces, test with patterns from real integrations (flightradar24, dreo, leviton, etc.)
-
-#### Red Flags - Stop and Add Tests:
-- Changing core classes without tests
-- Modifying platform descriptions without testing external integration patterns
-- Any change to import patches without verifying stub behavior
-- Tests failing or count decreasing
-- "It should work" without test verification
-
-#### Integration Test Patterns to Always Test:
-When modifying EntityDescription or related classes, verify these patterns work:
-1. `@dataclass` (non-frozen) on platform descriptions - Flightradar24/Dreo style
-2. `@dataclass(frozen=True)` on platform descriptions - Leviton style
-3. Custom methods in descriptions (like Dreo's `__repr__`)
-4. Multiple inheritance with mixins
-5. Import patch stub behavior when homeassistant.components.X is used
+- **Modified code**: Add or update tests to cover changes
+- **Bug fixes**: Include a test that would have caught the bug
+- **Integration compatibility**: Test with real integration patterns (flightradar24, dreo, leviton, etc.)
 
 ### Running Tests
 
 ```bash
-# Install test dependencies
-pip3 install -r requirements-dev.txt
+# Unit tests only (fast)
+uv run pytest tests/ -v -m "not integration"
 
-# Run unit tests only (fast)
-python3 -m pytest tests/ -v -m "not integration"
+# All tests including integration tests
+uv run pytest tests/ -v
 
-# Run all tests including integration tests
-python3 -m pytest tests/ -v
+# Integration tests only (requires integrations to be installed)
+uv run pytest tests/ -v -m integration
 
-# Run integration tests only (requires integrations to be installed)
-python3 -m pytest tests/ -v -m integration
+# With coverage
+uv run pytest tests/ -v --cov=. --cov-report=term-missing
 
-# Run specific integration test
-python3 -m pytest tests/test_integrations.py::test_flightradar24_setup -v
-
-# Run tests with coverage
-python3 -m pytest tests/ -v --cov=. --cov-report=term-missing
-
-# Run specific test file
-python3 -m pytest tests/test_mqtt_bridge.py -v
-
-# Run specific test
-python3 -m pytest tests/test_entity_utils.py::TestGetMqttEntityId -v
+# Specific test file or pattern
+uv run pytest tests/test_mqtt_bridge.py -v
+uv run pytest tests/test_entity_utils.py::TestGetMqttEntityId -v
 ```
+
+### Key Integration Patterns to Test
+
+When modifying `EntityDescription` or related classes, verify these patterns work:
+
+1. `@dataclass` (non-frozen) - Flightradar24/Dreo style
+2. `@dataclass(frozen=True)` - Leviton style
+3. Custom methods in descriptions (like Dreo's `__repr__`)
+4. Multiple inheritance with mixins
+5. Import patch stub behavior when `homeassistant.components.X` is used
 
 ## Code Style Guidelines
 
@@ -239,7 +179,8 @@ Examples:
 1. **Use dashes (`-`) not underscores (`_`) or colons (`:`)** in MQTT topic names
    - Entity ID: `sensor.living_room` (Home Assistant format)
    - MQTT topic: `living-room` (MQTT format)
-   - Entity IDs with colons (e.g., from some integrations) also get converted: `device:001:section` → `device-001-section`
+   - Colons from some integrations (e.g., `device:001:section`) also convert to dashes: `device-001-section`
+   - *Why?* Home Assistant doesn't handle colons well in MQTT discovery. Dashes are safe while colons can cause issues. The Entity class has an `mqtt_object_id` property that handles this automatically.
 
 2. **Conversion function**: Use `get_mqtt_entity_id()` from `shim/entity.py`:
 
@@ -255,7 +196,7 @@ Examples:
    mqtt_id = get_mqtt_entity_id(entity_id)  # Returns: "device-001-section"
    ```
 
-3. **Reverse conversion**: When receiving commands from HA, convert dashes back to underscores (for dots and underscores in entity IDs):
+3. **Reverse conversion**: When receiving commands from HA, convert dashes back to underscores:
 
    ```python
    # MQTT topic: homeassistant/fan/living-room/set
@@ -264,13 +205,9 @@ Examples:
    entity_id = f"{parts[1]}.{object_id}"   # "fan.living_room"
    ```
 
-4. **Why convert colons too?**
+**Why dashes?** MQTT topic naming conventions recommend avoiding underscores in topic names. Dashes are more readable and standard in MQTT ecosystems. Home Assistant's MQTT discovery format expects this convention.
 
-   - Home Assistant doesn't handle colons well in MQTT discovery topic names
-   - Dashes are safe for MQTT topics while colons can cause issues with discovery
-   - The Entity base class has an `mqtt_object_id` property that handles this conversion automatically
-
-### Entity Descriptions and FrozenOrThawed
+## Entity Descriptions and FrozenOrThawed
 
 When creating `EntityDescription` subclasses for platform entities, use the `FrozenOrThawed` metaclass with `frozen_or_thawed=True`:
 
@@ -292,44 +229,46 @@ class MyEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or
 - External integrations can use either `@dataclass(frozen=True)` or `@dataclass` (non-frozen)
 
 **For external integrations:**
-External integrations can use standard `@dataclass` decorator with either frozen or non-frozen:
 
-1. **Using `@dataclass` (non-frozen) - for maximum compatibility:**
+Use standard `@dataclass` decorator with either frozen or non-frozen:
 
 ```python
 from dataclasses import dataclass
 from homeassistant.backports.entity import EntityDescription
 
-@dataclass  # Non-frozen (default)
+# Non-frozen (default) - for maximum compatibility
+@dataclass
 class CustomEntityDescription(EntityDescription):
     """Custom entity description."""
     custom_field: str = "default"
-```
 
-2. **Using `@dataclass(frozen=True)`:**
-
-```python
-from dataclasses import dataclass
-from homeassistant.backports.entity import EntityDescription
-
+# Or frozen
 @dataclass(frozen=True)
-class CustomEntityDescription(EntityDescription):
-    """Custom entity description."""
+class FrozenEntityDescription(EntityDescription):
+    """Frozen entity description."""
     custom_field: str = "default"
 ```
 
 **Note:** The `FrozenOrThawed` metaclass works around Python dataclass inheritance rules by creating frozen dataclasses internally while allowing subclasses to choose their frozen status via `@dataclass` decorator.
 
-### Why Dashes?
-
-- MQTT topic naming conventions recommend avoiding underscores in topic names
-- Dashes are more readable and standard in MQTT ecosystems
-- Home Assistant's MQTT discovery format expects this convention
-
 ## Common Tasks
 
-**Add a New Dependency**: Edit `requirements.txt`, run `pip install -r requirements.txt` in the venv.
+**Add a New Dependency**: Edit `pyproject.toml`, add to `dependencies` or `dev`, run `uv sync` to update the lock file.
 
-**Update App Version**: Edit `config.yaml`, increment `version`, commit and tag.
+**Update App Version** (`config.yaml` is source of truth):
 
-**Local Testing**: Run `python3 main.py` (ensure venv is activated first).
+```bash
+# 1. Edit config.yaml and update version: X.Y.Z
+
+# 2. Sync to pyproject.toml (for uv)
+./sync-version.sh
+```
+
+**Version locations:**
+
+- `config.yaml` → HA app version (source of truth)
+- `pyproject.toml` → For uv dependency management
+
+Keep them in sync for consistency.
+
+**Local Testing**: Run `uv run python3 main.py` (uv will auto-sync dependencies).

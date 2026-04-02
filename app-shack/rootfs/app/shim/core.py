@@ -919,7 +919,7 @@ class HomeAssistant:
 
     async def async_add_executor_job(self, target: Callable, *args) -> Any:
         """Run function in executor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, target, *args)
 
     def async_run_job(self, target: Callable[..., Any], *args: Any) -> Any:

@@ -118,31 +118,25 @@ class IntegrationManager:
         # Check if running in container (addon mode) or locally
         self._is_addon = Path("/data").exists() and Path("/data").is_dir()
 
-        # In container mode, use /data for persistent packages that survive restarts
-        # In local dev mode, use the venv's site-packages
+        # Determine venv path: /data/.venv for addon mode, local .venv for dev mode
         if self._is_addon:
-            # Use dynamic Python version in path (e.g., python3.11, python3.12)
-            # Note: When using PYTHONUSERBASE=/data, pip installs to /data/lib/ not /data/.local/lib/
-            python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
-            self._persistent_packages_dir = Path(
-                f"/data/lib/{python_version}/site-packages"
-            )
-            self._persistent_packages_dir.mkdir(parents=True, exist_ok=True)
+            self._venv_dir = Path("/data/.venv")
+            _LOGGER.info("Running in addon mode - using /data/.venv")
+        else:
+            # In local dev, venv is at the app root (shim/integrations/manager.py -> ../../ -> app root)
+            self._venv_dir = Path(__file__).parent.parent.parent / ".venv"
+            _LOGGER.info(f"Running in local dev mode - using {self._venv_dir}")
 
-            # Add persistent packages to Python path so they can be imported
+        # Construct site-packages path and add to sys.path for imports
+        python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        self._persistent_packages_dir = (
+            self._venv_dir / "lib" / python_version / "site-packages"
+        )
+        if self._persistent_packages_dir.exists():
             if str(self._persistent_packages_dir) not in sys.path:
                 sys.path.insert(0, str(self._persistent_packages_dir))
                 importlib.invalidate_caches()
-            _LOGGER.debug(
-                f"Using persistent packages dir: {self._persistent_packages_dir} "
-                f"(Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})"
-            )
-            _LOGGER.debug(
-                f"sys.path includes: {[p for p in sys.path if 'site-packages' in p]}"
-            )
-        else:
-            self._persistent_packages_dir = None
-            _LOGGER.info("Running in local dev mode - using venv packages")
+            _LOGGER.debug(f"Using venv packages dir: {self._persistent_packages_dir}")
 
         # Callback for sending notifications to HA
         self._notification_callback = notification_callback
@@ -1437,7 +1431,7 @@ class IntegrationManager:
         return None
 
     async def install_requirements(self, domain: str) -> bool:
-        """Install Python requirements for an integration."""
+        """Install Python requirements for an integration using uv."""
         info = self._integrations.get(domain)
         if not info:
             _LOGGER.warning(f"Integration {domain} not found in _integrations")
@@ -1449,24 +1443,12 @@ class IntegrationManager:
 
         _LOGGER.debug(f"Integration {domain} has requirements: {info.requirements}")
 
-        # Use the venv pip to ensure packages are installed in the right environment
-        venv_pip = self._shim_dir.parent / ".venv" / "bin" / "pip"
-        if venv_pip.exists():
-            pip_cmd = [str(venv_pip)]
-            _LOGGER.debug(f"Using venv pip: {venv_pip}")
-        else:
-            # Fallback to current Python's pip
-            pip_cmd = [sys.executable, "-m", "pip"]
-            _LOGGER.debug(f"Using system pip: {pip_cmd}")
+        # Use system uv with the venv's Python
+        uv_cmd = "uv"
+        venv_python = self._venv_dir / "bin" / "python"
+        uv_env = os.environ.copy()
 
         installed_any = False
-
-        # Prepare environment for pip commands in container mode
-        if self._is_addon:
-            pip_env = os.environ.copy()
-            pip_env["PYTHONUSERBASE"] = "/data"
-        else:
-            pip_env = os.environ.copy()
 
         for requirement in info.requirements:
             try:
@@ -1475,14 +1457,21 @@ class IntegrationManager:
                     requirement.split("==")[0].split(">=")[0].split("<=")[0].strip()
                 )
 
-                # Check if requirement is already installed (in venv or persistent location)
-                check_proc = await asyncio.create_subprocess_exec(
-                    *pip_cmd,
+                # Check if requirement is already installed using uv pip show
+                check_cmd = [
+                    uv_cmd,
+                    "pip",
                     "show",
                     pkg_name,
+                    "--python",
+                    str(venv_python),
+                ]
+
+                check_proc = await asyncio.create_subprocess_exec(
+                    *check_cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    env=pip_env,
+                    env=uv_env,
                 )
                 stdout, _ = await check_proc.communicate()
 
@@ -1493,7 +1482,7 @@ class IntegrationManager:
                         or ">=" in requirement
                         or "<=" in requirement
                     ):
-                        # Parse installed version from pip show output
+                        # Parse installed version from uv pip show output
                         installed_version = None
                         for line in stdout.decode().strip().split("\n"):
                             if line.startswith("Version:"):
@@ -1509,7 +1498,7 @@ class IntegrationManager:
                                 )
                                 continue
                             elif "==" not in req_clean:
-                                # For >= or <=, we'll let pip handle it
+                                # For >= or <=, we'll let uv handle it
                                 _LOGGER.info(
                                     f"Requirement {requirement} has version {installed_version} installed, checking if update needed"
                                 )
@@ -1520,26 +1509,28 @@ class IntegrationManager:
 
                 _LOGGER.info(f"Installing requirement: {requirement}")
 
-                # Build pip command based on environment
-                if self._is_addon:
-                    # In container: use --user with PYTHONUSERBASE to persist across restarts
-                    install_cmd = [*pip_cmd, "install", "--user", requirement]
-                else:
-                    # Local dev: install directly to venv without --user
-                    install_cmd = [*pip_cmd, "install", requirement]
+                # Build uv pip install command
+                install_cmd = [
+                    uv_cmd,
+                    "pip",
+                    "install",
+                    "--python",
+                    str(venv_python),
+                    requirement,
+                ]
 
                 proc = await asyncio.create_subprocess_exec(
                     *install_cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    env=pip_env,
+                    env=uv_env,
                 )
                 stdout, stderr = await proc.communicate()
                 if proc.returncode != 0:
                     _LOGGER.error(f"Failed to install {requirement}: {stderr.decode()}")
                     return False
                 _LOGGER.info(f"Successfully installed {requirement}")
-                _LOGGER.debug(f"pip output: {stdout.decode()}")
+                _LOGGER.debug(f"uv output: {stdout.decode()}")
 
                 installed_any = True
             except Exception as e:
@@ -1562,7 +1553,7 @@ class IntegrationManager:
         return True
 
     async def uninstall_requirements(self, domain: str) -> bool:
-        """Uninstall Python requirements for an integration.
+        """Uninstall Python requirements for an integration using uv.
 
         Called when removing an integration to clean up its dependencies.
         """
@@ -1579,26 +1570,17 @@ class IntegrationManager:
 
         _LOGGER.info(f"Uninstalling requirements for {domain}: {info.requirements}")
 
-        import sys
-        import subprocess
-
-        # Get the venv pip path
-        venv_path = Path(sys.executable).parent
-        pip_path = venv_path / "pip"
-
-        # Set up environment based on mode
-        if self._is_addon:
-            # In container: target persistent packages with PYTHONUSERBASE
-            env = os.environ.copy()
-            env["PYTHONUSERBASE"] = "/data"
-        else:
-            # Local dev: use normal environment
-            env = os.environ.copy()
+        # Use system uv with the venv's Python
+        uv_cmd = "uv"
+        venv_python = self._venv_dir / "bin" / "python"
+        env = os.environ.copy()
+        venv_python = self._venv_dir / "bin" / "python"
+        env = os.environ.copy()
 
         uninstalled_any = False
         for requirement in info.requirements:
             try:
-                # Extract just the package name (strip version specifiers like ==1.0.0, >=1.0, etc.)
+                # Extract just the package name (strip version specifiers)
                 package_name = (
                     requirement.split("==")[0]
                     .split(">=")[0]
@@ -1610,13 +1592,24 @@ class IntegrationManager:
                     .strip()
                 )
 
-                # Check if package is installed (in venv or persistent location)
-                result = subprocess.run(
-                    [str(pip_path), "show", package_name],
-                    capture_output=True,
-                    text=True,
+                # Check if package is installed using uv pip show
+                show_cmd = [
+                    uv_cmd,
+                    "pip",
+                    "show",
+                    package_name,
+                    "--python",
+                    str(venv_python),
+                ]
+
+                result = await asyncio.create_subprocess_exec(
+                    *show_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                     env=env,
                 )
+                stdout, _ = await result.communicate()
+
                 if result.returncode != 0:
                     _LOGGER.debug(
                         f"Package {package_name} (from {requirement}) not installed, skipping"
@@ -1626,19 +1619,33 @@ class IntegrationManager:
                 _LOGGER.info(
                     f"Uninstalling {package_name} (from requirement: {requirement})"
                 )
-                # Run pip uninstall
-                subprocess.run(
-                    [str(pip_path), "uninstall", "-y", package_name],
-                    check=True,
-                    capture_output=True,
-                    text=True,
+
+                # Run uv pip uninstall
+                uninstall_cmd = [
+                    uv_cmd,
+                    "pip",
+                    "uninstall",
+                    package_name,
+                    "--python",
+                    str(venv_python),
+                ]
+
+                uninstall_proc = await asyncio.create_subprocess_exec(
+                    *uninstall_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                     env=env,
                 )
+                _, stderr = await uninstall_proc.communicate()
+
+                if uninstall_proc.returncode != 0:
+                    _LOGGER.warning(
+                        f"Failed to uninstall {package_name}: {stderr.decode()}"
+                    )
+                    continue
+
                 _LOGGER.info(f"Successfully uninstalled {package_name}")
                 uninstalled_any = True
-            except subprocess.CalledProcessError as e:
-                _LOGGER.warning(f"Failed to uninstall {package_name}: {e.stderr}")
-                # Continue trying to uninstall other requirements
             except Exception as e:
                 _LOGGER.error(f"Error uninstalling requirement {requirement}: {e}")
                 return False

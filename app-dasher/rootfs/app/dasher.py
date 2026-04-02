@@ -717,7 +717,7 @@ async def main():
 
     # Use an Event for a clean shutdown signal
     shutdown_event = asyncio.Event()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, shutdown_event.set)
     loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
 

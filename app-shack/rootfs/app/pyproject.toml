@@ -1,3 +1,37 @@
+[project]
+name = "app-shack"
+version = "0.4.0"
+description = "Home Assistant compatibility layer for running integrations outside of HA"
+requires-python = ">=3.14"
+dependencies = [
+    # HA Shim core dependencies
+    "paho-mqtt>=1.6.0",
+    "pyyaml>=6.0",
+    "colorlog>=6.8.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "jinja2>=3.1.0",
+    "aiohttp>=3.9.0",
+    "voluptuous>=0.14.0",
+    "python-multipart>=0.0.6",
+
+    # HACS integration dependencies
+    "aiogithubapi>=22.10.1",
+    "awesomeversion>=22.9.0",
+
+    # Workaround for FlightRadarAPI
+    "beautifulsoup4",
+
+    # Fix for GIL warning - install from GitHub until new release (https://github.com/google/brotli/pull/1386)
+    "brotli @ git+https://github.com/google/brotli.git@5583858",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

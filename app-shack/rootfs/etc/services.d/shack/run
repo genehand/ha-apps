@@ -7,4 +7,4 @@
 
 bashio::log.info "Starting Shack..."
 
-exec /app/main.py
+uv run --directory /app main.py

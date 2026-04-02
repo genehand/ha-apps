@@ -20,6 +20,7 @@ class Config:
 
     # Logging
     log_level: str = "INFO"
+    integration_log_levels: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, config_path: str, dev_config_path: str) -> "Config":
@@ -49,6 +50,7 @@ class Config:
             mqtt_username=data.get("mqtt_username") or None,
             mqtt_password=data.get("mqtt_password") or None,
             log_level=data.get("log_level", "INFO"),
+            integration_log_levels=data.get("integration_log_levels", {}),
         )
 
     def _save_dev_config(self, path: str):
@@ -61,6 +63,7 @@ class Config:
                     "mqtt_username": self.mqtt_username or "",
                     "mqtt_password": self.mqtt_password or "",
                     "log_level": self.log_level,
+                    "integration_log_levels": self.integration_log_levels,
                 },
                 f,
                 default_flow_style=False,

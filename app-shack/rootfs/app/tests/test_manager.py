@@ -230,3 +230,59 @@ class TestManagerCommandRouting:
 
         # Verify sync turn_on was called
         entity.turn_on.assert_called_once()
+
+
+class TestConfig:
+    """Tests for Config loading."""
+
+    def test_config_from_dict_basic(self):
+        """Test loading config from dictionary."""
+        from config import Config
+
+        data = {
+            "mqtt_host": "test-host",
+            "mqtt_port": 1884,
+            "mqtt_username": "user",
+            "mqtt_password": "pass",
+            "log_level": "DEBUG",
+        }
+        config = Config.from_dict(data)
+
+        assert config.mqtt_host == "test-host"
+        assert config.mqtt_port == 1884
+        assert config.mqtt_username == "user"
+        assert config.mqtt_password == "pass"
+        assert config.log_level == "DEBUG"
+        assert config.integration_log_levels == {}
+
+    def test_config_from_dict_with_integration_log_levels(self):
+        """Test loading config with per-integration log levels."""
+        from config import Config
+
+        data = {
+            "log_level": "INFO",
+            "integration_log_levels": {
+                "custom_components.dreo.pydreo.pydreobasedevice": "WARNING",
+                "custom_components.nws_alerts": "ERROR",
+            },
+        }
+        config = Config.from_dict(data)
+
+        assert config.log_level == "INFO"
+        assert config.integration_log_levels == {
+            "custom_components.dreo.pydreo.pydreobasedevice": "WARNING",
+            "custom_components.nws_alerts": "ERROR",
+        }
+
+    def test_config_defaults(self):
+        """Test config defaults when fields missing."""
+        from config import Config
+
+        config = Config.from_dict({})
+
+        assert config.mqtt_host == "core-mosquitto"
+        assert config.mqtt_port == 1883
+        assert config.mqtt_username is None
+        assert config.mqtt_password is None
+        assert config.log_level == "INFO"
+        assert config.integration_log_levels == {}
