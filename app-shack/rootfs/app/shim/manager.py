@@ -321,6 +321,7 @@ class ShimManager:
         """
         domain = entity_id.split(".")[0]
         _LOGGER.debug(f"_find_entity: looking for {entity_id} in domain {domain}")
+
         entities = self._integration_loader.get_entities(domain)
         _LOGGER.debug(
             f"_find_entity: got {len(entities) if entities else 0} entities for domain {domain}"
@@ -338,6 +339,19 @@ class ShimManager:
                 if object_id and hasattr(entity, "mqtt_object_id"):
                     if entity.mqtt_object_id == object_id:
                         _LOGGER.debug(f"    Matched by mqtt_object_id: {object_id}")
+                        return entity
+
+                # For Dyson and other integrations that use the original object_id format,
+                # check if the entity_id ends with the object_id (case-insensitive)
+                if object_id and entity_entity_id:
+                    entity_object_id = entity_entity_id.split(".")[-1]
+                    # Normalize both: replace dashes with underscores for comparison
+                    normalized_entity = entity_object_id.replace("-", "_").lower()
+                    normalized_object = object_id.replace("-", "_").lower()
+                    if normalized_entity == normalized_object:
+                        _LOGGER.debug(
+                            f"    Matched by normalized object_id: {object_id}"
+                        )
                         return entity
 
         return None

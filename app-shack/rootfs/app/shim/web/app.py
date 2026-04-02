@@ -532,26 +532,15 @@ class WebUI:
                 )
 
                 if entry:
-                    # Setup the integration
-                    setup_success = await self._shim_manager.get_integration_loader().setup_integration(
-                        entry
-                    )
-
-                    if not setup_success:
-                        # Remove the config entry since setup failed
-                        await self._shim_manager.get_hass().config_entries.async_remove(
-                            entry.entry_id
-                        )
-                        return HTMLResponse(
-                            f'<div class="alert alert-error"><strong>Setup Failed</strong><br>Could not connect to the device. Please verify:<ul style="margin-top: 10px; margin-bottom: 0;"><li>The device is powered on and connected to your network</li><li>The credentials (serial, API key, etc.) are correct</li><li>The device IP address is reachable</li></ul></div>'
-                        )
-                        return HTMLResponse(
-                            f'<div class="alert alert-error">Failed to setup integration. Please check your credentials and device connection.</div>'
-                        )
+                    # Note: We don't set up the integration here because
+                    # integrations start disabled by default. The user needs
+                    # to manually enable the integration via the web UI first.
+                    # This prevents MQTT discovery topics from being published
+                    # for disabled integrations.
 
                     # Return success with HTMX redirect to integration page
                     response = HTMLResponse(
-                        f'<div class="alert alert-success">Configuration successful!</div>'
+                        f'<div class="alert alert-success">Configuration successful! Please enable the integration to use it.</div>'
                     )
                     response.headers["HX-Redirect"] = f"/integrations/{domain}"
                     return response

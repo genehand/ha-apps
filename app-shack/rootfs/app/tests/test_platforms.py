@@ -1074,3 +1074,326 @@ class TestSwitchEntityAsyncDelegation:
 
         assert SwitchEntity.async_turn_on is not ToggleEntity.async_turn_on
         assert SwitchEntity.async_turn_off is not ToggleEntity.async_turn_off
+
+
+class TestFanEntitySpeedRange:
+    """Tests for fan entity speed_count and percentage conversion."""
+
+    def test_fan_entity_speed_count_property(self):
+        """Test that FanEntity speed_count property returns correct value."""
+        from shim.platforms.fan import FanEntity
+
+        class TestFan(FanEntity):
+            def __init__(self, speed_count):
+                self._attr_speed_count = speed_count
+                self._attr_unique_id = "test_fan"
+                self._attr_name = "Test Fan"
+
+        fan_10_speeds = TestFan(10)
+        fan_3_speeds = TestFan(3)
+        fan_no_speeds = TestFan(0)
+
+        assert fan_10_speeds.speed_count == 10
+        assert fan_3_speeds.speed_count == 3
+        assert fan_no_speeds.speed_count == 0
+
+    def test_fan_entity_default_speed_count(self):
+        """Test that FanEntity defaults to 0 speed_count."""
+        from shim.platforms.fan import FanEntity
+
+        class TestFan(FanEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_fan"
+                self._attr_name = "Test Fan"
+
+        entity = TestFan()
+        assert entity.speed_count == 0
+
+    def test_async_set_percentage_converts_from_speed_range(self):
+        """Test that async_set_percentage converts 1-N range to 0-100."""
+        import asyncio
+        from shim.platforms.fan import FanEntity
+
+        received_percentages = []
+
+        class TestFan(FanEntity):
+            def __init__(self):
+                self._attr_speed_count = 10  # 10 speeds
+                self._attr_unique_id = "test_fan"
+                self._attr_name = "Test Fan"
+
+            def set_percentage(self, percentage: int) -> None:
+                received_percentages.append(percentage)
+
+        class MockHass:
+            async def async_add_executor_job(self, func, *args):
+                return func(*args)
+
+        entity = TestFan()
+        entity.hass = MockHass()
+
+        # Test conversion from HA's 1-10 range to 0-100
+        # Using HA's ranged_value_to_percentage formula: speed * 100 / speed_count
+        test_cases = [
+            (1, 10),  # Speed 1 = 10% (100/10)
+            (2, 20),  # Speed 2 = 20% (200/10)
+            (5, 50),  # Speed 5 = 50% (500/10)
+            (10, 100),  # Speed 10 = 100%
+        ]
+
+        for ha_value, expected_pct in test_cases:
+            received_percentages.clear()
+            asyncio.run(entity.async_set_percentage(ha_value))
+            assert received_percentages[0] == expected_pct, (
+                f"Expected {expected_pct}% for HA value {ha_value}, got {received_percentages[0]}%"
+            )
+
+    def test_async_set_percentage_passes_through_when_no_speed_count(self):
+        """Test that async_set_percentage passes through when speed_count is 0."""
+        import asyncio
+        from shim.platforms.fan import FanEntity
+
+        received_percentages = []
+
+        class TestFan(FanEntity):
+            def __init__(self):
+                self._attr_speed_count = 0
+                self._attr_unique_id = "test_fan"
+                self._attr_name = "Test Fan"
+
+            def set_percentage(self, percentage: int) -> None:
+                received_percentages.append(percentage)
+
+        class MockHass:
+            async def async_add_executor_job(self, func, *args):
+                return func(*args)
+
+        entity = TestFan()
+        entity.hass = MockHass()
+
+        # Test that values pass through unchanged when no speed_count
+        asyncio.run(entity.async_set_percentage(44))
+        assert received_percentages[0] == 44
+
+        asyncio.run(entity.async_set_percentage(75))
+        assert received_percentages[1] == 75
+
+    def test_async_set_percentage_handles_high_values(self):
+        """Test that async_set_percentage handles values > speed_count as 0-100."""
+        import asyncio
+        from shim.platforms.fan import FanEntity
+
+        received_percentages = []
+
+        class TestFan(FanEntity):
+            def __init__(self):
+                self._attr_speed_count = 10
+                self._attr_unique_id = "test_fan"
+                self._attr_name = "Test Fan"
+
+            def set_percentage(self, percentage: int) -> None:
+                received_percentages.append(percentage)
+
+        class MockHass:
+            async def async_add_executor_job(self, func, *args):
+                return func(*args)
+
+        entity = TestFan()
+        entity.hass = MockHass()
+
+        # Values > speed_count should pass through as 0-100
+        asyncio.run(entity.async_set_percentage(50))
+        assert received_percentages[0] == 50  # Not converted
+
+        asyncio.run(entity.async_set_percentage(100))
+        assert received_percentages[1] == 100  # Not converted
+
+
+class TestHomeAssistantUtilPercentage:
+    """Tests for homeassistant.util.percentage compatibility with integrations.
+
+    These tests ensure the percentage helper functions work correctly for:
+    - Dreo fans (variable speeds)
+    - Leviton DW4SF (4 speeds)
+    - Dyson (10 speeds)
+    """
+
+    def test_module_importable(self):
+        """Test that homeassistant.util.percentage can be imported."""
+        from homeassistant.util.percentage import (
+            percentage_to_ranged_value,
+            ranged_value_to_percentage,
+            int_states_in_range,
+            states_in_range,
+        )
+
+        assert percentage_to_ranged_value is not None
+        assert ranged_value_to_percentage is not None
+        assert int_states_in_range is not None
+        assert states_in_range is not None
+
+    def test_leviton_4_speed_fan_mapping(self):
+        """Test percentage mapping for Leviton 4-speed fan (DW4SF).
+
+        Leviton fans have 4 speeds (1-4).
+        Speed 1 = low (not 0%), Speed 4 = high (100%)
+
+        Note: HA's formula maps 0% to value 0, but since fans use range (1, 4),
+        we round and clamp to valid speed range.
+        """
+        from homeassistant.util.percentage import (
+            percentage_to_ranged_value,
+            ranged_value_to_percentage,
+        )
+
+        speed_count = 4
+        speed_range = (1, speed_count)
+
+        # Test percentage_to_ranged_value (HA UI -> Fan)
+        # Maps 0-100% to speed levels, then round and clamp to 1-4
+        test_cases_pct_to_speed = [
+            (0, 1),  # 0% -> 0 (then clamped to 1)
+            (1, 1),  # 1% -> ~1 (rounded to 1)
+            (25, 1),  # 25% -> 1.0 (speed 1)
+            (50, 2),  # 50% -> 2.0 (speed 2)
+            (75, 3),  # 75% -> 3.0 (speed 3)
+            (100, 4),  # 100% -> 4.0 (speed 4)
+        ]
+
+        for pct, expected_speed in test_cases_pct_to_speed:
+            raw_speed = percentage_to_ranged_value(speed_range, pct)
+            actual_speed = max(1, min(speed_count, round(raw_speed)))
+            assert actual_speed == expected_speed, (
+                f"Expected speed {expected_speed} for {pct}%, got {actual_speed} (raw: {raw_speed})"
+            )
+
+        # Test ranged_value_to_percentage (Fan -> HA UI)
+        # Maps speed levels 1-4 to percentages
+        # Formula: (speed - 1) / (4 - 1) * 100 = (speed - 1) / 3 * 100
+        test_cases_speed_to_pct = [
+            (1, 25),  # Speed 1 -> 25% (1/4 of range from offset)
+            (2, 50),  # Speed 2 -> 50% (2/4 of range)
+            (3, 75),  # Speed 3 -> 75% (3/4 of range)
+            (4, 100),  # Speed 4 -> 100% (full range)
+        ]
+
+        for speed, expected_pct in test_cases_speed_to_pct:
+            actual_pct = ranged_value_to_percentage(speed_range, speed)
+            assert actual_pct == expected_pct, (
+                f"Expected {expected_pct}% for speed {speed}, got {actual_pct}%"
+            )
+
+    def test_dyson_10_speed_fan_mapping(self):
+        """Test percentage mapping for Dyson 10-speed fan.
+
+        Dyson fans have 10 speeds (1-10).
+        Speed 1 = lowest, Speed 10 = highest
+        """
+        from homeassistant.util.percentage import (
+            percentage_to_ranged_value,
+            ranged_value_to_percentage,
+        )
+
+        speed_count = 10
+        speed_range = (1, speed_count)
+
+        # Test key percentage points for Dyson
+        # The formula maps percentage to range, then we round and clamp
+        test_cases_pct_to_speed = [
+            (0, 1),  # 0% -> 0 (clamped to 1)
+            (10, 1),  # 10% -> ~1 (rounded to 1)
+            (20, 2),  # 20% -> 2 (speed 2)
+            (50, 5),  # 50% -> 5 (speed 5)
+            (90, 9),  # 90% -> 9 (speed 9)
+            (100, 10),  # 100% -> 10 (speed 10)
+        ]
+
+        for pct, expected_speed in test_cases_pct_to_speed:
+            raw_speed = percentage_to_ranged_value(speed_range, pct)
+            actual_speed = max(1, min(speed_count, round(raw_speed)))
+            assert actual_speed == expected_speed, (
+                f"Expected speed {expected_speed} for {pct}%, got {actual_speed} (raw: {raw_speed})"
+            )
+
+        # Test speed to percentage conversion
+        # Formula gives: speed * 100 / speed_count (with rounding)
+        test_cases_speed_to_pct = [
+            (1, 10),  # Speed 1 -> 10% (100/10 = 10)
+            (5, 50),  # Speed 5 -> 50% (500/10 = 50)
+            (9, 90),  # Speed 9 -> 90% (900/10 = 90)
+            (10, 100),  # Speed 10 -> 100%
+        ]
+
+        for speed, expected_pct in test_cases_speed_to_pct:
+            actual_pct = ranged_value_to_percentage(speed_range, speed)
+            assert actual_pct == expected_pct, (
+                f"Expected {expected_pct}% for speed {speed}, got {actual_pct}%"
+            )
+
+    def test_dreo_fan_mapping(self):
+        """Test percentage mapping for Dreo fans (variable speeds).
+
+        Dreo fans typically have multiple speed levels.
+        """
+        from homeassistant.util.percentage import (
+            percentage_to_ranged_value,
+            ranged_value_to_percentage,
+        )
+
+        # Test with common Dreo speed counts
+        for speed_count in [4, 5, 6, 8]:
+            speed_range = (1, speed_count)
+
+            # Verify round-trip conversion is approximately correct
+            # Speed -> Percentage -> Speed should give us back the same speed
+            for speed in range(1, speed_count + 1):
+                pct = ranged_value_to_percentage(speed_range, speed)
+                back_to_speed = round(percentage_to_ranged_value(speed_range, pct))
+                assert back_to_speed == speed, (
+                    f"Round-trip failed for {speed_count}-speed fan: "
+                    f"speed {speed} -> {pct}% -> speed {back_to_speed}"
+                )
+
+    def test_int_states_in_range(self):
+        """Test int_states_in_range helper function."""
+        from homeassistant.util.percentage import int_states_in_range
+
+        assert int_states_in_range((1, 4)) == 4  # Leviton
+        assert int_states_in_range((1, 10)) == 10  # Dyson
+        assert int_states_in_range((1, 100)) == 100
+        assert int_states_in_range((0, 100)) == 101
+
+    def test_states_in_range(self):
+        """Test states_in_range helper function."""
+        from homeassistant.util.percentage import states_in_range
+
+        assert states_in_range((1, 4)) == 4.0  # Leviton
+        assert states_in_range((1, 10)) == 10.0  # Dyson
+        assert states_in_range((1, 100)) == 100.0
+        assert states_in_range((0, 100)) == 101.0
+
+    def test_percentage_edge_cases(self):
+        """Test edge cases for percentage conversion."""
+        from homeassistant.util.percentage import (
+            percentage_to_ranged_value,
+            ranged_value_to_percentage,
+        )
+
+        speed_range = (1, 4)
+
+        # Test 0% and 100% bounds - with clamping
+        raw_0_pct = percentage_to_ranged_value(speed_range, 0)
+        assert raw_0_pct == 0  # Formula gives 0
+        assert max(1, round(raw_0_pct)) == 1  # Clamped to speed 1
+
+        raw_100_pct = percentage_to_ranged_value(speed_range, 100)
+        assert raw_100_pct == 4  # Formula gives 4
+        assert round(raw_100_pct) == 4  # Speed 4
+
+        # Test boundary percentages - speed 1 gives non-zero percentage
+        # because the formula calculates position within range
+        assert ranged_value_to_percentage(speed_range, 1) == 25  # 1/4 of range
+        assert ranged_value_to_percentage(speed_range, 4) == 100  # Full range
+
+        # Test None handling
+        assert ranged_value_to_percentage(speed_range, None) is None

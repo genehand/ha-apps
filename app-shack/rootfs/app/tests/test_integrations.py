@@ -245,6 +245,157 @@ async def test_generic_integration_setup(temp_data_dir):
     assert result is False
 
 
+class TestIntegrationEnableDisable:
+    """Tests for integration enabled/disabled state behavior."""
+
+    def test_integration_starts_disabled_by_default(self, temp_data_dir):
+        """Test that newly added integrations start disabled."""
+        storage = Storage(temp_data_dir / "shim")
+        integration_manager = IntegrationManager(storage, temp_data_dir / "shim")
+
+        # Add a new integration directly (simulating install)
+        from shim.integrations.manager import IntegrationInfo
+
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.0.0",
+            description="Test",
+            source="local",
+            repository_url="https://example.com/test",
+            enabled=False,  # Should start disabled
+        )
+        integration_manager._integrations["test_integration"] = info
+
+        # Verify it starts disabled
+        retrieved = integration_manager.get_integration("test_integration")
+        assert retrieved is not None
+        assert retrieved.enabled is False, "New integration should start disabled"
+
+    @pytest.mark.asyncio
+    async def test_enable_integration_sets_enabled_flag(self, temp_data_dir):
+        """Test that enabling an integration sets the enabled flag."""
+        storage = Storage(temp_data_dir / "shim")
+        integration_manager = IntegrationManager(storage, temp_data_dir / "shim")
+
+        # Add and then enable
+        from shim.integrations.manager import IntegrationInfo
+
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.0.0",
+            description="Test",
+            source="local",
+            repository_url="https://example.com/test",
+            enabled=False,
+        )
+        integration_manager._integrations["test_integration"] = info
+
+        result = await integration_manager.enable_integration("test_integration")
+        assert result is True
+
+        retrieved = integration_manager.get_integration("test_integration")
+        assert retrieved.enabled is True, (
+            "Integration should be enabled after enable_integration"
+        )
+
+    @pytest.mark.asyncio
+    async def test_disable_integration_clears_enabled_flag(self, temp_data_dir):
+        """Test that disabling an integration clears the enabled flag."""
+        storage = Storage(temp_data_dir / "shim")
+        integration_manager = IntegrationManager(storage, temp_data_dir / "shim")
+
+        # Add, enable, then disable
+        from shim.integrations.manager import IntegrationInfo
+
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.0.0",
+            description="Test",
+            source="local",
+            repository_url="https://example.com/test",
+            enabled=True,  # Start enabled
+        )
+        integration_manager._integrations["test_integration"] = info
+
+        result = await integration_manager.disable_integration("test_integration")
+        assert result is True
+
+        retrieved = integration_manager.get_integration("test_integration")
+        assert retrieved.enabled is False, (
+            "Integration should be disabled after disable_integration"
+        )
+
+    def test_only_enabled_integrations_loaded(self, temp_data_dir):
+        """Test that only enabled integrations are returned by get_enabled_integrations."""
+        storage = Storage(temp_data_dir / "shim")
+        integration_manager = IntegrationManager(storage, temp_data_dir / "shim")
+
+        # Add two integrations, enable only one
+        from shim.integrations.manager import IntegrationInfo
+
+        enabled_info = IntegrationInfo(
+            domain="enabled_integration",
+            name="Enabled",
+            version="1.0.0",
+            description="Test",
+            source="local",
+            repository_url="https://example.com/enabled",
+            enabled=True,
+        )
+        disabled_info = IntegrationInfo(
+            domain="disabled_integration",
+            name="Disabled",
+            version="1.0.0",
+            description="Test",
+            source="local",
+            repository_url="https://example.com/disabled",
+            enabled=False,
+        )
+        integration_manager._integrations["enabled_integration"] = enabled_info
+        integration_manager._integrations["disabled_integration"] = disabled_info
+
+        # Check that only enabled integrations are returned
+        enabled = integration_manager.get_enabled_integrations()
+        assert len(enabled) == 1
+        assert enabled[0].domain == "enabled_integration"
+
+    def test_get_all_integrations_returns_all(self, temp_data_dir):
+        """Test that get_all_integrations returns both enabled and disabled."""
+        storage = Storage(temp_data_dir / "shim")
+        integration_manager = IntegrationManager(storage, temp_data_dir / "shim")
+
+        # Add two integrations, enable one
+        from shim.integrations.manager import IntegrationInfo
+
+        enabled_info = IntegrationInfo(
+            domain="enabled_integration",
+            name="Enabled",
+            version="1.0.0",
+            description="Test",
+            source="local",
+            repository_url="https://example.com/enabled",
+            enabled=True,
+        )
+        disabled_info = IntegrationInfo(
+            domain="disabled_integration",
+            name="Disabled",
+            version="1.0.0",
+            description="Test",
+            source="local",
+            repository_url="https://example.com/disabled",
+            enabled=False,
+        )
+        integration_manager._integrations["enabled_integration"] = enabled_info
+        integration_manager._integrations["disabled_integration"] = disabled_info
+
+        # All integrations should include both
+        all_integrations = integration_manager.get_all_integrations()
+        assert len(all_integrations) == 2
+
+
 if __name__ == "__main__":
     # Allow running this file directly for quick testing
     pytest.main([__file__, "-v", "-m", "integration"])

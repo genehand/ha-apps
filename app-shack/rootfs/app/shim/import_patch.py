@@ -1212,6 +1212,62 @@ class ImportPatcher:
         sys.modules["homeassistant.util"] = homeassistant.util
         sys.modules["homeassistant.components"] = homeassistant.components
 
+        # Create homeassistant.util.percentage stub early (needed by fan platform)
+        percentage_stub = types.ModuleType("homeassistant.util.percentage")
+
+        def int_states_in_range(low_high_range):
+            """Return the number of integer states in a range."""
+            low, high = low_high_range
+            return int(high - low + 1)
+
+        def states_in_range(low_high_range):
+            """Return the number of states in a range."""
+            low, high = low_high_range
+            return high - low + 1
+
+        def scale_to_ranged_value(source_low_high_range, target_low_high_range, value):
+            """Convert a value from source range to target range."""
+            source_offset = source_low_high_range[0] - 1
+            target_offset = target_low_high_range[0] - 1
+            return (value - source_offset) * (
+                states_in_range(target_low_high_range)
+            ) / states_in_range(source_low_high_range) + target_offset
+
+        def scale_ranged_value_to_int_range(
+            source_low_high_range, target_low_high_range, value
+        ):
+            """Convert a value from source range to target int range."""
+            source_offset = source_low_high_range[0] - 1
+            target_offset = target_low_high_range[0] - 1
+            return int(
+                (value - source_offset)
+                * states_in_range(target_low_high_range)
+                // states_in_range(source_low_high_range)
+                + target_offset
+            )
+
+        def percentage_to_ranged_value(low_high_range, percentage):
+            """Map a percentage to a value within a range."""
+            return scale_to_ranged_value((1, 100), low_high_range, percentage)
+
+        def ranged_value_to_percentage(low_high_range, value):
+            """Map a value within a range to a percentage."""
+            if value is None:
+                return None
+            return scale_ranged_value_to_int_range(low_high_range, (1, 100), value)
+
+        percentage_stub.int_states_in_range = int_states_in_range
+        percentage_stub.states_in_range = states_in_range
+        percentage_stub.scale_to_ranged_value = scale_to_ranged_value
+        percentage_stub.scale_ranged_value_to_int_range = (
+            scale_ranged_value_to_int_range
+        )
+        percentage_stub.percentage_to_ranged_value = percentage_to_ranged_value
+        percentage_stub.ranged_value_to_percentage = ranged_value_to_percentage
+
+        homeassistant.util.percentage = percentage_stub
+        sys.modules["homeassistant.util.percentage"] = percentage_stub
+
         # Patch platforms
         self._patch_platforms(homeassistant)
 
@@ -1385,33 +1441,6 @@ class ImportPatcher:
         mqtt_stub.MQTT_ERR_NO_CONN = 1
         homeassistant.components.mqtt = mqtt_stub
         sys.modules["homeassistant.components.mqtt"] = mqtt_stub
-
-        # Create homeassistant.util.percentage stub
-        percentage_stub = types.ModuleType("homeassistant.util.percentage")
-
-        def int_states_in_range(low_high_range):
-            """Return the number of integer states in a range."""
-            low, high = low_high_range
-            return high - low + 1
-
-        def percentage_to_ranged_value(low_high_range, percentage):
-            """Map a percentage to a value within a range."""
-            low, high = low_high_range
-            return low + (high - low) * percentage / 100
-
-        def ranged_value_to_percentage(low_high_range, value):
-            """Map a value within a range to a percentage."""
-            low, high = low_high_range
-            if value is None:
-                return None
-            return round((value - low) / (high - low) * 100)
-
-        percentage_stub.int_states_in_range = int_states_in_range
-        percentage_stub.percentage_to_ranged_value = percentage_to_ranged_value
-        percentage_stub.ranged_value_to_percentage = ranged_value_to_percentage
-
-        homeassistant.util.percentage = percentage_stub
-        sys.modules["homeassistant.util.percentage"] = percentage_stub
 
         # Create missing component stubs
         from dataclasses import make_dataclass, field

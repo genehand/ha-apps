@@ -6,6 +6,12 @@ Bridges FanEntity to MQTT fan discovery.
 import math
 from typing import Any, List, Optional
 
+# Import percentage helpers from homeassistant.util.percentage (patched at runtime)
+from homeassistant.util.percentage import (
+    percentage_to_ranged_value,
+    ranged_value_to_percentage,
+)
+
 from ..entity import (
     Entity,
     EntityDescription,
@@ -133,7 +139,18 @@ class FanEntity(Entity):
         raise NotImplementedError()
 
     async def async_set_percentage(self, percentage: int) -> None:
-        """Set the speed percentage of the fan."""
+        """Set the speed percentage of the fan.
+
+        If speed_count is set, converts from 1-speed_count range (from HA)
+        back to 0-100 range for the integration.
+        """
+        # Convert from 1-speed_count range to 0-100 if needed
+        original_value = percentage
+        if self.speed_count > 0 and percentage <= self.speed_count:
+            # Use HA's ranged_value_to_percentage helper to convert speed to percentage
+            percentage = ranged_value_to_percentage(
+                (1, self.speed_count), original_value
+            )
         await self.hass.async_add_executor_job(self.set_percentage, percentage)
 
     def set_preset_mode(self, preset_mode: str) -> None:
@@ -215,7 +232,20 @@ class FanEntity(Entity):
         # Publish percentage if supported
         if self.supported_features & SUPPORT_SET_SPEED and self.percentage is not None:
             pct_topic = f"{base_topic}/percentage_state"
-            mqtt.publish(pct_topic, str(self.percentage), qos=0, retain=True)
+            # If speed_count is set, convert 0-100 percentage to 1-speed_count range
+            # This matches speed_range_min/max in discovery config
+            if self.speed_count > 0:
+                # Use HA's percentage_to_ranged_value helper to map 0-100 to range (1, speed_count)
+                # Then round to nearest integer speed level
+                raw_mapped = percentage_to_ranged_value(
+                    (1, self.speed_count), self.percentage
+                )
+                mapped_pct = round(raw_mapped)
+                # Ensure we don't go below 1 or above speed_count
+                mapped_pct = max(1, min(self.speed_count, mapped_pct))
+                mqtt.publish(pct_topic, str(mapped_pct), qos=0, retain=True)
+            else:
+                mqtt.publish(pct_topic, str(self.percentage), qos=0, retain=True)
 
         # Publish preset mode if supported
         if self.supported_features & SUPPORT_PRESET_MODE and self.preset_mode:
@@ -301,8 +331,12 @@ class FanEntity(Entity):
         if self.supported_features & SUPPORT_SET_SPEED:
             config["percentage_command_topic"] = f"{base_topic}/percentage_set"
             config["percentage_state_topic"] = f"{base_topic}/percentage_state"
-            # Don't set speed_range_min/max - let HA use default percentage (0-100)
-            # The Dyson integration will convert percentage to speed internally
+            # Set speed range for discrete speed fans (like Dyson with 10 speeds)
+            # When speed_count is set, HA sends commands in 1-speed_count range
+            # and we convert back to 0-100 for the integration
+            if self.speed_count > 0:
+                config["speed_range_min"] = 1
+                config["speed_range_max"] = self.speed_count
 
         if self.supported_features & SUPPORT_PRESET_MODE and self.preset_modes:
             config["preset_mode_command_topic"] = f"{base_topic}/preset_mode_set"
@@ -339,23 +373,3 @@ class FanEntityFeature:
     PRESET_MODE = 8
     TURN_ON = 16
     TURN_OFF = 32
-
-
-def percentage_to_ranged_value(low_high_range, percentage: int):
-    """Map a percentage to a value within a range."""
-    low, high = low_high_range
-    return low + (high - low) * percentage / 100
-
-
-def ranged_value_to_percentage(low_high_range, value):
-    """Map a value within a range to a percentage."""
-    low, high = low_high_range
-    if value is None:
-        return None
-    return round((value - low) / (high - low) * 100)
-
-
-def int_states_in_range(low_high_range):
-    """Return the number of integer states in a range."""
-    low, high = low_high_range
-    return high - low + 1
