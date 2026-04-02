@@ -28,10 +28,10 @@ class Storage:
         self._integrations_file = self._shim_dir / "integrations.json"
         self._custom_repos_file = self._shim_dir / "custom_repos.json"
 
-        # Static unsupported repos file (read-only)
-        # Located at /app/metadata/unsupported_repos.json in the container
-        self._unsupported_repos_file = (
-            Path(__file__).parent.parent / "metadata" / "unsupported_repos.json"
+        # Static repository status file (read-only)
+        # Located at /app/metadata/repository_status.json in the container
+        self._repository_status_file = (
+            Path(__file__).parent.parent / "metadata" / "repository_status.json"
         )
 
         _LOGGER.debug(f"Storage initialized at {self._shim_dir}")
@@ -234,14 +234,31 @@ class Storage:
         self._save_json(self._custom_repos_file, repos)
         _LOGGER.debug(f"Saved {len(repos)} custom repositories")
 
-    # Unsupported Repositories (read-only static file)
+    # Repository Status (read-only static file)
+    def load_repository_status(self) -> Dict[str, dict]:
+        """Load repository status from static file.
+
+        This is a read-only static file that lists repositories known to be
+        unsupported or verified compatible with the shim.
+        Returns empty dict if file doesn't exist.
+        """
+        return self._load_json(self._repository_status_file)
+
     def load_unsupported_repos(self) -> Dict[str, dict]:
         """Load unsupported repositories from static file.
 
-        This is a read-only static file that lists repositories known to be
-        incompatible with the shim. Returns empty dict if file doesn't exist.
+        Returns a dict keyed by full_name.
         """
-        return self._load_json(self._unsupported_repos_file)
+        status = self.load_repository_status()
+        return status.get("unsupported", {})
+
+    def load_verified_repos(self) -> Dict[str, dict]:
+        """Load verified repositories from static file.
+
+        Returns a dict keyed by full_name.
+        """
+        status = self.load_repository_status()
+        return status.get("verified", {})
 
     def is_unsupported_repo(self, full_name: str) -> Optional[dict]:
         """Check if a repository is unsupported. Returns the entry if unsupported."""
@@ -251,6 +268,19 @@ class Storage:
     def is_unsupported_repo_by_url(self, repo_url: str) -> Optional[dict]:
         """Check if a repository URL is unsupported. Returns the entry if unsupported."""
         repos = self.load_unsupported_repos()
+        for full_name, entry in repos.items():
+            if full_name in repo_url or entry.get("repository_url") == repo_url:
+                return entry
+        return None
+
+    def is_verified_repo(self, full_name: str) -> Optional[dict]:
+        """Check if a repository is verified. Returns the entry if verified."""
+        repos = self.load_verified_repos()
+        return repos.get(full_name)
+
+    def is_verified_repo_by_url(self, repo_url: str) -> Optional[dict]:
+        """Check if a repository URL is verified. Returns the entry if verified."""
+        repos = self.load_verified_repos()
         for full_name, entry in repos.items():
             if full_name in repo_url or entry.get("repository_url") == repo_url:
                 return entry

@@ -2,6 +2,7 @@
 
 import pytest
 from dataclasses import dataclass, FrozenInstanceError
+from pathlib import Path
 
 
 class TestEntityDescription:
@@ -991,6 +992,18 @@ class TestWebUISchemaParsing:
 class TestWebUITranslations:
     """Tests for web UI translation loading and application."""
 
+    @pytest.mark.skipif(
+        not (
+            Path(__file__).parent.parent
+            / "data"
+            / "shim"
+            / "custom_components"
+            / "cryptoinfo"
+            / "translations"
+            / "en.json"
+        ).exists(),
+        reason="cryptoinfo integration not installed in data/shim/custom_components/",
+    )
     def test_load_integration_translations(self):
         """Test loading translations for an integration."""
         from shim.web.app import WebUI

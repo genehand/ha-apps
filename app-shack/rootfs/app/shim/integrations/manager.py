@@ -215,6 +215,7 @@ class IntegrationManager:
         self._unsupported_repos: Dict[str, dict] = (
             self._storage.load_unsupported_repos()
         )
+        self._verified_repos: Dict[str, dict] = self._storage.load_verified_repos()
 
     def get_unsupported_repos(self) -> List[dict]:
         """Get all unsupported repositories."""
@@ -247,6 +248,42 @@ class IntegrationManager:
             The unsupported entry if found, None otherwise.
         """
         for full_name, entry in self._unsupported_repos.items():
+            if full_name in repo_url or entry.get("repository_url") == repo_url:
+                return entry
+        return None
+
+    def get_verified_repos(self) -> List[dict]:
+        """Get all verified repositories."""
+        return [
+            {
+                "full_name": full_name,
+                "version": info.get("version", "unknown"),
+                "notes": info.get("notes", ""),
+            }
+            for full_name, info in self._verified_repos.items()
+        ]
+
+    def is_verified_repo(self, full_name: str) -> Optional[dict]:
+        """Check if a repository is verified.
+
+        Args:
+            full_name: The full name of the repository (e.g., "owner/repo")
+
+        Returns:
+            The verified entry if found, None otherwise.
+        """
+        return self._verified_repos.get(full_name)
+
+    def is_verified_repo_by_url(self, repo_url: str) -> Optional[dict]:
+        """Check if a repository URL is verified.
+
+        Args:
+            repo_url: The repository URL to check
+
+        Returns:
+            The verified entry if found, None otherwise.
+        """
+        for full_name, entry in self._verified_repos.items():
             if full_name in repo_url or entry.get("repository_url") == repo_url:
                 return entry
         return None
@@ -1337,8 +1374,9 @@ class IntegrationManager:
         for full_name, info in self._hacs_repos.items():
             domain = info.get("domain", "")
             repo_url = info.get("repository_url", "")
-            # Check if this repo is unsupported
+            # Check if this repo is unsupported or verified
             unsupported_entry = self.is_unsupported_repo(full_name)
+            verified_entry = self.is_verified_repo(full_name)
             integration = {
                 "full_name": full_name,  # Unique identifier for install links
                 "domain": domain,
@@ -1348,6 +1386,10 @@ class IntegrationManager:
                 "unsupported": bool(unsupported_entry),
                 "unsupported_reason": unsupported_entry.get("reason")
                 if unsupported_entry
+                else None,
+                "verified": bool(verified_entry),
+                "verified_version": verified_entry.get("version")
+                if verified_entry
                 else None,
                 "source": "hacs_default",
                 # Rich metadata from CDN
@@ -1365,8 +1407,9 @@ class IntegrationManager:
         for domain, info in self._custom_repos.items():
             full_name = info.get("full_name", "")
             repo_url = info.get("repository_url", "")
-            # Check if this custom repo is unsupported
+            # Check if this custom repo is unsupported or verified
             unsupported_entry = self.is_unsupported_repo(full_name)
+            verified_entry = self.is_verified_repo(full_name)
             integration = {
                 "full_name": full_name,
                 "domain": domain,
@@ -1376,6 +1419,10 @@ class IntegrationManager:
                 "unsupported": bool(unsupported_entry),
                 "unsupported_reason": unsupported_entry.get("reason")
                 if unsupported_entry
+                else None,
+                "verified": bool(verified_entry),
+                "verified_version": verified_entry.get("version")
+                if verified_entry
                 else None,
                 "source": "custom",
                 "repository_url": repo_url,
@@ -1388,8 +1435,10 @@ class IntegrationManager:
             }
             integrations.append(integration)
 
-        # Sort by downloads (most popular first)
-        integrations.sort(key=lambda x: x.get("downloads", 0), reverse=True)
+        # Sort by verified first, then by downloads (most popular first)
+        integrations.sort(
+            key=lambda x: (-int(x.get("verified", False)), -x.get("downloads", 0))
+        )
 
         return integrations
 

@@ -1,0 +1,41 @@
+{
+  "unsupported": {
+    "alandtse/alexa_media_player": {
+      "reason": "HA MQTT integration doesn't support the media_player platform"
+    },
+    "mampfes/hacs_waste_collection_schedule": {
+      "reason": "HA MQTT integration doesn't support the calendar platform"
+    },
+    "Pirate-Weather/pirate-weather-ha": {
+      "reason": "HA MQTT integration doesn't support the weather platform"
+    }
+  },
+  "verified": {
+    "AlexandrErohin/home-assistant-flightradar24": {
+      "version": "1.31.1"
+    },
+    "libdyson-wg/ha-dyson": {
+      "version": "1.7.0"
+    },
+    "heyajohnny/cryptoinfo": {
+      "version": "1.0.10"
+    },
+    "finity69x2/nws_alerts": {
+      "version": "6.6.1"
+    },
+    "JeffSteinbok/hass-dreo": {
+      "version": "1.7.6"
+    },
+    "krahabb/meross_lan": {
+      "version": "5.8.0"
+    },
+    "explosivo22/rinnaicontrolr-ha": {
+      "version": "2.2.6",
+      "notes": "Rinnai water heater integration (custom repo)"
+    },
+    "schmittx/home-assistant-leviton-decora-smart-wifi": {
+      "version": "1.7.1",
+      "notes": "Leviton Decora Smart WiFi switches (custom repo)"
+    }
+  }
+}

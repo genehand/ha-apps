@@ -27,3 +27,8 @@ Thumbs.db
 *.tmp
 *.temp
 *.log
+
+# Coverage
+.coverage
+htmlcov/
+.coverage.*

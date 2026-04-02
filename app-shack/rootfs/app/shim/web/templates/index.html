@@ -81,7 +81,12 @@
             <article style="margin-bottom: 0;">
                 <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
                     <div>
-                        <h5 style="margin-bottom: 0.5rem;">{{ item.name }}</h5>
+                        <h5 style="margin-bottom: 0.5rem;">
+                            {{ item.name }}
+                            {% if item.verified %}
+                            <span class="verified-badge" title="Verified compatible (v{{ item.verified_version }})">Verified</span>
+                            {% endif %}
+                        </h5>
                         <div style="font-size: 12px; color: var(--pico-muted-color); margin-bottom: 0.25rem; display: flex; gap: 15px; align-items: center;">
                             <a href="{{ item.repository_url }}" target="_blank" class="pico-color-muted" style="text-decoration: underline;">{{ item.full_name }}</a>
                             {% if item.stars %}<span>⭐ {{ item.stars }}</span>{% endif %}
@@ -95,10 +100,10 @@
                         {% endif %}
                     </div>
                     <div style="flex-shrink: 0;">
-                        {% if item.installed %}
-                        <span class="pico-color-jade-500" style="font-weight: 600;">✓ Installed</span>
-                        {% elif item.unsupported %}
+                        {% if item.unsupported %}
                         <span class="pico-color-grey-500" style="font-weight: 600;" title="{{ item.unsupported_reason }}">Unsupported</span>
+                        {% elif item.installed %}
+                        <span class="installed-indicator">✓ Installed</span>
                         {% else %}
                         <button type="button"
                                 hx-post="integrations/{{ item.full_name }}/install"

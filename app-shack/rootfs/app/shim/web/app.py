@@ -93,6 +93,8 @@ class WebUI:
                     "installed": a.get("installed", False),
                     "unsupported": a.get("unsupported", False),
                     "unsupported_reason": a.get("unsupported_reason"),
+                    "verified": a.get("verified", False),
+                    "verified_version": a.get("verified_version"),
                     "source": a.get("source", "hacs_default"),
                     "stars": a.get("stars", 0),
                     "downloads": a.get("downloads", 0),
@@ -672,6 +674,17 @@ class WebUI:
             static file and cannot be modified via API.
             """
             repos = self._shim_manager.get_integration_manager().get_unsupported_repos()
+            return {"repositories": repos}
+
+        @self._app.get("/api/verified-repos", response_class=JSONResponse)
+        async def api_verified_repos():
+            """API endpoint for listing verified repositories.
+
+            This returns the static list of repositories that are known to be
+            compatible and tested with the shim. The list is maintained as a
+            read-only static file and cannot be modified via API.
+            """
+            repos = self._shim_manager.get_integration_manager().get_verified_repos()
             return {"repositories": repos}
 
         @self._app.post("/custom-repos")

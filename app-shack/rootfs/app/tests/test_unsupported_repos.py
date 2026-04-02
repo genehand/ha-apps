@@ -1,7 +1,7 @@
-"""Tests for unsupported repositories functionality.
+"""Tests for repository status functionality.
 
-These tests verify that the unsupported repos static file works correctly,
-including loading and blocking of unsupported repos.
+These tests verify that the repository status static file works correctly,
+including loading and blocking of unsupported repos and tracking verified repos.
 """
 
 import pytest
@@ -34,6 +34,12 @@ def integration_manager_with_mocked_storage(temp_data_dir):
             "reason": "Test reason for blocking",
         }
     }
+    mock_storage.load_verified_repos.return_value = {
+        "owner/verified_repo": {
+            "version": "1.0.0",
+            "notes": "Test verified repo",
+        }
+    }
     manager = IntegrationManager(mock_storage, temp_data_dir)
     return manager
 
@@ -49,22 +55,23 @@ class TestStorageUnsupportedRepos:
             empty_dir.mkdir()
             storage = Storage(empty_dir)
             # Patch the file path to a non-existent file in temp dir
-            # Path should be tmpdir/data/unsupported_repos.json (one level up from shim/)
-            storage._unsupported_repos_file = Path(tmpdir) / "data" / "nonexistent.json"
+            storage._repository_status_file = Path(tmpdir) / "data" / "nonexistent.json"
             repos = storage.load_unsupported_repos()
             assert repos == {}
 
     def test_load_unsupported_repos_from_static_file(self, temp_data_dir):
         """Test loading unsupported repos from static file."""
         # Create a unique data dir to avoid conflicts
-        # File should be at app/data/unsupported_repos.json relative to shim dir
         unique_data_dir = temp_data_dir / "data"
         unique_data_dir.mkdir(exist_ok=True)
-        static_file = unique_data_dir / "unsupported_repos.json"
+        static_file = unique_data_dir / "repository_status.json"
         test_data = {
-            "owner/test_repo": {
-                "reason": "Test reason",
-            }
+            "unsupported": {
+                "owner/test_repo": {
+                    "reason": "Test reason",
+                }
+            },
+            "verified": {},
         }
         with open(static_file, "w") as f:
             json.dump(test_data, f)
@@ -73,21 +80,24 @@ class TestStorageUnsupportedRepos:
         shim_dir = temp_data_dir / "shim"
         shim_dir.mkdir()
         storage = Storage(shim_dir)
-        storage._unsupported_repos_file = static_file
+        storage._repository_status_file = static_file
 
         loaded = storage.load_unsupported_repos()
-        assert loaded == test_data
+        assert loaded == test_data["unsupported"]
 
     def test_is_unsupported_repo(self, temp_data_dir):
         """Test checking if a repository is unsupported."""
-        # Create the static file at the correct location (app/data/)
+        # Create the static file at the correct location
         data_dir = temp_data_dir / "data"
         data_dir.mkdir(exist_ok=True)
-        static_file = data_dir / "unsupported_repos.json"
+        static_file = data_dir / "repository_status.json"
         test_data = {
-            "owner/blocked_repo": {
-                "reason": "Blocked for testing",
-            }
+            "unsupported": {
+                "owner/blocked_repo": {
+                    "reason": "Blocked for testing",
+                }
+            },
+            "verified": {},
         }
         with open(static_file, "w") as f:
             json.dump(test_data, f)
@@ -96,7 +106,7 @@ class TestStorageUnsupportedRepos:
         shim_dir = temp_data_dir / "shim"
         shim_dir.mkdir()
         storage = Storage(shim_dir)
-        storage._unsupported_repos_file = static_file
+        storage._repository_status_file = static_file
 
         entry = storage.is_unsupported_repo("owner/blocked_repo")
         assert entry is not None
@@ -107,14 +117,17 @@ class TestStorageUnsupportedRepos:
 
     def test_is_unsupported_repo_by_url(self, temp_data_dir):
         """Test checking if a repo URL is unsupported."""
-        # Create the static file at the correct location (app/data/)
+        # Create the static file at the correct location
         data_dir = temp_data_dir / "data"
         data_dir.mkdir(exist_ok=True)
-        static_file = data_dir / "unsupported_repos.json"
+        static_file = data_dir / "repository_status.json"
         test_data = {
-            "owner/blocked_by_url": {
-                "reason": "Blocked URL",
-            }
+            "unsupported": {
+                "owner/blocked_by_url": {
+                    "reason": "Blocked URL",
+                }
+            },
+            "verified": {},
         }
         with open(static_file, "w") as f:
             json.dump(test_data, f)
@@ -123,7 +136,7 @@ class TestStorageUnsupportedRepos:
         shim_dir = temp_data_dir / "shim"
         shim_dir.mkdir()
         storage = Storage(shim_dir)
-        storage._unsupported_repos_file = static_file
+        storage._repository_status_file = static_file
 
         entry = storage.is_unsupported_repo_by_url(
             "https://github.com/owner/blocked_by_url"
@@ -136,16 +149,20 @@ class TestStorageUnsupportedRepos:
         )
         assert not_blocked is None
 
-    def test_is_unsupported_repo_by_url(self, temp_data_dir):
-        """Test checking if a repo URL is unsupported."""
+    def test_is_verified_repo(self, temp_data_dir):
+        """Test checking if a repository is verified."""
         # Create the static file
         unique_data_dir = temp_data_dir / "test_data"
         unique_data_dir.mkdir(exist_ok=True)
-        static_file = unique_data_dir / "unsupported_repos.json"
+        static_file = unique_data_dir / "repository_status.json"
         test_data = {
-            "owner/blocked_by_url": {
-                "reason": "Blocked URL",
-            }
+            "unsupported": {},
+            "verified": {
+                "owner/verified_repo": {
+                    "version": "1.0.0",
+                    "notes": "Verified for testing",
+                }
+            },
         }
         with open(static_file, "w") as f:
             json.dump(test_data, f)
@@ -154,18 +171,50 @@ class TestStorageUnsupportedRepos:
         shim_dir = temp_data_dir / "shim"
         shim_dir.mkdir()
         storage = Storage(shim_dir)
-        storage._unsupported_repos_file = static_file
+        storage._repository_status_file = static_file
 
-        entry = storage.is_unsupported_repo_by_url(
-            "https://github.com/owner/blocked_by_url"
+        entry = storage.is_verified_repo("owner/verified_repo")
+        assert entry is not None
+        assert entry["version"] == "1.0.0"
+        assert entry["notes"] == "Verified for testing"
+
+        not_verified = storage.is_verified_repo("owner/unverified_repo")
+        assert not_verified is None
+
+    def test_is_verified_repo_by_url(self, temp_data_dir):
+        """Test checking if a repo URL is verified."""
+        # Create the static file
+        unique_data_dir = temp_data_dir / "test_data"
+        unique_data_dir.mkdir(exist_ok=True)
+        static_file = unique_data_dir / "repository_status.json"
+        test_data = {
+            "unsupported": {},
+            "verified": {
+                "owner/verified_by_url": {
+                    "version": "2.0.0",
+                    "notes": "Verified URL",
+                }
+            },
+        }
+        with open(static_file, "w") as f:
+            json.dump(test_data, f)
+
+        # Create storage and patch the file location
+        shim_dir = temp_data_dir / "shim"
+        shim_dir.mkdir()
+        storage = Storage(shim_dir)
+        storage._repository_status_file = static_file
+
+        entry = storage.is_verified_repo_by_url(
+            "https://github.com/owner/verified_by_url"
         )
         assert entry is not None
-        assert entry["reason"] == "Blocked URL"
+        assert entry["version"] == "2.0.0"
 
-        not_blocked = storage.is_unsupported_repo_by_url(
-            "https://github.com/owner/allowed_url"
+        not_verified = storage.is_verified_repo_by_url(
+            "https://github.com/owner/unverified_url"
         )
-        assert not_blocked is None
+        assert not_verified is None
 
 
 class TestIntegrationManagerUnsupportedRepos:
@@ -207,15 +256,59 @@ class TestIntegrationManagerUnsupportedRepos:
         assert not_blocked is None
 
 
-class TestGetAvailableIntegrationsUnsupportedFlag:
-    """Test cases for unsupported flag in get_available_integrations."""
+class TestIntegrationManagerVerifiedRepos:
+    """Test cases for IntegrationManager verified repos functionality."""
 
-    def test_available_integrations_marks_unsupported(self, temp_data_dir):
-        """Test that get_available_integrations marks unsupported repos."""
+    def test_get_verified_repos(self, integration_manager_with_mocked_storage):
+        """Test getting list of verified repos."""
+        repos = integration_manager_with_mocked_storage.get_verified_repos()
+        assert len(repos) == 1
+        assert repos[0]["full_name"] == "owner/verified_repo"
+        assert repos[0]["version"] == "1.0.0"
+        assert repos[0]["notes"] == "Test verified repo"
+
+    def test_is_verified_repo(self, integration_manager_with_mocked_storage):
+        """Test checking if a repo is verified."""
+        entry = integration_manager_with_mocked_storage.is_verified_repo(
+            "owner/verified_repo"
+        )
+        assert entry is not None
+        assert entry["version"] == "1.0.0"
+        assert entry["notes"] == "Test verified repo"
+
+        not_verified = integration_manager_with_mocked_storage.is_verified_repo(
+            "owner/unverified"
+        )
+        assert not_verified is None
+
+    def test_is_verified_repo_by_url(self, integration_manager_with_mocked_storage):
+        """Test checking verified repo by URL."""
+        entry = integration_manager_with_mocked_storage.is_verified_repo_by_url(
+            "https://github.com/owner/verified_repo"
+        )
+        assert entry is not None
+
+        not_verified = integration_manager_with_mocked_storage.is_verified_repo_by_url(
+            "https://github.com/owner/unverified"
+        )
+        assert not_verified is None
+
+
+class TestGetAvailableIntegrationsFlags:
+    """Test cases for verified and unsupported flags in get_available_integrations."""
+
+    def test_available_integrations_marks_unsupported_and_verified(self, temp_data_dir):
+        """Test that get_available_integrations marks unsupported and verified repos."""
         mock_storage = MagicMock()
         mock_storage.load_unsupported_repos.return_value = {
             "owner/unsupported_repo": {
                 "reason": "Not supported",
+            }
+        }
+        mock_storage.load_verified_repos.return_value = {
+            "owner/verified_repo": {
+                "version": "1.0.0",
+                "notes": "Test verified",
             }
         }
         mock_storage.load_integrations.return_value = {}
@@ -229,31 +322,99 @@ class TestGetAvailableIntegrationsUnsupportedFlag:
                 "domain": "supported_domain",
                 "repository_url": "https://github.com/owner/supported_repo",
                 "name": "Supported Integration",
+                "downloads": 100,
             },
             "owner/unsupported_repo": {
                 "domain": "unsupported_domain",
                 "repository_url": "https://github.com/owner/unsupported_repo",
                 "name": "Unsupported Integration",
+                "downloads": 200,
+            },
+            "owner/verified_repo": {
+                "domain": "verified_domain",
+                "repository_url": "https://github.com/owner/verified_repo",
+                "name": "Verified Integration",
+                "downloads": 50,
             },
         }
 
         available = manager.get_available_integrations()
 
-        # Find the supported and unsupported entries
+        # Find the entries
         supported = next(
             (a for a in available if a["full_name"] == "owner/supported_repo"), None
         )
         unsupported = next(
             (a for a in available if a["full_name"] == "owner/unsupported_repo"), None
         )
+        verified = next(
+            (a for a in available if a["full_name"] == "owner/verified_repo"), None
+        )
 
         assert supported is not None
         assert supported["unsupported"] is False
+        assert supported["verified"] is False
         assert supported.get("unsupported_reason") is None
+        assert supported.get("verified_version") is None
 
         assert unsupported is not None
         assert unsupported["unsupported"] is True
+        assert unsupported["verified"] is False
         assert unsupported.get("unsupported_reason") == "Not supported"
+
+        assert verified is not None
+        assert verified["unsupported"] is False
+        assert verified["verified"] is True
+        assert verified.get("verified_version") == "1.0.0"
+
+    def test_available_integrations_sorts_verified_first(self, temp_data_dir):
+        """Test that verified repos are sorted to the top of available integrations."""
+        mock_storage = MagicMock()
+        mock_storage.load_unsupported_repos.return_value = {}
+        mock_storage.load_verified_repos.return_value = {
+            "owner/verified_low_downloads": {
+                "version": "1.0.0",
+                "notes": "Verified but low downloads",
+            }
+        }
+        mock_storage.load_integrations.return_value = {}
+        mock_storage.load_custom_repos.return_value = {}
+
+        manager = IntegrationManager(mock_storage, temp_data_dir)
+
+        # Mock HACS repos - verified repo has lowest downloads
+        manager._hacs_repos = {
+            "owner/popular_repo": {
+                "domain": "popular",
+                "repository_url": "https://github.com/owner/popular_repo",
+                "name": "Popular Integration",
+                "downloads": 10000,
+            },
+            "owner/medium_repo": {
+                "domain": "medium",
+                "repository_url": "https://github.com/owner/medium_repo",
+                "name": "Medium Integration",
+                "downloads": 5000,
+            },
+            "owner/verified_low_downloads": {
+                "domain": "verified",
+                "repository_url": "https://github.com/owner/verified_low_downloads",
+                "name": "Verified Integration",
+                "downloads": 100,  # Much lower downloads but should be first
+            },
+        }
+
+        available = manager.get_available_integrations()
+
+        # Verified repo should be first despite lowest downloads
+        assert available[0]["full_name"] == "owner/verified_low_downloads"
+        assert available[0]["verified"] is True
+
+        # Others should be sorted by downloads
+        assert available[1]["full_name"] == "owner/popular_repo"
+        assert available[1]["verified"] is False
+        assert available[2]["full_name"] == "owner/medium_repo"
+        assert available[2]["verified"] is False
 
 
 class TestUnsupportedReposBlocking:
@@ -268,6 +429,7 @@ class TestUnsupportedReposBlocking:
                 "reason": "MQTT component doesn't support the media_player platform",
             }
         }
+        mock_storage.load_verified_repos.return_value = {}
 
         manager = IntegrationManager(mock_storage, temp_data_dir)
 
@@ -285,6 +447,7 @@ class TestUnsupportedReposBlocking:
         """Test that adding an allowed custom repository succeeds (not blocked)."""
         mock_storage = MagicMock()
         mock_storage.load_unsupported_repos.return_value = {}
+        mock_storage.load_verified_repos.return_value = {}
 
         manager = IntegrationManager(mock_storage, temp_data_dir)
 
@@ -322,6 +485,7 @@ class TestUnsupportedReposBlocking:
                 "reason": "Blocked HACS repo",
             }
         }
+        mock_storage.load_verified_repos.return_value = {}
 
         manager = IntegrationManager(mock_storage, temp_data_dir)
 
@@ -350,6 +514,7 @@ class TestCustomRepoInstallByFullName:
         """Test that _do_install can find custom repos by full_name."""
         mock_storage = MagicMock()
         mock_storage.load_unsupported_repos.return_value = {}
+        mock_storage.load_verified_repos.return_value = {}
         mock_storage.load_custom_repos.return_value = {}
         mock_storage.load_integrations.return_value = {}
         mock_storage._shim_dir = temp_data_dir
@@ -391,6 +556,7 @@ class TestCustomRepoInstallByFullName:
         """Test that _process_install_task resolves domain from full_name for custom repos."""
         mock_storage = MagicMock()
         mock_storage.load_unsupported_repos.return_value = {}
+        mock_storage.load_verified_repos.return_value = {}
         mock_storage.load_custom_repos.return_value = {}
         mock_storage.load_integrations.return_value = {}
         mock_storage._shim_dir = temp_data_dir
@@ -433,29 +599,82 @@ class TestCustomRepoInstallByFullName:
         assert task.domain == "rinnai", f"Expected domain 'rinnai', got '{task.domain}'"
 
 
-class TestInitialUnsupportedRepoEntry:
-    """Test the initial unsupported repos entry for alexa_media_player."""
+class TestInitialRepositoryStatusEntry:
+    """Test the initial repository status entries."""
 
     def test_initial_entry_in_data_file(self):
-        """Test that the initial alexa_media_player entry exists in the data file."""
+        """Test that the initial entries exist in the repository status file."""
         # File is in app/metadata/ (next to shim code)
         # Path: tests/file.py -> tests/ -> app/ -> app/metadata/
-        data_file = Path(__file__).parent.parent / "metadata" / "unsupported_repos.json"
+        data_file = Path(__file__).parent.parent / "metadata" / "repository_status.json"
 
         assert data_file.exists(), f"Data file not found: {data_file}"
 
         with open(data_file, "r") as f:
             data = json.load(f)
 
-        # Check for alexa_media_player entry
-        assert "alandtse/alexa_media_player" in data
-        entry = data["alandtse/alexa_media_player"]
-        # Only "reason" field should be present
+        # Check for sections
+        assert "unsupported" in data
+        assert "verified" in data
+
+        # Check for alexa_media_player entry in unsupported
+        assert "alandtse/alexa_media_player" in data["unsupported"]
+        entry = data["unsupported"]["alandtse/alexa_media_player"]
         assert "reason" in entry
-        assert "full_name" not in entry
-        assert "domain" not in entry
-        assert "name" not in entry
         assert (
             "HA MQTT integration doesn't support the media_player platform"
             in entry["reason"]
         )
+
+        # Check that verified repos exist and have required fields
+        verified = data.get("verified", {})
+        assert len(verified) > 0, "Should have at least one verified repo"
+        for full_name, entry in verified.items():
+            assert "version" in entry, f"Verified repo {full_name} should have version"
+
+    def test_is_verified_repo_optional_notes(self, temp_data_dir):
+        """Test that verified repos work without optional notes field."""
+        # Create the static file with a repo that has no notes
+        unique_data_dir = temp_data_dir / "test_data"
+        unique_data_dir.mkdir(exist_ok=True)
+        static_file = unique_data_dir / "repository_status.json"
+        test_data = {
+            "unsupported": {},
+            "verified": {
+                "owner/minimal_verified": {
+                    "version": "1.0.0",
+                    # No notes field
+                }
+            },
+        }
+        with open(static_file, "w") as f:
+            json.dump(test_data, f)
+
+        # Create storage and patch the file location
+        shim_dir = temp_data_dir / "shim"
+        shim_dir.mkdir()
+        storage = Storage(shim_dir)
+        storage._repository_status_file = static_file
+
+        entry = storage.is_verified_repo("owner/minimal_verified")
+        assert entry is not None
+        assert entry["version"] == "1.0.0"
+        # notes should not be present
+        assert "notes" not in entry
+
+    def test_verified_repos_structure(self):
+        """Test that verified repos have the correct structure."""
+        data_file = Path(__file__).parent.parent / "metadata" / "repository_status.json"
+
+        assert data_file.exists(), f"Data file not found: {data_file}"
+
+        with open(data_file, "r") as f:
+            data = json.load(f)
+
+        verified = data.get("verified", {})
+        for full_name, entry in verified.items():
+            # version is required
+            assert "version" in entry, f"Verified repo {full_name} should have version"
+            # notes is optional (defaults to empty string)
+            if "notes" in entry:
+                assert isinstance(entry["notes"], str)
