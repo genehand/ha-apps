@@ -1,5 +1,5 @@
 name: Shack
-version: 0.4.0
+version: 0.4.1
 slug: shack
 description: HACS Shack - Run HACS integrations outside Home Assistant via MQTT
 url: https://github.com/genehand/ha-apps
@@ -26,4 +26,4 @@ schema:
   mqtt_password: password?
   log_level: list(DEBUG|INFO|WARNING|ERROR|CRITICAL)
   integration_log_levels:
-    match(.+): list(DEBUG|INFO|WARNING|ERROR|CRITICAL)
+    "match(.+)": list(DEBUG|INFO|WARNING|ERROR|CRITICAL)
