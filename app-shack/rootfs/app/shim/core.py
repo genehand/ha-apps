@@ -90,7 +90,7 @@ def callback(func: Callable) -> Callable:
 
 
 @dataclass
-class ConfigEntry:
+class ConfigEntry(Generic[T]):
     """Configuration entry for an integration."""
 
     entry_id: str
@@ -842,6 +842,21 @@ class MockConfig:
         self.time_zone = "UTC"
         self.external_url = None
         self.internal_url = None
+        # Mock units object for temperature and other unit conversions
+        self.units = MockUnitSystem()
+
+
+class MockUnitSystem:
+    """Mock unit system for unit conversions."""
+
+    def __init__(self):
+        self.temperature_unit = "°C"  # Celsius by default
+        self.length_unit = "km"
+        self.mass_unit = "kg"
+        self.pressure_unit = "Pa"
+        self.volume_unit = "L"
+        self.wind_speed_unit = "m/s"
+        self.accumulated_precipitation_unit = "mm"
 
 
 class MockEventBus:

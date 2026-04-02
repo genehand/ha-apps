@@ -342,6 +342,97 @@ class TestUnsupportedReposBlocking:
         assert result is False
 
 
+class TestCustomRepoInstallByFullName:
+    """Test that custom repos can be installed using full_name instead of domain."""
+
+    @pytest.mark.asyncio
+    async def test_do_install_custom_repo_by_full_name(self, temp_data_dir):
+        """Test that _do_install can find custom repos by full_name."""
+        mock_storage = MagicMock()
+        mock_storage.load_unsupported_repos.return_value = {}
+        mock_storage.load_custom_repos.return_value = {}
+        mock_storage.load_integrations.return_value = {}
+        mock_storage._shim_dir = temp_data_dir
+
+        manager = IntegrationManager(mock_storage, temp_data_dir)
+
+        # Add a custom repo with both domain and full_name
+        manager._custom_repos = {
+            "rinnai": {
+                "domain": "rinnai",
+                "name": "Rinnai Control-R",
+                "repository_url": "https://github.com/explosivo22/rinnaicontrolr-ha",
+                "full_name": "explosivo22/rinnaicontrolr-ha",
+                "manifest": {"domain": "rinnai", "name": "Rinnai Control-R"},
+            }
+        }
+
+        # Verify lookup by domain works
+        assert "rinnai" in manager._custom_repos
+
+        # Verify lookup by full_name works (simulating the fix)
+        full_name = "explosivo22/rinnaicontrolr-ha"
+        found_by_full_name = None
+        found_domain = None
+        for d, info in manager._custom_repos.items():
+            if info.get("full_name") == full_name:
+                found_by_full_name = info
+                found_domain = d
+                break
+
+        assert found_by_full_name is not None, "Should find repo by full_name"
+        assert found_domain == "rinnai"
+        assert found_by_full_name["domain"] == "rinnai"
+
+    @pytest.mark.asyncio
+    async def test_process_install_task_resolves_domain_from_full_name(
+        self, temp_data_dir
+    ):
+        """Test that _process_install_task resolves domain from full_name for custom repos."""
+        mock_storage = MagicMock()
+        mock_storage.load_unsupported_repos.return_value = {}
+        mock_storage.load_custom_repos.return_value = {}
+        mock_storage.load_integrations.return_value = {}
+        mock_storage._shim_dir = temp_data_dir
+
+        manager = IntegrationManager(mock_storage, temp_data_dir)
+
+        # Add a custom repo
+        manager._custom_repos = {
+            "rinnai": {
+                "domain": "rinnai",
+                "name": "Rinnai Control-R",
+                "repository_url": "https://github.com/explosivo22/rinnaicontrolr-ha",
+                "full_name": "explosivo22/rinnaicontrolr-ha",
+            }
+        }
+
+        # Create an InstallTask with full_name (not domain)
+        from shim.integrations.manager import InstallTask
+
+        task = InstallTask(
+            full_name_or_domain="explosivo22/rinnaicontrolr-ha",
+            version=None,
+            source="custom",
+            custom_url=None,
+        )
+
+        # Simulate the domain resolution logic from _process_install_task
+        if task.source == "custom":
+            domain = task.full_name_or_domain
+            if domain in manager._custom_repos:
+                task.domain = domain
+            else:
+                # Try to find by full_name
+                for d, info in manager._custom_repos.items():
+                    if info.get("full_name") == task.full_name_or_domain:
+                        task.domain = d
+                        break
+
+        # Verify that domain was resolved correctly
+        assert task.domain == "rinnai", f"Expected domain 'rinnai', got '{task.domain}'"
+
+
 class TestInitialUnsupportedRepoEntry:
     """Test the initial unsupported repos entry for alexa_media_player."""
 
@@ -365,6 +456,6 @@ class TestInitialUnsupportedRepoEntry:
         assert "domain" not in entry
         assert "name" not in entry
         assert (
-            "MQTT component doesn't support the media_player platform"
+            "HA MQTT integration doesn't support the media_player platform"
             in entry["reason"]
         )

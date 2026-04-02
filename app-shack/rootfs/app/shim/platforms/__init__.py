@@ -18,6 +18,7 @@ from . import vacuum
 from . import humidifier
 from . import number
 from . import lock
+from . import water_heater
 
 __all__ = [
     "fan",
@@ -35,4 +36,5 @@ __all__ = [
     "humidifier",
     "number",
     "lock",
+    "water_heater",
 ]

@@ -581,7 +581,7 @@ class ShimManager:
         )
 
     async def create_config_entry(
-        self, domain: str, data: dict
+        self, domain: str, data: dict, options: Optional[dict] = None
     ) -> Optional[ConfigEntry]:
         """Create a new config entry for an integration."""
         info = self._integration_manager.get_integration(domain)
@@ -595,6 +595,7 @@ class ShimManager:
             domain=domain,
             title=data.get("name", info.name),
             data=data,
+            options=options or {},
         )
 
         await self._hass.config_entries.async_add(entry)

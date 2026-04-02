@@ -29,6 +29,32 @@
         :root {
             --pico-font-size: 1rem;
         }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--pico-muted-border-color);
+            border-top: 2px solid var(--pico-primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* HTMX indicator styles */
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator,
+        .htmx-indicator.htmx-request {
+            display: block;
+        }
+        .htmx-request .htmx-indicator-text,
+        .htmx-indicator-text.htmx-request {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -64,7 +90,13 @@
             </div>
             {% endif %}
 
-            <form hx-post="/config/{{ domain }}" hx-target="body" hx-swap="outerHTML">
+            <form hx-post="/config/{{ domain }}" hx-target="body" hx-swap="outerHTML" hx-indicator="#submit-spinner" hx-disabled-elt="button[type=submit]">
+                <!-- Loading spinner (hidden by default) -->
+                <div id="submit-spinner" class="htmx-indicator" style="text-align: center; padding: 20px;">
+                    <span class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></span>
+                    <p style="margin-top: 10px; color: var(--pico-muted-color);">Setting up integration...</p>
+                </div>
+                
                 {% if flow_id %}
                 <input type="hidden" name="flow_id" value="{{ flow_id }}">
                 {% endif %}
@@ -78,11 +110,13 @@
                     </label>
 
                     {% if field.type == 'select' %}
+                    {% if field.multiple %}
+                    {# Multi-select: use dropdown #}
                     <select
                         id="{{ field.name }}"
                         name="{{ field.name }}"
                         {% if field.required %}required{% endif %}
-                        {% if field.multiple %}multiple{% endif %}
+                        multiple
                     >
                         {% for option in field.options %}
                         <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>
@@ -90,6 +124,23 @@
                         </option>
                         {% endfor %}
                     </select>
+                    {% else %}
+                    {# Single-select: use radio buttons for better UX #}
+                    <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                        {% for option in field.options %}
+                        <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; gap: 8px;">
+                            <input
+                                type="radio"
+                                name="{{ field.name }}"
+                                value="{{ option.value }}"
+                                {% if option.selected %}checked{% endif %}
+                                {% if field.required and loop.first %}required{% endif %}
+                            >
+                            <span>{{ option.label }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                     {% elif field.type == 'textarea' %}
                     <textarea
                         id="{{ field.name }}"
@@ -139,7 +190,10 @@
                 {% endif %}
                
                 <div class="grid" style="margin-top: var(--pico-spacing); align-items: stretch;">
-                    <button type="submit" style="margin-bottom: 0;">Submit</button>
+                    <button type="submit" style="margin-bottom: 0;">
+                        <span class="htmx-indicator-text">Submit</span>
+                        <span class="htmx-indicator" style="display: none;">Setting up...</span>
+                    </button>
                     <a href="/integrations/{{ domain }}" role="button" class="secondary" style="margin-bottom: 0; display: flex; align-items: center; justify-content: center;">Cancel</a>
                 </div>
             </form>

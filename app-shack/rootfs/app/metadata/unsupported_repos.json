@@ -1,5 +1,8 @@
 {
   "alandtse/alexa_media_player": {
-    "reason": "MQTT component doesn't support the media_player platform"
+    "reason": "HA MQTT integration doesn't support the media_player platform"
+  },
+  "Pirate-Weather/pirate-weather-ha": {
+    "reason": "HA MQTT integration doesn't support the weather platform"
   }
 }

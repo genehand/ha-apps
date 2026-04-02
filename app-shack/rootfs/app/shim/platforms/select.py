@@ -138,6 +138,10 @@ class SelectEntity(Entity):
         if self.entity_category:
             config["entity_category"] = self.entity_category
 
+        # Add enabled_by_default if entity is disabled by default
+        if not self.entity_registry_enabled_default:
+            config["enabled_by_default"] = False
+
         # Add translation_key if available
         if hasattr(self, "entity_description") and self.entity_description:
             if getattr(self.entity_description, "translation_key", None):

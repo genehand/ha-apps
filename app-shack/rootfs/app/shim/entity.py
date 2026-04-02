@@ -31,6 +31,7 @@ class EntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
     name: Optional[str] = None
     translation_key: Optional[str] = None
     unit_of_measurement: Optional[str] = None
+    disabled_by_default: bool = False
 
 
 def format_device_identifiers(identifiers: Set[Union[tuple, list, str]]) -> List[str]:
@@ -209,7 +210,9 @@ def get_entity_name_for_discovery(
         The entity name for discovery, or None if entity name matches device name.
     """
     if not entity_name:
-        return None if has_entity_name else entity_name
+        # When has_entity_name is True, None means use device name (HA convention)
+        # When has_entity_name is False, we should still return None (no name available)
+        return None
 
     device_name = get_device_info_attr(device_info, "name")
     if not device_name:
@@ -315,8 +318,27 @@ class Entity:
             return self._attr_name
         # Check entity_description for name
         if hasattr(self, "entity_description") and self.entity_description is not None:
-            return getattr(self.entity_description, "name", None)
+            # First check for explicit name
+            name = getattr(self.entity_description, "name", None)
+            if name:
+                return name
+            # Fall back to translation_key converted to readable name
+            translation_key = getattr(self.entity_description, "translation_key", None)
+            if translation_key:
+                return self._translation_key_to_name(translation_key)
+            # Fall back to key converted to readable name
+            key = getattr(self.entity_description, "key", None)
+            if key:
+                return self._translation_key_to_name(key)
         return None
+
+    def _translation_key_to_name(self, translation_key: str) -> str:
+        """Convert a translation key to a human-readable name.
+
+        Example: "outlet_temperature" -> "Outlet Temperature"
+        """
+        # Replace underscores with spaces and title case
+        return translation_key.replace("_", " ").title()
 
     @property
     def unique_id(self) -> Optional[str]:
@@ -757,14 +779,20 @@ class Entity:
     @property
     def entity_registry_enabled_default(self) -> bool:
         """Return if the entity should be enabled by default."""
-        # Check entity_description first
+        # Check instance attribute for disabled_by_default (runtime override)
+        if getattr(self, "_attr_disabled_by_default", False):
+            return False
+        # Check entity_description for disabled_by_default (rinnai pattern)
         if hasattr(self, "entity_description") and self.entity_description is not None:
+            if getattr(self.entity_description, "disabled_by_default", False):
+                return False
+            # Check entity_registry_enabled_default directly (meross_lan pattern)
             value = getattr(
                 self.entity_description, "entity_registry_enabled_default", None
             )
             if value is not None:
                 return value
-        # Fall back to class attribute
+        # Fall back to class attribute for entity_registry_enabled_default
         return getattr(self, "_attr_entity_registry_enabled_default", True)
 
     async def add_to_platform_finish(self) -> None:

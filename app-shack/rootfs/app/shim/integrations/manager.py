@@ -874,9 +874,16 @@ class IntegrationManager:
         ):
             task.domain = self._hacs_repos[task.full_name_or_domain].get("domain", "")
         elif task.source == "custom":
-            task.domain = (
-                task.full_name_or_domain
-            )  # For custom repos, this is the domain
+            # For custom repos, full_name_or_domain could be domain or full_name
+            domain = task.full_name_or_domain
+            if domain in self._custom_repos:
+                task.domain = domain
+            else:
+                # Try to find by full_name
+                for d, info in self._custom_repos.items():
+                    if info.get("full_name") == task.full_name_or_domain:
+                        task.domain = d
+                        break
 
         _LOGGER.info(
             f"Processing install task for {task.domain or task.full_name_or_domain}"
@@ -1082,12 +1089,25 @@ class IntegrationManager:
                 )
                 return False
         elif source == "custom":
-            # For custom repos, full_name_or_domain is the domain
+            # For custom repos, full_name_or_domain could be either the domain or full_name
+            # Try to find the repo by domain first, then by full_name
+            repo_info = None
             domain = full_name_or_domain
-            # Check custom repositories first
+
             if domain in self._custom_repos:
                 repo_info = self._custom_repos[domain]
                 repo_url = repo_info["repository_url"]
+            else:
+                # Try to find by full_name
+                for d, info in self._custom_repos.items():
+                    if info.get("full_name") == full_name_or_domain:
+                        repo_info = info
+                        domain = d
+                        repo_url = info["repository_url"]
+                        break
+
+            if repo_info:
+                pass  # repo_url already set above
             elif custom_url:
                 # Direct URL provided
                 repo_url = custom_url
@@ -1095,8 +1115,9 @@ class IntegrationManager:
                 if not repo_info:
                     _LOGGER.error(f"Failed to fetch info for {repo_url}")
                     return False
+                domain = repo_info.get("domain", domain)
             else:
-                _LOGGER.error(f"Custom repository {domain} not found")
+                _LOGGER.error(f"Custom repository {full_name_or_domain} not found")
                 return False
         else:
             repo_url = custom_url

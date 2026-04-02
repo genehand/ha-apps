@@ -169,13 +169,17 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         self,
         title: str,
         data: Dict[str, Any],
+        options: Optional[Dict[str, Any]] = None,
     ):
         """Create config entry."""
-        return {
+        result = {
             "type": "create_entry",
             "title": title,
             "data": data,
         }
+        if options:
+            result["options"] = options
+        return result
 
     def async_abort(self, reason: str):
         """Abort config flow."""
@@ -280,13 +284,18 @@ class OptionsFlow:
             "description_placeholders": description_placeholders or {},
         }
 
-    def async_create_entry(self, title: str, data: Dict[str, Any]):
-        """Create options entry."""
-        return {
+    def async_create_entry(
+        self, title: str, data: Dict[str, Any], options: Optional[Dict[str, Any]] = None
+    ):
+        """Create config entry."""
+        result = {
             "type": "create_entry",
             "title": title,
             "data": data,
         }
+        if options:
+            result["options"] = options
+        return result
 
 
 class OptionsFlowWithConfigEntry(OptionsFlow):

@@ -83,6 +83,32 @@
             background: var(--pico-muted-border-color);
             color: var(--pico-muted-color);
         }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--pico-muted-border-color);
+            border-top: 2px solid var(--pico-primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* HTMX indicator styles */
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator,
+        .htmx-indicator.htmx-request {
+            display: inline-block;
+        }
+        .htmx-request .button-text,
+        .button-text.htmx-request {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -145,15 +171,19 @@
                 <button type="button" class="secondary"
                         hx-post="/integrations/{{ integration.domain }}/disable"
                         hx-target="body"
-                        hx-swap="outerHTML">
-                    Disable Integration
+                        hx-swap="outerHTML"
+                        hx-indicator="#disable-spinner">
+                    <span id="disable-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                    <span class="button-text">Disable Integration</span>
                 </button>
                 {% else %}
                 <button type="button"
                         hx-post="/integrations/{{ integration.domain }}/enable"
                         hx-target="body"
-                        hx-swap="outerHTML">
-                    Enable Integration
+                        hx-swap="outerHTML"
+                        hx-indicator="#enable-spinner">
+                    <span id="enable-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                    <span class="button-text">Enable Integration</span>
                 </button>
                 {% endif %}
                 

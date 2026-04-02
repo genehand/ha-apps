@@ -100,6 +100,10 @@ class ButtonEntity(Entity):
         if self.entity_category:
             config["entity_category"] = self.entity_category
 
+        # Add enabled_by_default if entity is disabled by default
+        if not self.entity_registry_enabled_default:
+            config["enabled_by_default"] = False
+
         # Add attributes topic using base class helper
         self._add_mqtt_attributes_to_config(config)
 

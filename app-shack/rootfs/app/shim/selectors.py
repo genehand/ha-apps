@@ -4,7 +4,14 @@ Provides selector classes for config flows.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, TypedDict
+
+
+class SelectOptionDict(TypedDict):
+    """Dictionary representing a select option."""
+
+    value: str
+    label: str
 
 
 class SelectSelectorMode(str, Enum):

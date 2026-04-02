@@ -172,8 +172,19 @@ class SensorEntity(Entity):
         if hasattr(self, "_attr_name") and self._attr_name is not None:
             return self._attr_name
         if hasattr(self, "entity_description") and self.entity_description is not None:
-            return self.entity_description.name
-        # Fall back to parent class name property (e.g., DysonEntity)
+            # First check for explicit name
+            name = self.entity_description.name
+            if name:
+                return name
+            # Fall back to translation_key converted to readable name
+            translation_key = getattr(self.entity_description, "translation_key", None)
+            if translation_key:
+                return self._translation_key_to_name(translation_key)
+            # Fall back to key converted to readable name
+            key = getattr(self.entity_description, "key", None)
+            if key:
+                return self._translation_key_to_name(key)
+        # Fall back to parent class name property
         return super().name
 
     @property
@@ -320,6 +331,16 @@ class SensorEntity(Entity):
 
         if self.entity_category:
             config["entity_category"] = self.entity_category
+
+        # Add enabled_by_default if entity is disabled by default
+        _LOGGER.debug(
+            f"Sensor {self.entity_id}: entity_registry_enabled_default={self.entity_registry_enabled_default}"
+        )
+        if not self.entity_registry_enabled_default:
+            config["enabled_by_default"] = False
+            _LOGGER.debug(
+                f"Sensor {self.entity_id}: setting enabled_by_default=false in discovery"
+            )
 
         # Add attributes topic using base class helper
         self._add_mqtt_attributes_to_config(config)

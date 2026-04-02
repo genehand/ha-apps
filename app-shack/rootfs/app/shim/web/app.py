@@ -158,14 +158,14 @@ class WebUI:
                     await self._shim_manager.get_integration_loader().setup_integration(
                         entry
                     )
-                # Use HTMX redirect to properly change the URL
+                # Use HTMX redirect to integration detail page
                 html = (
                     f'<div class="alert alert-success">'
                     f"Integration {domain} enabled successfully!"
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = "/"
+                response.headers["HX-Redirect"] = f"/integrations/{domain}"
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to enable {domain}</div>',
@@ -188,14 +188,14 @@ class WebUI:
                 )
             )
             if success:
-                # Use HTMX redirect to properly change the URL
+                # Use HTMX redirect to integration detail page
                 html = (
                     f'<div class="alert alert-success">'
                     f"Integration {domain} disabled successfully!"
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = "/"
+                response.headers["HX-Redirect"] = f"/integrations/{domain}"
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to disable {domain}</div>',
@@ -223,9 +223,18 @@ class WebUI:
                     status_code=400,
                 )
 
+            # Determine if this is a custom repo or HACS default repo
+            # by looking it up in the available integrations list
+            available = self._shim_manager.get_integration_manager().get_available_integrations()
+            repo_source = "hacs_default"  # default
+            for repo in available:
+                if repo.get("full_name") == full_name:
+                    repo_source = repo.get("source", "hacs_default")
+                    break
+
             # Queue the install and get the task
             result = await self._shim_manager.install_integration(
-                full_name, version=version
+                full_name, version=version, source=repo_source
             )
 
             # Check if it's a task (async) or boolean (sync/legacy)
@@ -265,12 +274,21 @@ class WebUI:
                     )
                 return HTMLResponse(f'<span style="color: #999;">Not found</span>')
 
+            # Include polling attributes for incomplete statuses so HTMX continues polling
+            polling_attrs = f'hx-get="/api/install-status/{full_name}" hx-trigger="every 2s" hx-swap="outerHTML"'
+
             if task.status == "pending":
-                return HTMLResponse(f'<span class="spinner"></span> Pending...')
+                return HTMLResponse(
+                    f'<span class="spinner" {polling_attrs}></span> Pending...'
+                )
             elif task.status == "downloading":
-                return HTMLResponse(f'<span class="spinner"></span> Downloading...')
+                return HTMLResponse(
+                    f'<span class="spinner" {polling_attrs}></span> Downloading...'
+                )
             elif task.status == "installing":
-                return HTMLResponse(f'<span class="spinner"></span> Installing...')
+                return HTMLResponse(
+                    f'<span class="spinner" {polling_attrs}></span> Installing...'
+                )
             elif task.status == "complete":
                 return HTMLResponse(
                     '<span class="pico-color-jade-500" style="font-weight: 600;">✓ Installed</span>'
@@ -472,7 +490,10 @@ class WebUI:
             if result.get("type") == "create_entry":
                 # Create the config entry
                 entry_data = result.get("data", {})
-                entry = await self._shim_manager.create_config_entry(domain, entry_data)
+                entry_options = result.get("options")
+                entry = await self._shim_manager.create_config_entry(
+                    domain, entry_data, entry_options
+                )
 
                 if entry:
                     # Setup the integration
@@ -1001,16 +1022,32 @@ class WebUI:
                     _LOGGER.debug(
                         f"SelectSelector options: {options}, multiple: {multiple}"
                     )
-                    field["options"] = [
-                        {
-                            "value": opt,
-                            "label": str(opt),
-                            "selected": opt in field.get("default", [])
-                            if multiple
-                            else opt == field.get("default"),
-                        }
-                        for opt in options
-                    ]
+                    # Handle options as list of dicts (SelectOptionDict) or simple values
+                    parsed_options = []
+                    for opt in options:
+                        if isinstance(opt, dict) and "value" in opt and "label" in opt:
+                            # SelectOptionDict format: {"value": "...", "label": "..."}
+                            parsed_options.append(
+                                {
+                                    "value": opt["value"],
+                                    "label": opt["label"],
+                                    "selected": opt["value"] in field.get("default", [])
+                                    if multiple
+                                    else opt["value"] == field.get("default"),
+                                }
+                            )
+                        else:
+                            # Simple value format
+                            parsed_options.append(
+                                {
+                                    "value": opt,
+                                    "label": str(opt),
+                                    "selected": opt in field.get("default", [])
+                                    if multiple
+                                    else opt == field.get("default"),
+                                }
+                            )
+                    field["options"] = parsed_options
                     field["multiple"] = multiple
                     _LOGGER.debug(
                         f"Parsed {len(field['options'])} options for field {field['name']}"

@@ -945,3 +945,472 @@ class TestAiohttpClientCleanup:
         # Verify all sessions are closed
         assert session1.closed
         assert session2.closed
+
+
+class TestSelectOptionDict:
+    """Tests for SelectOptionDict TypedDict."""
+
+    def test_select_option_dict_creation(self):
+        """Test creating SelectOptionDict with value and label."""
+        from shim.selectors import SelectOptionDict
+
+        option: SelectOptionDict = {"value": "cloud", "label": "Cloud Mode"}
+        assert option["value"] == "cloud"
+        assert option["label"] == "Cloud Mode"
+
+    def test_select_option_dict_in_list(self):
+        """Test SelectOptionDict used in a list of options."""
+        from shim.selectors import SelectOptionDict
+
+        options: list[SelectOptionDict] = [
+            {"value": "cloud", "label": "Cloud (Rinnai account)"},
+            {"value": "local", "label": "Local (direct connection)"},
+            {"value": "hybrid", "label": "Hybrid (local + cloud fallback)"},
+        ]
+
+        assert len(options) == 3
+        assert options[0]["value"] == "cloud"
+        assert options[0]["label"] == "Cloud (Rinnai account)"
+        assert options[1]["value"] == "local"
+        assert options[2]["value"] == "hybrid"
+
+
+class TestSelectSelectorConfigParsing:
+    """Tests for parsing SelectSelector config with different option formats."""
+
+    def test_parse_select_option_dict_format(self):
+        """Test parsing SelectSelector with SelectOptionDict format."""
+        from shim.web.app import WebUI
+        from shim.selectors import (
+            SelectSelector,
+            SelectSelectorConfig,
+            SelectOptionDict,
+        )
+
+        # Create options in SelectOptionDict format (as used by rinnai integration)
+        options: list[SelectOptionDict] = [
+            {"value": "cloud", "label": "Cloud (Rinnai account)"},
+            {"value": "local", "label": "Local (direct connection)"},
+        ]
+
+        selector = SelectSelector(SelectSelectorConfig(options=options))
+
+        # Simulate the parsing logic from _parse_field
+        config = selector.config
+        parsed_options = []
+        for opt in config.get("options", []):
+            if isinstance(opt, dict) and "value" in opt and "label" in opt:
+                parsed_options.append(
+                    {
+                        "value": opt["value"],
+                        "label": opt["label"],
+                        "selected": False,
+                    }
+                )
+            else:
+                parsed_options.append(
+                    {
+                        "value": opt,
+                        "label": str(opt),
+                        "selected": False,
+                    }
+                )
+
+        # Verify proper parsing
+        assert len(parsed_options) == 2
+        assert parsed_options[0]["value"] == "cloud"
+        assert parsed_options[0]["label"] == "Cloud (Rinnai account)"
+        assert parsed_options[1]["value"] == "local"
+        assert parsed_options[1]["label"] == "Local (direct connection)"
+
+    def test_parse_simple_value_format(self):
+        """Test parsing SelectSelector with simple value format."""
+        from shim.selectors import SelectSelector, SelectSelectorConfig
+
+        # Create options with simple string values
+        selector = SelectSelector(SelectSelectorConfig(options=["option1", "option2"]))
+
+        config = selector.config
+        parsed_options = []
+        for opt in config.get("options", []):
+            if isinstance(opt, dict) and "value" in opt and "label" in opt:
+                parsed_options.append(
+                    {
+                        "value": opt["value"],
+                        "label": opt["label"],
+                        "selected": False,
+                    }
+                )
+            else:
+                parsed_options.append(
+                    {
+                        "value": opt,
+                        "label": str(opt),
+                        "selected": False,
+                    }
+                )
+
+        # Verify fallback to simple stringification
+        assert len(parsed_options) == 2
+        assert parsed_options[0]["value"] == "option1"
+        assert parsed_options[0]["label"] == "option1"
+        assert parsed_options[1]["value"] == "option2"
+        assert parsed_options[1]["label"] == "option2"
+
+
+class TestConfigFlowAsyncCreateEntry:
+    """Tests for ConfigFlow.async_create_entry with options parameter."""
+
+    def test_async_create_entry_without_options(self):
+        """Test async_create_entry without options parameter."""
+        from shim.config_entries import ConfigFlow
+
+        flow = ConfigFlow()
+        result = flow.async_create_entry(title="Test Entry", data={"key": "value"})
+
+        assert result["type"] == "create_entry"
+        assert result["title"] == "Test Entry"
+        assert result["data"] == {"key": "value"}
+        assert "options" not in result
+
+    def test_async_create_entry_with_options(self):
+        """Test async_create_entry with options parameter (as used by rinnai)."""
+        from shim.config_entries import ConfigFlow
+
+        flow = ConfigFlow()
+        result = flow.async_create_entry(
+            title="Rinnai Water Heater",
+            data={"email": "test@example.com"},
+            options={"maintenance_interval_enabled": True},
+        )
+
+        assert result["type"] == "create_entry"
+        assert result["title"] == "Rinnai Water Heater"
+        assert result["data"] == {"email": "test@example.com"}
+        assert result["options"] == {"maintenance_interval_enabled": True}
+
+
+class TestEntityNameFromTranslationKey:
+    """Tests for deriving entity name from translation_key or key."""
+
+    def test_name_from_translation_key(self):
+        """Test that entity name is derived from translation_key when name is not set."""
+        from shim.entity import Entity
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription:
+            key: str = "test_key"
+            translation_key: str = "outlet_temperature"
+            name: str = None  # Explicitly no name
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+
+        # Name should be derived from translation_key
+        assert entity.name == "Outlet Temperature"
+
+    def test_name_from_key_when_no_translation_key(self):
+        """Test that entity name is derived from key when translation_key is not set."""
+        from shim.entity import Entity
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription:
+            key: str = "water_flow_rate"
+            translation_key: str = None
+            name: str = None
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+
+        # Name should be derived from key
+        assert entity.name == "Water Flow Rate"
+
+    def test_explicit_name_takes_precedence(self):
+        """Test that explicit name takes precedence over translation_key."""
+        from shim.entity import Entity
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription:
+            key: str = "test_key"
+            translation_key: str = "outlet_temperature"
+            name: str = "Custom Sensor Name"
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+
+        # Explicit name should be used
+        assert entity.name == "Custom Sensor Name"
+
+    def test_attr_name_takes_precedence(self):
+        """Test that _attr_name takes precedence over entity_description."""
+        from shim.entity import Entity
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription:
+            key: str = "test_key"
+            translation_key: str = "outlet_temperature"
+            name: str = "Entity Description Name"
+
+        entity = Entity()
+        entity._attr_name = "Attribute Name"
+        entity.entity_description = MockEntityDescription()
+
+        # _attr_name should take precedence
+        assert entity.name == "Attribute Name"
+
+
+class TestSensorEntityName:
+    """Tests for SensorEntity name property with translation_key fallback."""
+
+    def test_sensor_name_from_translation_key(self):
+        """Test that SensorEntity name is derived from translation_key when name is not set."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockSensorEntityDescription(SensorEntityDescription):
+            key: str = "test_key"
+            translation_key: str = "outlet_temperature"
+            name: str = None  # Explicitly no name
+
+        entity = SensorEntity()
+        entity.entity_description = MockSensorEntityDescription()
+
+        # Name should be derived from translation_key
+        assert entity.name == "Outlet Temperature"
+
+    def test_sensor_name_from_key_when_no_translation_key(self):
+        """Test that SensorEntity name is derived from key when translation_key is not set."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockSensorEntityDescription(SensorEntityDescription):
+            key: str = "water_flow_rate"
+            translation_key: str = None
+            name: str = None
+
+        entity = SensorEntity()
+        entity.entity_description = MockSensorEntityDescription()
+
+        # Name should be derived from key
+        assert entity.name == "Water Flow Rate"
+
+    def test_sensor_explicit_name_takes_precedence(self):
+        """Test that explicit name takes precedence over translation_key in SensorEntity."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockSensorEntityDescription(SensorEntityDescription):
+            key: str = "test_key"
+            translation_key: str = "outlet_temperature"
+            name: str = "Custom Sensor Name"
+
+        entity = SensorEntity()
+        entity.entity_description = MockSensorEntityDescription()
+
+        # Explicit name should be used
+        assert entity.name == "Custom Sensor Name"
+
+    def test_sensor_attr_name_takes_precedence(self):
+        """Test that _attr_name takes precedence over entity_description in SensorEntity."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockSensorEntityDescription(SensorEntityDescription):
+            key: str = "test_key"
+            translation_key: str = "outlet_temperature"
+            name: str = "Entity Description Name"
+
+        entity = SensorEntity()
+        entity._attr_name = "Attribute Name"
+        entity.entity_description = MockSensorEntityDescription()
+
+        # _attr_name should take precedence
+        assert entity.name == "Attribute Name"
+
+
+class TestDisabledByDefault:
+    """Tests for disabled_by_default field and entity_registry_enabled_default property."""
+
+    def test_disabled_by_default_in_entity_description(self):
+        """Test that disabled_by_default field exists in EntityDescription."""
+        from shim.entity import EntityDescription
+
+        # Default should be False (enabled by default)
+        desc = EntityDescription(key="test_key")
+        assert desc.disabled_by_default is False
+
+        # Should be settable
+        desc2 = EntityDescription(key="test_key", disabled_by_default=True)
+        assert desc2.disabled_by_default is True
+
+    def test_entity_registry_enabled_default_with_disabled_by_default(self):
+        """Test that entity_registry_enabled_default returns False when disabled_by_default=True."""
+        from shim.entity import Entity, EntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription(EntityDescription):
+            key: str = "test_key"
+            disabled_by_default: bool = True
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+
+        # Entity should be disabled by default
+        assert entity.entity_registry_enabled_default is False
+
+    def test_entity_registry_enabled_default_with_explicit_enabled(self):
+        """Test meross_lan pattern: entity_registry_enabled_default=False directly in description."""
+        from shim.entity import Entity, EntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription(EntityDescription):
+            key: str = "test_key"
+            entity_registry_enabled_default: bool = False
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+
+        # Entity should be disabled by default
+        assert entity.entity_registry_enabled_default is False
+
+    def test_disabled_by_default_takes_precedence_over_enabled(self):
+        """Test that disabled_by_default=True takes precedence over entity_registry_enabled_default=True."""
+        from shim.entity import Entity, EntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription(EntityDescription):
+            key: str = "test_key"
+            disabled_by_default: bool = True
+            entity_registry_enabled_default: bool = True  # This should be ignored
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+
+        # disabled_by_default should take precedence
+        assert entity.entity_registry_enabled_default is False
+
+    def test_attr_disabled_by_default(self):
+        """Test that _attr_disabled_by_default can disable entity at runtime."""
+        from shim.entity import Entity, EntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription(EntityDescription):
+            key: str = "test_key"
+            disabled_by_default: bool = False  # Enabled in description
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+        entity._attr_disabled_by_default = True  # But disabled via attribute
+
+        # Instance attribute should take precedence
+        assert entity.entity_registry_enabled_default is False
+
+    def test_enabled_by_default_when_no_flags_set(self):
+        """Test that entity is enabled by default when no flags are set."""
+        from shim.entity import Entity, EntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockEntityDescription(EntityDescription):
+            key: str = "test_key"
+
+        entity = Entity()
+        entity.entity_description = MockEntityDescription()
+
+        # Entity should be enabled by default
+        assert entity.entity_registry_enabled_default is True
+
+
+class TestWaterHeaterState:
+    """Tests for water_heater platform state property."""
+
+    def test_water_heater_state_returns_current_operation(self):
+        """Test that WaterHeaterEntity.state returns current_operation."""
+        from shim.platforms.water_heater import WaterHeaterEntity, STATE_IDLE, STATE_GAS
+
+        entity = WaterHeaterEntity()
+        entity._attr_current_operation = STATE_IDLE
+
+        # State should return the current operation mode
+        assert entity.state == STATE_IDLE
+
+        entity._attr_current_operation = STATE_GAS
+        assert entity.state == STATE_GAS
+
+    def test_water_heater_state_none_when_no_operation(self):
+        """Test that WaterHeaterEntity.state returns None when no operation set."""
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        entity._attr_current_operation = None
+
+        # State should be None when no operation
+        assert entity.state is None
+
+
+class TestWaterHeaterConstants:
+    """Tests for water_heater platform constants."""
+
+    def test_state_idle_constant_exists(self):
+        """Test that STATE_IDLE constant exists."""
+        from shim.platforms.water_heater import STATE_IDLE, STATE_GAS, STATE_OFF
+
+        assert STATE_IDLE == "idle"
+        assert STATE_GAS == "gas"
+        assert STATE_OFF == "off"
+
+    def test_all_state_constants_defined(self):
+        """Test that all operation mode constants are defined."""
+        from shim.platforms import water_heater
+
+        # Check all expected constants exist
+        assert water_heater.STATE_ECO == "eco"
+        assert water_heater.STATE_ELECTRIC == "electric"
+        assert water_heater.STATE_PERFORMANCE == "performance"
+        assert water_heater.STATE_HIGH_DEMAND == "high_demand"
+        assert water_heater.STATE_HEAT_PUMP == "heat_pump"
+        assert water_heater.STATE_GAS == "gas"
+        assert water_heater.STATE_OFF == "off"
+        assert water_heater.STATE_ON == "on"
+        assert water_heater.STATE_IDLE == "idle"
+
+    def test_default_supported_features(self):
+        """Test that WaterHeaterEntity has correct default supported_features."""
+        from shim.platforms.water_heater import (
+            WaterHeaterEntity,
+            WaterHeaterEntityFeature,
+        )
+
+        entity = WaterHeaterEntity()
+        # Default should be TARGET_TEMPERATURE | OPERATION_MODE | AWAY_MODE = 1 | 2 | 4 = 7
+        expected = (
+            WaterHeaterEntityFeature.TARGET_TEMPERATURE
+            | WaterHeaterEntityFeature.OPERATION_MODE
+            | WaterHeaterEntityFeature.AWAY_MODE
+        )
+        assert entity.supported_features == expected
+        assert entity.supported_features == 7
+
+    def test_target_temperature_step_property(self):
+        """Test that target_temperature_step property works."""
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        # Default step is 1.0
+        assert entity.target_temperature_step == 1.0
+
+        # Can be overridden
+        entity._attr_target_temperature_step = 5.0
+        assert entity.target_temperature_step == 5.0

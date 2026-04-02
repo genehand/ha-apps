@@ -348,12 +348,16 @@ class ImportPatcher:
         entity_platform.async_get_platforms = lambda *args, **kwargs: []
         entity_platform.AddEntitiesCallback = lambda *args, **kwargs: None
 
-        # current_platform should be an object with a .get() method
-        # that returns a platform object with async_register_entity_service
+        # Create a mock platform class with async_register_entity_service
         class _MockPlatform:
             def async_register_entity_service(self, *args, **kwargs):
                 pass
 
+        # async_get_current_platform should return a mock platform
+        entity_platform.async_get_current_platform = lambda: _MockPlatform()
+
+        # current_platform should be an object with a .get() method
+        # that returns a platform object with async_register_entity_service
         class _CurrentPlatform:
             def get(self):
                 return _MockPlatform()
@@ -1104,6 +1108,7 @@ class ImportPatcher:
         homeassistant.components.humidifier = platforms.humidifier
         homeassistant.components.number = platforms.number
         homeassistant.components.lock = platforms.lock
+        homeassistant.components.water_heater = platforms.water_heater
 
         # Create sensor.const stub module for integrations that import from there
         sensor_const = types.ModuleType("homeassistant.components.sensor.const")
@@ -1172,6 +1177,7 @@ class ImportPatcher:
         sys.modules["homeassistant.components.humidifier"] = platforms.humidifier
         sys.modules["homeassistant.components.number"] = platforms.number
         sys.modules["homeassistant.components.lock"] = platforms.lock
+        sys.modules["homeassistant.components.water_heater"] = platforms.water_heater
 
         _LOGGER.debug("Platform modules patched")
 
