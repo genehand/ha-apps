@@ -1121,19 +1121,78 @@ class WebUI:
                 field["type"] = "number"
                 field["step"] = "any"
 
+        # Handle dict-based selectors (e.g., selector({"select": {...}}) or {"select": {...}})
+        if isinstance(validator, dict):
+            # Check if this is a selector dict (has single key like "select", "text", "number", etc.)
+            if len(validator) == 1:
+                selector_type = list(validator.keys())[0]
+                selector_config = validator[selector_type]
+
+                if selector_type == "select":
+                    field["type"] = "select"
+                    options = selector_config.get("options", [])
+                    mode = selector_config.get("mode", "list")  # "list" or "dropdown"
+
+                    # Parse options
+                    parsed_options = []
+                    for opt in options:
+                        if isinstance(opt, dict) and "value" in opt:
+                            # Dict format: {"value": "...", "label": "..."}
+                            parsed_options.append(
+                                {
+                                    "value": opt["value"],
+                                    "label": opt.get("label", str(opt["value"])),
+                                    "selected": opt["value"] == field.get("default"),
+                                }
+                            )
+                        else:
+                            # Simple value format
+                            parsed_options.append(
+                                {
+                                    "value": opt,
+                                    "label": str(opt),
+                                    "selected": opt == field.get("default"),
+                                }
+                            )
+                    field["options"] = parsed_options
+                    field["mode"] = mode
+                    _LOGGER.debug(
+                        f"Dict-based select selector: {len(parsed_options)} options, mode={mode}"
+                    )
+                elif selector_type == "boolean":
+                    field["type"] = "checkbox"
+                elif selector_type == "text":
+                    text_type = selector_config.get("type", "text")
+                    if text_type == "password":
+                        field["type"] = "password"
+                    elif text_type == "email":
+                        field["type"] = "email"
+                    else:
+                        field["type"] = "text"
+                elif selector_type == "number":
+                    field["type"] = "number"
+                    if "min" in selector_config:
+                        field["min"] = selector_config["min"]
+                    if "max" in selector_config:
+                        field["max"] = selector_config["max"]
+                    if "step" in selector_config:
+                        field["step"] = selector_config["step"]
+
         # Detect password fields by name (in addition to Password validator)
-        password_keywords = [
-            "password",
-            "secret",
-            "token",
-            "api_key",
-            "credential",
-            "otp",
-            "key",
-        ]
-        field_name_lower = field["name"].lower()
-        if any(keyword in field_name_lower for keyword in password_keywords):
-            field["type"] = "password"
+        # But don't override checkbox (boolean) types
+        if field.get("type") != "checkbox":
+            password_keywords = [
+                "password",
+                "secret",
+                "token",
+                "api_key",
+                "credential",
+                "otp",
+                "key",
+            ]
+            field_name_lower = field["name"].lower()
+            if any(keyword in field_name_lower for keyword in password_keywords):
+                field["type"] = "password"
 
         # Clean up None values
         field = {k: v for k, v in field.items() if v is not None}
@@ -1194,6 +1253,9 @@ class WebUI:
         # Get field descriptions from data_description.{field_name}
         data_descriptions = step_data.get("data_description", {})
 
+        # Get selector translations for options
+        selector_translations = translations.get("selector", {})
+
         for field in fields:
             field_name = field.get("name", "")
             if not field_name:
@@ -1206,6 +1268,17 @@ class WebUI:
             # Apply description if available in translations
             if field_name in data_descriptions:
                 field["description"] = data_descriptions[field_name]
+
+            # Apply selector option translations for select fields
+            if field.get("type") == "select" and field_name in selector_translations:
+                selector_config = selector_translations[field_name]
+                option_labels = selector_config.get("options", {})
+                if option_labels and field.get("options"):
+                    # Map the option values to their translated labels
+                    for option in field["options"]:
+                        option_value = option.get("value", "")
+                        if option_value in option_labels:
+                            option["label"] = option_labels[option_value]
 
     def _convert_form_value(self, value: str, validator, field_name: str = "") -> Any:
         """Convert a form string value to the appropriate type based on validator."""

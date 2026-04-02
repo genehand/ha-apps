@@ -70,8 +70,21 @@
                 </option>
                 {% endfor %}
             </select>
+            {% elif field.mode == 'dropdown' %}
+            {# Dropdown mode: use select element #}
+            <select
+                id="{{ field.name }}"
+                name="{{ field.name }}"
+                {% if field.required %}required{% endif %}
+            >
+                {% for option in field.options %}
+                <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>
+                    {{ option.label }}
+                </option>
+                {% endfor %}
+            </select>
             {% else %}
-            {# Single-select: use radio buttons for better UX #}
+            {# Single-select list mode: use radio buttons #}
             <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
                 {% for option in field.options %}
                 <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; gap: 8px;">

@@ -670,12 +670,39 @@ class ImportPatcher:
 
             def __init__(self, hass, version, key):
                 self._data = {}
+                self._delay_handle = None
 
             async def async_load(self):
                 return self._data
 
             async def async_save(self, data):
                 self._data = data
+
+            def async_delay_save(self, data_func, delay):
+                """Schedule a save with a delay.
+
+                This cancels any pending save and schedules a new one.
+                Used to batch multiple changes into a single save operation.
+
+                Args:
+                    data_func: A callable that returns the data to save
+                    delay: Delay in seconds before saving
+                """
+                import asyncio
+
+                # Cancel any pending save
+                if self._delay_handle:
+                    self._delay_handle.cancel()
+                    self._delay_handle = None
+
+                # Schedule the save
+                async def _delayed_save():
+                    await asyncio.sleep(delay)
+                    data = data_func()
+                    await self.async_save(data)
+                    self._delay_handle = None
+
+                self._delay_handle = asyncio.create_task(_delayed_save())
 
             def __class_getitem__(cls, item):
                 """Make Store subscriptable for type hints like Store[SomeType]."""

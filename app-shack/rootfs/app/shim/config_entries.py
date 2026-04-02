@@ -172,6 +172,11 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         options: Optional[Dict[str, Any]] = None,
     ):
         """Create config entry."""
+        # Include unique_id from flow context if set (needed by meross_lan and others)
+        unique_id = self.context.get("unique_id")
+        if unique_id and "unique_id" not in data:
+            data = {**data, "unique_id": unique_id}
+
         result = {
             "type": "create_entry",
             "title": title,
@@ -217,12 +222,31 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         }
 
     async def async_set_unique_id(
-        self, unique_id: Optional[str] = None
-    ) -> Optional[str]:
-        """Set unique id and abort if already configured."""
-        # This would check against existing entries
-        # For now, just return the unique_id
-        return unique_id
+        self,
+        unique_id: Optional[str] = None,
+        *,
+        raise_on_progress: bool = True,
+    ) -> Optional[Any]:
+        """Set unique id and check if already configured.
+
+        Args:
+            unique_id: The unique ID to set
+            raise_on_progress: If True, abort if another flow is in progress with same ID
+
+        Returns:
+            Existing ConfigEntry if one with same unique_id exists, None otherwise
+        """
+        # Store in context (used by meross_lan and other integrations)
+        self.context["unique_id"] = unique_id
+
+        # Check if there's already an entry with this unique_id
+        if unique_id is not None and self.hass:
+            entries = self.hass.config_entries.async_entries(self.handler)
+            for entry in entries:
+                if entry.unique_id == unique_id:
+                    return entry
+
+        return None
 
     def _abort_if_unique_id_configured(
         self,

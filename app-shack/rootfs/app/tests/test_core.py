@@ -311,3 +311,304 @@ class TestEntityIdGeneration:
             assert platform_name == platform.value, (
                 f"Platform name should be '{platform.value}', not '{platform_name}'"
             )
+
+
+class TestFlowManager:
+    """Test cases for FlowManager class."""
+
+    @pytest.mark.asyncio
+    async def test_async_progress_returns_flows(self, tmp_path):
+        """Test async_progress returns all in-progress flows."""
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Initially there should be no flows
+        flows = hass.config_entries.flow.async_progress()
+        assert len(flows) == 0
+
+        # Create a flow
+        flow_id = hass.config_entries.async_create_flow(
+            "meross_lan", context={"source": "discovery"}
+        )
+
+        # Now there should be one flow
+        flows = hass.config_entries.flow.async_progress()
+        assert len(flows) == 1
+        assert flows[0]["handler"] == "meross_lan"
+
+    @pytest.mark.asyncio
+    async def test_async_progress_by_handler_filters_by_domain(self, tmp_path):
+        """Test async_progress_by_handler returns flows for specific handler."""
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Create flows for different handlers
+        hass.config_entries.async_create_flow(
+            "meross_lan", context={"source": "discovery"}
+        )
+        hass.config_entries.async_create_flow(
+            "other_domain", context={"source": "user"}
+        )
+
+        # Get only meross_lan flows
+        flows = hass.config_entries.flow.async_progress_by_handler("meross_lan")
+        assert len(flows) == 1
+        assert flows[0]["handler"] == "meross_lan"
+
+    @pytest.mark.asyncio
+    async def test_async_progress_by_handler_with_match_context(self, tmp_path):
+        """Test async_progress_by_handler with context matching."""
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Create flows with different contexts
+        hass.config_entries.async_create_flow(
+            "meross_lan", context={"source": "discovery", "unique_id": "abc123"}
+        )
+        hass.config_entries.async_create_flow("meross_lan", context={"source": "user"})
+
+        # Match by source
+        flows = hass.config_entries.flow.async_progress_by_handler(
+            "meross_lan", match_context={"source": "discovery"}
+        )
+        assert len(flows) == 1
+        assert flows[0]["context"]["unique_id"] == "abc123"
+
+        # Match by non-existent context key
+        flows = hass.config_entries.flow.async_progress_by_handler(
+            "meross_lan", match_context={"source": "nonexistent"}
+        )
+        assert len(flows) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_progress_by_handler_no_match(self, tmp_path):
+        """Test async_progress_by_handler returns empty list for unknown handler."""
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        flows = hass.config_entries.flow.async_progress_by_handler("unknown_domain")
+        assert len(flows) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_abort_removes_flow(self, tmp_path):
+        """Test async_abort removes a flow."""
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Create a flow
+        flow_id = hass.config_entries.async_create_flow(
+            "meross_lan", context={"source": "discovery"}
+        )
+
+        # Verify flow exists
+        flows = hass.config_entries.flow.async_progress_by_handler("meross_lan")
+        assert len(flows) == 1
+
+        # Abort the flow
+        result = hass.config_entries.flow.async_abort(flow_id)
+        assert result["type"] == "abort"
+        assert result["flow_id"] == flow_id
+
+        # Verify flow is gone
+        flows = hass.config_entries.flow.async_progress_by_handler("meross_lan")
+        assert len(flows) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_abort_unknown_flow_id(self, tmp_path):
+        """Test async_abort handles unknown flow_id gracefully."""
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Try to abort non-existent flow
+        result = hass.config_entries.flow.async_abort("nonexistent_flow")
+        assert result["type"] == "abort"
+        assert result["flow_id"] == "nonexistent_flow"
+
+    @pytest.mark.asyncio
+    async def test_async_progress_with_configflow_object(self, tmp_path):
+        """Test async_progress handles ConfigFlow objects (not just dicts).
+
+        This tests the meross_lan use case where ConfigFlow objects are stored
+        in _flow_progress by start_config_flow().
+        """
+        from shim.config_entries import ConfigFlow
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Create a mock ConfigFlow object and store it directly
+        # (simulating what start_config_flow does)
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow = TestConfigFlow()
+        flow.flow_id = "test_flow_123"
+        flow.handler = "meross_lan"
+        flow.context = {"source": "discovery", "unique_id": "abc123"}
+        flow.data = {"host": "192.168.1.100"}
+
+        # Store the flow object directly (not a dict)
+        hass.config_entries._flow_progress["test_flow_123"] = flow
+
+        # Verify async_progress converts it to dict properly
+        flows = hass.config_entries.flow.async_progress()
+        assert len(flows) == 1
+        assert flows[0]["flow_id"] == "test_flow_123"
+        assert flows[0]["handler"] == "meross_lan"
+        assert flows[0]["context"]["unique_id"] == "abc123"
+        assert flows[0]["data"]["host"] == "192.168.1.100"
+
+    @pytest.mark.asyncio
+    async def test_async_progress_by_handler_with_configflow_object(self, tmp_path):
+        """Test async_progress_by_handler works with ConfigFlow objects.
+
+        This tests the meross_lan pattern of calling async_progress_by_handler
+        and accessing progress["flow_id"], progress["context"], etc.
+        """
+        from shim.config_entries import ConfigFlow
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Create mock ConfigFlow objects
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow1 = TestConfigFlow()
+        flow1.flow_id = "flow_1"
+        flow1.handler = "meross_lan"
+        flow1.context = {"source": "discovery", "unique_id": "device1"}
+
+        flow2 = TestConfigFlow()
+        flow2.flow_id = "flow_2"
+        flow2.handler = "other_domain"
+        flow2.context = {"source": "user"}
+
+        # Store flow objects directly
+        hass.config_entries._flow_progress["flow_1"] = flow1
+        hass.config_entries._flow_progress["flow_2"] = flow2
+
+        # Test async_progress_by_handler returns dicts for meross_lan
+        flows = hass.config_entries.flow.async_progress_by_handler("meross_lan")
+        assert len(flows) == 1
+        assert flows[0]["flow_id"] == "flow_1"
+        assert flows[0]["context"]["unique_id"] == "device1"
+
+        # Test match_context works with flow objects
+        flows = hass.config_entries.flow.async_progress_by_handler(
+            "meross_lan", match_context={"unique_id": "device1"}
+        )
+        assert len(flows) == 1
+
+        flows = hass.config_entries.flow.async_progress_by_handler(
+            "meross_lan", match_context={"unique_id": "nonexistent"}
+        )
+        assert len(flows) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_abort_with_configflow_object(self, tmp_path):
+        """Test async_abort works when flow is a ConfigFlow object."""
+        from shim.config_entries import ConfigFlow
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow = TestConfigFlow()
+        flow.flow_id = "flow_to_abort"
+        flow.handler = "meross_lan"
+        flow.context = {}
+
+        # Store flow object
+        hass.config_entries._flow_progress["flow_to_abort"] = flow
+
+        # Verify flow exists
+        assert len(hass.config_entries.flow.async_progress()) == 1
+
+        # Abort the flow
+        result = hass.config_entries.flow.async_abort("flow_to_abort")
+        assert result["type"] == "abort"
+
+        # Verify flow is gone
+        assert len(hass.config_entries.flow.async_progress()) == 0
+
+
+class TestConfigFlow:
+    """Test cases for ConfigFlow class."""
+
+    @pytest.mark.asyncio
+    async def test_async_set_unique_id_basic(self):
+        """Test async_set_unique_id sets the unique_id."""
+        from shim.config_entries import ConfigFlow
+
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow = TestConfigFlow()
+        flow.context = {}
+
+        # When no entry exists, should return None
+        result = await flow.async_set_unique_id("device_123")
+        assert result is None  # No existing entry
+        assert flow.context["unique_id"] == "device_123"
+
+    @pytest.mark.asyncio
+    async def test_async_set_unique_id_with_raise_on_progress(self):
+        """Test async_set_unique_id accepts raise_on_progress parameter."""
+        from shim.config_entries import ConfigFlow
+
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow = TestConfigFlow()
+        flow.context = {}
+
+        # Test with no existing entries - should return None
+        result = await flow.async_set_unique_id("device_456", raise_on_progress=True)
+        assert result is None  # No existing entry
+        assert flow.context["unique_id"] == "device_456"
+
+        # Test with raise_on_progress=False
+        result = await flow.async_set_unique_id("device_789", raise_on_progress=False)
+        assert result is None  # No existing entry
+        assert flow.context["unique_id"] == "device_789"
+
+    @pytest.mark.asyncio
+    async def test_async_set_unique_id_returns_existing_entry(self, tmp_path):
+        """Test async_set_unique_id returns existing entry if one exists."""
+        from shim.config_entries import ConfigFlow
+        from shim.core import HomeAssistant, ConfigEntry
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        # Create an existing config entry
+        existing_entry = ConfigEntry(
+            entry_id="existing_123",
+            version=1,
+            domain="test_domain",
+            title="Existing Device",
+            data={"unique_id": "device_exists"},  # unique_id can be in data
+        )
+        await hass.config_entries.async_add(existing_entry)
+
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow = TestConfigFlow()
+        flow.hass = hass
+        flow.handler = "test_domain"
+        flow.context = {}
+
+        # Test with existing unique_id - should return the existing entry
+        result = await flow.async_set_unique_id("device_exists")
+        assert result is existing_entry
+        assert flow.context["unique_id"] == "device_exists"
+
+    @pytest.mark.asyncio
+    async def test_async_set_unique_id_none(self):
+        """Test async_set_unique_id with None value."""
+        from shim.config_entries import ConfigFlow
+
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow = TestConfigFlow()
+        flow.context = {"unique_id": "previous_id"}
+
+        result = await flow.async_set_unique_id(None)
+        assert result is None
+        # When unique_id is None, context unique_id should be set to None
+        assert flow.context["unique_id"] is None

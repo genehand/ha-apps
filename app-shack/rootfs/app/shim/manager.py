@@ -588,15 +588,28 @@ class ShimManager:
         if not info:
             return None
 
+        # Get unique_id from data if present (config flows often set this)
+        unique_id = data.get("unique_id")
+
         # Domain in IntegrationInfo is already the actual domain from manifest
+        # Use timestamp with underscore separator to avoid CSS selector issues
+        # (dots and colons in IDs break querySelector)
+        import time
+
+        entry_id = f"{domain}_{int(time.time() * 1000)}"
+
         entry = ConfigEntry(
-            entry_id=f"{domain}_{asyncio.get_event_loop().time()}",
+            entry_id=entry_id,
             version=1,
             domain=domain,
             title=data.get("name", info.name),
             data=data,
             options=options or {},
         )
+
+        # Set unique_id if available (meross_lan and other integrations depend on this)
+        if unique_id:
+            entry.unique_id = unique_id
 
         await self._hass.config_entries.async_add(entry)
         return entry

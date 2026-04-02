@@ -714,6 +714,87 @@ class FlowManager:
 
         return result
 
+    def _flow_to_progress(self, flow_or_dict: Any) -> dict:
+        """Convert a flow object or dict to a progress dict.
+
+        This handles both:
+        - Dict entries created by async_create_flow()
+        - ConfigFlow objects stored by start_config_flow()
+        """
+        if isinstance(flow_or_dict, dict):
+            return flow_or_dict
+
+        # It's a ConfigFlow object - extract the relevant attributes
+        flow = flow_or_dict
+        return {
+            "flow_id": getattr(flow, "flow_id", None),
+            "handler": getattr(flow, "handler", None),
+            "context": getattr(flow, "context", {}),
+            "data": getattr(flow, "data", {}),
+        }
+
+    def async_progress(self) -> List[dict]:
+        """Return all in-progress config flows."""
+        return [
+            self._flow_to_progress(flow_data)
+            for flow_data in self._config_entries._flow_progress.values()
+        ]
+
+    def async_progress_by_handler(
+        self,
+        handler: str,
+        *,
+        match_context: Optional[dict] = None,
+        include_uninitialized: bool = False,
+    ) -> List[dict]:
+        """Return in-progress config flows for a specific handler (domain).
+
+        Args:
+            handler: The domain/handler to filter by
+            match_context: Optional context keys to match
+            include_uninitialized: Whether to include uninitialized flows
+
+        Returns:
+            List of flow progress dicts matching the criteria
+        """
+        result = []
+        for flow_id, flow_data in self._config_entries._flow_progress.items():
+            # Convert to progress dict if needed
+            progress = self._flow_to_progress(flow_data)
+
+            # Check if flow matches the handler
+            if progress.get("handler") != handler:
+                continue
+
+            flow_context = progress.get("context", {})
+
+            # If match_context is provided, check that all keys match
+            if match_context:
+                if not all(
+                    flow_context.get(key) == value
+                    for key, value in match_context.items()
+                ):
+                    continue
+
+            result.append(progress)
+
+        return result
+
+    def async_abort(self, flow_id: str) -> dict:
+        """Abort a config flow.
+
+        Args:
+            flow_id: The flow ID to abort
+
+        Returns:
+            Abort result dict
+        """
+        if flow_id in self._config_entries._flow_progress:
+            del self._config_entries._flow_progress[flow_id]
+            _LOGGER.debug(f"Aborted config flow {flow_id}")
+
+        return {"type": "abort", "flow_id": flow_id}
+
 
 class HomeAssistant:
     """Mock Home Assistant core object."""
@@ -794,9 +875,30 @@ class HomeAssistant:
             # Synchronous function - run in executor
             return self._loop.run_in_executor(None, functools.partial(target, *args))
 
-    def async_create_task(self, target: asyncio.coroutine) -> asyncio.Task:
-        """Create a task."""
-        return asyncio.create_task(target)
+    def async_create_task(
+        self,
+        target: asyncio.coroutine,
+        name: Optional[str] = None,
+        eager_start: bool = False,
+    ) -> asyncio.Task:
+        """Create a task.
+
+        Args:
+            target: The coroutine to run
+            name: Optional task name (for debugging)
+            eager_start: If True, eagerly start the task (HA 2024.3+)
+
+        Returns:
+            The created asyncio.Task
+        """
+        task = asyncio.create_task(target)
+        if name:
+            # Set task name if provided (for debugging)
+            try:
+                task.set_name(name)
+            except AttributeError:
+                pass
+        return task
 
     def async_add_job(self, target: Callable, *args) -> asyncio.Future:
         """Add a job."""
