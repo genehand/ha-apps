@@ -1236,6 +1236,108 @@ class TestSensorEntityName:
         assert entity.name == "Attribute Name"
 
 
+class TestSensorNativeUnitOfMeasurement:
+    """Tests for SensorEntity.native_unit_of_measurement property."""
+
+    def test_native_unit_from_entity_description(self):
+        """Test that native_unit_of_measurement comes from entity_description."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockSensorEntityDescription(SensorEntityDescription):
+            key: str = "test_key"
+            native_unit_of_measurement: str = "°F"
+
+        entity = SensorEntity()
+        entity._attr_native_unit_of_measurement = None
+        entity.entity_description = MockSensorEntityDescription()
+
+        # Should get unit from entity_description
+        assert entity.native_unit_of_measurement == "°F"
+
+    def test_native_unit_attr_takes_precedence(self):
+        """Test that _attr_native_unit_of_measurement takes precedence."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockSensorEntityDescription(SensorEntityDescription):
+            key: str = "test_key"
+            native_unit_of_measurement: str = "°F"
+
+        entity = SensorEntity()
+        entity._attr_native_unit_of_measurement = "°C"
+        entity.entity_description = MockSensorEntityDescription()
+
+        # _attr should take precedence over entity_description
+        assert entity.native_unit_of_measurement == "°C"
+
+    def test_native_unit_in_mqtt_discovery(self):
+        """Test that native_unit_of_measurement is included in MQTT discovery config."""
+        from unittest.mock import MagicMock
+        import json
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockSensorEntityDescription(SensorEntityDescription):
+            key: str = "test_key"
+            native_unit_of_measurement: str = "°F"
+            state_class: str = "measurement"
+
+        entity = SensorEntity()
+        entity.entity_id = "sensor.test_outlet_temp"
+        entity._attr_unique_id = "test_outlet_temp"
+        entity.entity_description = MockSensorEntityDescription()
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        import asyncio
+
+        asyncio.run(entity._publish_mqtt_discovery())
+
+        # Find discovery config call
+        discovery_call = None
+        for call in mock_mqtt.publish.call_args_list:
+            topic = call[0][0]
+            if topic.endswith("/config"):
+                discovery_call = call
+                break
+
+        assert discovery_call is not None
+        payload = json.loads(discovery_call[0][1])
+
+        # Verify unit_of_measurement is in config
+        assert "unit_of_measurement" in payload
+        assert payload["unit_of_measurement"] == "°F"
+        assert payload["state_class"] == "measurement"
+
+    def test_native_unit_fahrenheit_from_rinnai_pattern(self):
+        """Test Rinnai-style sensor with Fahrenheit unit."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class RinnaiOutletTempDescription(SensorEntityDescription):
+            key: str = "outlet_temperature"
+            name: str = "Outlet Temperature"
+            native_unit_of_measurement: str = "°F"
+            state_class: str = "measurement"
+
+        entity = SensorEntity()
+        entity._attr_native_unit_of_measurement = None
+        entity.entity_description = RinnaiOutletTempDescription()
+
+        assert entity.native_unit_of_measurement == "°F"
+        assert entity.state_class == "measurement"
+
+
 class TestDisabledByDefault:
     """Tests for disabled_by_default field and entity_registry_enabled_default property."""
 

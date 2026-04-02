@@ -195,7 +195,18 @@ class SensorEntity(Entity):
     @property
     def native_unit_of_measurement(self) -> Optional[str]:
         """Return the unit of measurement of the sensor."""
-        return self._attr_native_unit_of_measurement
+        # Check for directly assigned attribute first
+        if "native_unit_of_measurement" in self.__dict__:
+            return self.__dict__["native_unit_of_measurement"]
+        # Check _attr_native_unit_of_measurement (takes precedence over entity_description)
+        if self._attr_native_unit_of_measurement is not None:
+            return self._attr_native_unit_of_measurement
+        # Check entity_description for native_unit_of_measurement
+        if self.entity_description is not None:
+            unit = getattr(self.entity_description, "native_unit_of_measurement", None)
+            if unit:
+                return unit
+        return None
 
     @property
     def state_class(self) -> Optional[str]:
