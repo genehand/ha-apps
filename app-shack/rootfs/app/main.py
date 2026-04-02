@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import signal
-import subprocess
 import sys
 from pathlib import Path
 
@@ -22,9 +21,6 @@ DEV_CONFIG_PATH = "shack-config.yaml"
 # Determine if running as addon or locally
 IS_ADDON = Path("/data").exists() and Path("/data").is_dir()
 CONFIG_DIR = Path("/data") if IS_ADDON else Path("./data")
-
-# Virtual environment path (persistent storage in addon mode)
-DATA_VENV = Path("/data/.venv")
 
 
 def setup_logging(
@@ -73,55 +69,8 @@ def setup_logging(
     return shack_logger
 
 
-def setup_venv():
-    """Sync base packages to /data/.venv.
-
-    On startup: ensures all base packages from pyproject.toml are installed.
-    Uses uv pip install to preserve integration-installed packages.
-    """
-    if not IS_ADDON:
-        # Local dev mode: use existing venv
-        return
-
-    if not DATA_VENV.exists():
-        # Venv should have been created by run script
-        print(f"Warning: {DATA_VENV} does not exist", flush=True)
-        return
-
-    # Sync base packages using uv pip install (not sync) to preserve
-    # integration-installed packages
-    print("Syncing base packages...", flush=True)
-    try:
-        result = subprocess.run(
-            [
-                "uv",
-                "pip",
-                "install",
-                "-r",
-                "/app/pyproject.toml",
-                "--python",
-                str(DATA_VENV / "bin" / "python"),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            # Check if anything was actually installed
-            if "Installed" in result.stderr or "Upgraded" in result.stderr:
-                print("Base packages updated.", flush=True)
-            else:
-                print("Base packages are up to date.", flush=True)
-        else:
-            print(f"Base package sync warning: {result.stderr}", flush=True)
-    except Exception as e:
-        print(f"Base package sync error: {e}", flush=True)
-
-
 async def main():
     """Main entry point."""
-    # Set up persistent venv before anything else (in addon mode)
-    setup_venv()
-
     # Load configuration
     config = Config.load(CONFIG_FILE_PATH, DEV_CONFIG_PATH)
 

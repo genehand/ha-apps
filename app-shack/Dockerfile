@@ -21,6 +21,13 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
+# Copy dependency files first to populate cache
+COPY rootfs/app/pyproject.toml rootfs/app/uv.lock /app/
+
+# Populate uv cache with base dependencies (no venv created, just cache)
+RUN uv sync --frozen --no-install-project
+
+# Copy the rest of the application
 COPY rootfs /
 
 LABEL \

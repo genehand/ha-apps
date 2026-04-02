@@ -13,8 +13,27 @@ if [ ! -d "/data/.venv" ]; then
     uv venv /data/.venv
 fi
 
-# Don't use uv sync to maintain packages installed for integrations
-bashio::log.info "Installing base packages..."
-uv pip install -r /app/pyproject.toml --python /data/.venv/bin/python
+# Initialize uv cache in persistent storage on first run
+if [ ! -d "/data/.cache/uv" ]; then
+    bashio::log.info "Initializing uv cache in persistent storage..."
+    mkdir -p /data/.cache
+    cp -r ~/.cache/uv /data/.cache/
+fi
 
-exec /data/.venv/bin/python /app/main.py
+# Use persistent cache and set external venv location
+export UV_CACHE_DIR=/data/.cache/uv
+export UV_PROJECT_ENVIRONMENT=/data/.venv
+
+# Sync base packages using inexact mode to preserve integration packages
+# --frozen: use lockfile as-is, don't update
+# --inexact: keep packages not in lockfile (integration deps)
+# Only sync if needed to minimize output (but more than --quiet)
+cd /app || exit 1
+if ! uv sync --frozen --no-dev --inexact --check 2>/dev/null; then
+    bashio::log.info "Syncing base packages..."
+    uv sync --frozen --no-dev --inexact
+else
+    bashio::log.info "Environment is up to date"
+fi
+
+exec uv run python main.py

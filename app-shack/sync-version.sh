@@ -16,4 +16,4 @@ sed -i.bak "s/^version = .*/version = \"$VERSION\"/" "$PYPROJECT_FILE" && rm -f 
 
 echo "Synced version $VERSION to pyproject.toml"
 
-uv --directory rootfs/app sync
+uv --directory rootfs/app sync --inexact
