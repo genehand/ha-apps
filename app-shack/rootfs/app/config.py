@@ -1,11 +1,51 @@
 """Configuration loader with JSON/YAML dual-mode support."""
 
 import json
+import logging
 import os
+import socket
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 import yaml
+
+logger = logging.getLogger("shack.config")
+
+
+def _get_supervisor_token() -> Optional[str]:
+    """Get the Supervisor API token from environment."""
+    return os.environ.get("SUPERVISOR_TOKEN")
+
+
+def _query_supervisor_api(path: str) -> Optional[dict]:
+    """Query the Home Assistant Supervisor API.
+
+    Returns parsed JSON response or None on failure.
+    """
+    token = _get_supervisor_token()
+    if not token:
+        logger.debug("SUPERVISOR_TOKEN not set, not running as add-on")
+        return None
+
+    try:
+        import urllib.request
+        import urllib.error
+
+        url = f"http://supervisor{path}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    except Exception as e:
+        logger.debug("Supervisor API query failed for %s: %s", path, e)
+        return None
 
 
 @dataclass
@@ -43,18 +83,40 @@ class Config:
 
     @classmethod
     def _load_mqtt_services(cls) -> Optional[dict]:
-        """Load MQTT credentials from HA services if available.
+        """Load MQTT credentials from HA Supervisor API or services file.
 
         Returns dict with host, port, username, password or None if not available.
         """
+        # First try the Supervisor API (more reliable)
+        response = _query_supervisor_api("/services/mqtt")
+        if response and "data" in response:
+            data = response["data"]
+            if data and data.get("username") and data.get("password"):
+                logger.info("Using MQTT credentials from Supervisor API")
+                return {
+                    "host": data.get("host", "core-mosquitto"),
+                    "port": data.get("port", 1883),
+                    "username": data.get("username"),
+                    "password": data.get("password"),
+                }
+
+        # Fallback to local services file
         services_path = "/data/services/mqtt/config.json"
         if not os.path.exists(services_path):
+            logger.debug("MQTT services file not found at %s", services_path)
             return None
 
         try:
             with open(services_path, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
+                data = json.load(f)
+            if data and data.get("username") and data.get("password"):
+                logger.info("Using MQTT credentials from services file")
+                return data
+            else:
+                logger.warning("MQTT services file exists but missing credentials")
+                return None
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning("Failed to read MQTT services file: %s", e)
             return None
 
     @classmethod
@@ -82,6 +144,12 @@ class Config:
             mqtt_port = data.get("mqtt_port", 1883)
             mqtt_username = data.get("mqtt_username") or None
             mqtt_password = data.get("mqtt_password") or None
+
+        if not mqtt_username or not mqtt_password:
+            logger.warning(
+                "MQTT credentials not configured - connection may fail if "
+                "broker requires authentication"
+            )
 
         return cls(
             mqtt_host=mqtt_host,
