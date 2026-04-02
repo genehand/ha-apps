@@ -256,7 +256,7 @@ class TestConfig:
         assert config.integration_log_levels == {}
 
     def test_config_from_dict_with_integration_log_levels(self):
-        """Test loading config with per-integration log levels."""
+        """Test loading config with per-integration log levels (dict format)."""
         from config import Config
 
         data = {
@@ -265,6 +265,28 @@ class TestConfig:
                 "custom_components.dreo.pydreo.pydreobasedevice": "WARNING",
                 "custom_components.nws_alerts": "ERROR",
             },
+        }
+        config = Config.from_dict(data)
+
+        assert config.log_level == "INFO"
+        assert config.integration_log_levels == {
+            "custom_components.dreo.pydreo.pydreobasedevice": "WARNING",
+            "custom_components.nws_alerts": "ERROR",
+        }
+
+    def test_config_from_dict_with_integration_log_levels_list_format(self):
+        """Test loading config with per-integration log levels (list format)."""
+        from config import Config
+
+        data = {
+            "log_level": "INFO",
+            "integration_log_levels": [
+                {
+                    "name": "custom_components.dreo.pydreo.pydreobasedevice",
+                    "level": "WARNING",
+                },
+                {"name": "custom_components.nws_alerts", "level": "ERROR"},
+            ],
         }
         config = Config.from_dict(data)
 

@@ -132,11 +132,21 @@ class IntegrationManager:
         self._persistent_packages_dir = (
             self._venv_dir / "lib" / python_version / "site-packages"
         )
+        # Always add the persistent packages path to sys.path
+        # (even if it doesn't exist yet - it may be created later when requirements are installed)
+        persistent_path_str = str(self._persistent_packages_dir)
+        if persistent_path_str not in sys.path:
+            sys.path.insert(0, persistent_path_str)
+            importlib.invalidate_caches()
+            _LOGGER.debug(
+                f"Added venv packages dir to sys.path: {self._persistent_packages_dir}"
+            )
         if self._persistent_packages_dir.exists():
-            if str(self._persistent_packages_dir) not in sys.path:
-                sys.path.insert(0, str(self._persistent_packages_dir))
-                importlib.invalidate_caches()
-            _LOGGER.debug(f"Using venv packages dir: {self._persistent_packages_dir}")
+            _LOGGER.info(f"Using venv packages dir: {self._persistent_packages_dir}")
+        else:
+            _LOGGER.info(
+                f"Venv packages dir will be created at: {self._persistent_packages_dir}"
+            )
 
         # Callback for sending notifications to HA
         self._notification_callback = notification_callback

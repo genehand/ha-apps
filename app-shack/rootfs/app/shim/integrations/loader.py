@@ -67,6 +67,7 @@ class IntegrationLoader:
 
             # Ensure persistent packages are in sys.path (for container mode)
             # This needs to happen before importing the integration
+            persistent_path = None
             if (
                 hasattr(self._integration_manager, "_persistent_packages_dir")
                 and self._integration_manager._persistent_packages_dir
@@ -74,10 +75,12 @@ class IntegrationLoader:
                 persistent_path = str(
                     self._integration_manager._persistent_packages_dir
                 )
-                if persistent_path not in sys.path:
-                    sys.path.insert(0, persistent_path)
-                    importlib.invalidate_caches()
-                    _LOGGER.debug(f"Added persistent packages path: {persistent_path}")
+
+            if persistent_path:
+                # Cache invalidation is needed to ensure newly installed packages
+                # (installed after manager init) are discoverable when loading
+                importlib.invalidate_caches()
+                _LOGGER.debug(f"Invalidated import cache for {domain}")
 
             # Check for __init__.py
             init_file = custom_components_path / "__init__.py"
@@ -110,6 +113,23 @@ class IntegrationLoader:
 
         except Exception as e:
             _LOGGER.error(f"Failed to load integration {domain}: {e}")
+            # Log additional diagnostic information
+            _LOGGER.debug(f"sys.path at time of error: {sys.path}")
+            if persistent_path:
+                _LOGGER.debug(f"Expected persistent packages path: {persistent_path}")
+                if Path(persistent_path).exists():
+                    # List some packages to verify they exist
+                    try:
+                        packages = list(Path(persistent_path).iterdir())[:10]
+                        _LOGGER.debug(
+                            f"Packages in persistent path: {[p.name for p in packages]}"
+                        )
+                    except Exception as list_e:
+                        _LOGGER.debug(f"Could not list persistent packages: {list_e}")
+                else:
+                    _LOGGER.warning(
+                        f"Persistent packages path does not exist: {persistent_path}"
+                    )
             return False
         finally:
             set_current_integration(None)

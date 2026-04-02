@@ -44,13 +44,21 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
         """Create Config from dictionary."""
+        integration_log_levels = data.get("integration_log_levels", {})
+        # Convert list format [{name: str, level: str}, ...] to dict format
+        if isinstance(integration_log_levels, list):
+            integration_log_levels = {
+                item["name"]: item["level"]
+                for item in integration_log_levels
+                if "name" in item
+            }
         return cls(
             mqtt_host=data.get("mqtt_host", "core-mosquitto"),
             mqtt_port=data.get("mqtt_port", 1883),
             mqtt_username=data.get("mqtt_username") or None,
             mqtt_password=data.get("mqtt_password") or None,
             log_level=data.get("log_level", "INFO"),
-            integration_log_levels=data.get("integration_log_levels", {}),
+            integration_log_levels=integration_log_levels,
         )
 
     def _save_dev_config(self, path: str):
