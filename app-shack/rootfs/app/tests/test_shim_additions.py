@@ -1414,3 +1414,191 @@ class TestWaterHeaterConstants:
         # Can be overridden
         entity._attr_target_temperature_step = 5.0
         assert entity.target_temperature_step == 5.0
+
+
+class TestWaterHeaterAttributeFiltering:
+    """Tests for water_heater filtering of inlet/outlet temperatures from attributes."""
+
+    def test_inlet_outlet_temperatures_filtered_from_mqtt_attributes(self):
+        """Test that inlet/outlet temperatures are not published to MQTT attributes.
+
+        The Rinnai integration sets outlet_temperature and inlet_temperature in
+        extra_state_attributes, but we have separate sensors for these and they
+        may be in Celsius (causing confusion with the water heater's Fahrenheit).
+        """
+        from unittest.mock import MagicMock
+        import json
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        entity.entity_id = "water_heater.rinnai_test"
+        entity._attr_unique_id = "rinnai_test_wh"
+
+        # Set extra_state_attributes like Rinnai does (with inlet/outlet temps)
+        entity._attr_extra_state_attributes = {
+            "outlet_temperature": 22.8,
+            "inlet_temperature": 23.3,
+            "some_other_attr": "value",
+        }
+
+        # Create mock hass with MQTT client
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        # Call the overridden _publish_mqtt_attributes
+        entity._publish_mqtt_attributes()
+
+        # Verify MQTT publish was called
+        assert mock_mqtt.publish.called, "MQTT publish should have been called"
+
+        # Get the published payload
+        call_args = mock_mqtt.publish.call_args
+        payload = json.loads(call_args[0][1])
+
+        # inlet/outlet should be filtered out
+        assert "outlet_temperature" not in payload, (
+            "outlet_temperature should be filtered out"
+        )
+        assert "inlet_temperature" not in payload, (
+            "inlet_temperature should be filtered out"
+        )
+
+        # Other attributes should still be present
+        assert payload.get("some_other_attr") == "value"
+
+    def test_all_temps_filtered_when_only_inlet_outlet_present(self):
+        """Test that empty attributes don't cause publish when only inlet/outlet were present."""
+        from unittest.mock import MagicMock
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        entity.entity_id = "water_heater.rinnai_test"
+
+        # Only inlet/outlet temps - no other attributes
+        entity._attr_extra_state_attributes = {
+            "outlet_temperature": 22.8,
+            "inlet_temperature": 23.3,
+        }
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        entity.hass = mock_hass
+
+        # Call _publish_mqtt_attributes
+        entity._publish_mqtt_attributes()
+
+        # Should NOT publish since all attributes were filtered out
+        assert not mock_mqtt.publish.called, (
+            "MQTT publish should not be called when all attrs filtered"
+        )
+
+
+class TestWaterHeaterModesDiscovery:
+    """Tests for water_heater MQTT discovery modes list."""
+
+    def test_modes_start_with_operation_list(self):
+        """Test that MQTT discovery modes start with operation_list."""
+        from unittest.mock import MagicMock
+        import json
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        entity.entity_id = "water_heater.test"
+        entity._attr_unique_id = "test_wh"
+        entity._attr_operation_list = ["off", "on"]
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.async_add_job = MagicMock()
+        entity.hass = mock_hass
+
+        import asyncio
+
+        asyncio.run(entity._publish_mqtt_discovery())
+
+        discovery_call = None
+        for call in mock_mqtt.publish.call_args_list:
+            topic = call[0][0]
+            if topic.endswith("/config"):
+                discovery_call = call
+                break
+
+        assert discovery_call is not None
+        payload = json.loads(discovery_call[0][1])
+        modes = payload["modes"]
+
+        # Initial modes should match operation_list
+        assert "off" in modes
+        assert "on" in modes
+        assert len(modes) == 2  # Only operation_list states initially
+
+    def test_modes_dynamically_add_new_states(self):
+        """Test that new states are dynamically added to modes list."""
+        from unittest.mock import MagicMock
+        import json
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        entity.entity_id = "water_heater.test"
+        entity._attr_unique_id = "test_wh"
+        entity._attr_operation_list = ["off", "on"]
+        entity._attr_current_operation = "idle"  # Not in operation_list
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.async_add_job = MagicMock()
+        entity.hass = mock_hass
+
+        # First discovery - should have only operation_list
+        import asyncio
+
+        asyncio.run(entity._publish_mqtt_discovery())
+
+        discovery_calls = [
+            call
+            for call in mock_mqtt.publish.call_args_list
+            if call[0][0].endswith("/config")
+        ]
+        initial_modes = json.loads(discovery_calls[0][0][1])["modes"]
+        assert "idle" not in initial_modes
+
+        # Now simulate state update with new state
+        entity._mqtt_publish()
+
+        # Should trigger republish of discovery with new state
+        assert mock_hass.async_add_job.called, (
+            "Should republish discovery for new state"
+        )
+
+        # Verify new discovery includes the state
+        republish_call = mock_hass.async_add_job.call_args[0][0]
+        import asyncio
+
+        asyncio.run(republish_call())
+
+        # Check that modes now includes idle
+        final_discovery = None
+        for call in mock_mqtt.publish.call_args_list:
+            topic = call[0][0]
+            if topic.endswith("/config"):
+                final_discovery = call
+
+        assert final_discovery is not None
+        final_payload = json.loads(final_discovery[0][1])
+        final_modes = final_payload["modes"]
+        assert "idle" in final_modes, "idle should be added to modes after seeing it"
+        assert "off" in final_modes
+        assert "on" in final_modes

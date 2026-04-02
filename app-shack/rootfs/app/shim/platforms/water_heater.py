@@ -21,6 +21,17 @@ _LOGGER = get_logger(__name__)
 
 DOMAIN = "water_heater"
 
+# State constants for operation modes
+STATE_ECO = "eco"
+STATE_ELECTRIC = "electric"
+STATE_PERFORMANCE = "performance"
+STATE_HIGH_DEMAND = "high_demand"
+STATE_HEAT_PUMP = "heat_pump"
+STATE_GAS = "gas"
+STATE_OFF = "off"
+STATE_ON = "on"
+STATE_IDLE = "idle"
+
 # Attribute constants
 ATTR_TEMPERATURE = "temperature"
 ATTR_TARGET_TEMP_LOW = "target_temp_low"
@@ -49,7 +60,7 @@ class WaterHeaterEntity(Entity):
     _attr_max_temp: float = 100.0
     _attr_min_temp: float = 0.0
     _attr_mode: Optional[str] = None
-    _attr_name: str = "Water Heater"
+    _attr_name: Optional[str] = None
     _attr_operation_list: List[str] = []
     _attr_supported_features: int = (
         WaterHeaterEntityFeature.TARGET_TEMPERATURE
@@ -169,9 +180,14 @@ class WaterHeaterEntity(Entity):
         if self.max_temp:
             config["max_temp"] = self.max_temp
 
-        # Use 'modes' for MQTT water heater - only include user-selectable modes
+        # Use 'modes' for MQTT water heater - use seen states if available,
+        # otherwise start with operation_list. Additional states are dynamically
+        # added as they're reported via _mqtt_publish.
         if self.operation_list:
-            config["modes"] = self.operation_list
+            if hasattr(self, "_mqtt_seen_states"):
+                config["modes"] = list(self._mqtt_seen_states)
+            else:
+                config["modes"] = list(self.operation_list)
 
         # Add command topics for HA to enable features (required for supported_features)
         config["mode_command_topic"] = f"{base_topic}/mode/set"
@@ -245,6 +261,66 @@ class WaterHeaterEntity(Entity):
             attr_topic = f"{base_topic}/attributes"
             mqtt.publish(attr_topic, json.dumps(attributes), qos=0, retain=True)
 
+        # Track new states and republish discovery if needed
+        # This handles entities that report states not in their operation_list
+        current_state = self.state
+        if current_state is not None:
+            # Track seen states
+            if not hasattr(self, "_mqtt_seen_states"):
+                self._mqtt_seen_states = (
+                    set(self.operation_list) if self.operation_list else set()
+                )
+
+            if current_state not in self._mqtt_seen_states:
+                # New state discovered - add it and republish discovery
+                self._mqtt_seen_states.add(current_state)
+                _LOGGER.debug(
+                    f"New water heater state discovered: {current_state}, republishing discovery"
+                )
+                self.hass.async_add_job(self._publish_mqtt_discovery)
+
+    def _publish_mqtt_attributes(self) -> None:
+        """Publish extra_state_attributes to MQTT, filtering out inlet/outlet temps.
+
+        The Rinnai integration sets outlet_temperature and inlet_temperature in
+        extra_state_attributes, but we have separate sensors for these. We filter
+        them out here to avoid duplication and Celsius/Fahrenheit confusion.
+        """
+        if not self.extra_state_attributes:
+            return
+
+        # Filter out inlet/outlet temperatures - these are handled by separate sensors
+        filtered_attributes = {
+            k: v
+            for k, v in self.extra_state_attributes.items()
+            if k not in ("outlet_temperature", "inlet_temperature")
+        }
+
+        if not filtered_attributes:
+            return
+
+        if not hasattr(self.hass, "_mqtt_client"):
+            return
+
+        mqtt = self.hass._mqtt_client
+        if not mqtt.is_connected():
+            return
+
+        base_topic = self._get_mqtt_base_topic()
+        if not base_topic:
+            return
+
+        import json
+
+        attr_topic = f"{base_topic}/attributes"
+        mqtt.publish(attr_topic, json.dumps(filtered_attributes), qos=0, retain=True)
+
+        # Republish discovery config to ensure json_attributes_topic is registered
+        attr_key = "_mqtt_attrs_registered"
+        if not getattr(self, attr_key, False):
+            setattr(self, attr_key, True)
+            self.hass.async_add_job(self._publish_mqtt_discovery)
+
     async def _cleanup_mqtt(self) -> None:
         """Clean up MQTT topics when entity is removed.
 
@@ -305,18 +381,7 @@ class WaterHeaterEntityDescription(
     operation_list: List[str] = field(default_factory=list)
 
 
-# Constants for operation modes
-STATE_ECO = "eco"
-STATE_ELECTRIC = "electric"
-STATE_PERFORMANCE = "performance"
-STATE_HIGH_DEMAND = "high_demand"
-STATE_HEAT_PUMP = "heat_pump"
-STATE_GAS = "gas"
-STATE_OFF = "off"
-STATE_ON = "on"
-STATE_IDLE = "idle"
-
-# Default operation list
+# Default operation list includes all common states
 DEFAULT_OPERATION_LIST = [
     STATE_ECO,
     STATE_ELECTRIC,
