@@ -34,12 +34,12 @@
                         </div>
                     </div>
                     <div style="display: flex; gap: 0.5rem;">
-                        <form action="/integrations/{{ integration.domain }}" method="get" style="display: inline;">
+                        <form action="integrations/{{ integration.domain }}" method="get" style="display: inline;">
                             <button type="submit" class="secondary">Manage</button>
                         </form>
                         {% if integration.enabled %}
                         <button type="button"
-                                hx-post="/integrations/{{ integration.domain }}/disable"
+                                hx-post="integrations/{{ integration.domain }}/disable"
                                 hx-target="body"
                                 hx-swap="outerHTML"
                                 class="contrast">
@@ -47,7 +47,7 @@
                         </button>
                         {% else %}
                         <button type="button"
-                                hx-post="/integrations/{{ integration.domain }}/enable"
+                                hx-post="integrations/{{ integration.domain }}/enable"
                                 hx-target="body"
                                 hx-swap="outerHTML">
                             Enable
@@ -55,7 +55,7 @@
                         {% endif %}
                         {% if integration.update_available %}
                         <button type="button"
-                                hx-post="/integrations/{{ integration.domain }}/update"
+                                hx-post="integrations/{{ integration.domain }}/update"
                                 hx-target="body"
                                 hx-swap="outerHTML">
                             Update
@@ -101,7 +101,7 @@
                         <span class="pico-color-grey-500" style="font-weight: 600;" title="{{ item.unsupported_reason }}">Unsupported</span>
                         {% else %}
                         <button type="button"
-                                hx-post="/integrations/{{ item.full_name }}/install"
+                                hx-post="integrations/{{ item.full_name }}/install"
                                 hx-target="this"
                                 hx-swap="outerHTML"
                                 hx-indicator="this"
@@ -132,7 +132,7 @@
 
         <article class="pico-border-primary-500" style="margin-bottom: 20px;">
             <h3 class="pico-color-primary" style="margin-top: 0;">Add Repository</h3>
-            <form hx-post="/custom-repos"
+            <form hx-post="custom-repos"
                   hx-target="#custom-repos-list"
                   hx-swap="innerHTML">
                 <input type="url"
@@ -169,7 +169,7 @@
                             <span class="pico-color-muted" style="font-size: 12px;">Remove integration first</span>
                             {% else %}
                             <button type="button" class="secondary"
-                                    hx-delete="/custom-repos/{{ repo.domain }}"
+                                    hx-delete="custom-repos/{{ repo.domain }}"
                                     hx-target="#custom-repos-list"
                                     hx-swap="innerHTML"
                                     hx-confirm="Are you sure you want to remove this repository?"
@@ -195,7 +195,7 @@
 </article>
 
 <article>
-    <div hx-get="/status-fragment" hx-trigger="load, every 30s">
+    <div hx-get="status-fragment" hx-trigger="load, every 30s">
         <div class="spinner"></div> Loading status...
     </div>
 </article>

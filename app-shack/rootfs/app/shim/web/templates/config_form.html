@@ -7,7 +7,7 @@
     <div class="container">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
-                <a href="/integrations/{{ domain }}" style="color: white; text-decoration: none; opacity: 0.8;">← Back to Integration</a>
+                <a href="../integrations/{{ domain }}" style="color: white; text-decoration: none; opacity: 0.8;">← Back to Integration</a>
                 <h1 style="margin: 0.5rem 0 0 0; color: white;">Configure {{ domain }}</h1>
             </div>
             <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
@@ -36,7 +36,7 @@
     </div>
     {% endif %}
 
-    <form hx-post="/config/{{ domain }}" hx-target="body" hx-swap="outerHTML" hx-indicator="#submit-spinner" hx-disabled-elt="button[type=submit]">
+    <form hx-post="{{ domain }}" hx-target="body" hx-swap="outerHTML" hx-indicator="#submit-spinner" hx-disabled-elt="button[type=submit]">
         <!-- Loading spinner (hidden by default) -->
         <div id="submit-spinner" class="htmx-indicator" style="text-align: center; padding: 20px;">
             <span class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></span>
@@ -153,7 +153,7 @@
                 <span class="htmx-indicator-text">Submit</span>
                 <span class="htmx-indicator" style="display: none;">Setting up...</span>
             </button>
-            <a href="/integrations/{{ domain }}" role="button" class="secondary" style="margin-bottom: 0; display: flex; align-items: center; justify-content: center;">Cancel</a>
+            <a href="../integrations/{{ domain }}" role="button" class="secondary" style="margin-bottom: 0; display: flex; align-items: center; justify-content: center;">Cancel</a>
         </div>
     </form>
 </article>

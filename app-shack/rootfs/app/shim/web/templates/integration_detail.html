@@ -6,7 +6,7 @@
 <header class="container-fluid" style="background: var(--pico-primary); padding: 1rem 0; margin-bottom: 2rem;">
     <div class="container" style="display: flex; justify-content: space-between; align-items: center;">
         <div>
-            <a href="/" style="color: white; text-decoration: none; opacity: 0.8;">← Back to Dashboard</a>
+            <a href=".." style="color: white; text-decoration: none; opacity: 0.8;">← Back to Dashboard</a>
             <h1 style="margin: 0.5rem 0 0 0; color: white;">{{ integration.name }}</h1>
         </div>
         <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
@@ -61,7 +61,7 @@
     <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
         {% if integration.enabled %}
         <button type="button" class="secondary"
-                hx-post="/integrations/{{ integration.domain }}/disable"
+                hx-post="../integrations/{{ integration.domain }}/disable"
                 hx-target="body"
                 hx-swap="outerHTML"
                 hx-indicator="#disable-spinner">
@@ -70,7 +70,7 @@
         </button>
         {% else %}
         <button type="button"
-                hx-post="/integrations/{{ integration.domain }}/enable"
+                hx-post="../integrations/{{ integration.domain }}/enable"
                 hx-target="body"
                 hx-swap="outerHTML"
                 hx-indicator="#enable-spinner">
@@ -81,17 +81,17 @@
 
         {% if integration.update_available %}
         <button type="button"
-                hx-post="/integrations/{{ integration.domain }}/update"
+                hx-post="../integrations/{{ integration.domain }}/update"
                 hx-target="body"
                 hx-swap="outerHTML">
             Update to {{ integration.latest_version }}
         </button>
         {% endif %}
 
-        <a href="/config/{{ integration.domain }}" role="button">Configure</a>
+        <a href="../config/{{ integration.domain }}" role="button">Configure</a>
 
         <button type="button" class="pico-background-red-500" style="border-color: var(--pico-color-red-500);"
-                hx-post="/integrations/{{ integration.domain }}/remove"
+                hx-post="../integrations/{{ integration.domain }}/remove"
                 hx-confirm="Are you sure you want to remove this integration?"
                 hx-target="body"
                 hx-swap="outerHTML"
@@ -126,7 +126,7 @@
         <div class="entry-actions" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
             {% if entry.state == 'loaded' %}
             <button type="button" class="secondary"
-                    hx-post="/config/{{ entry.entry_id }}/disable"
+                    hx-post="../config/{{ entry.entry_id }}/disable"
                     hx-target="body"
                     hx-swap="outerHTML"
                     hx-indicator="#disable-{{ entry_css_id }}-spinner">
@@ -135,7 +135,7 @@
             </button>
             {% elif entry.state == 'not_loaded' %}
             <button type="button"
-                    hx-post="/config/{{ entry.entry_id }}/enable"
+                    hx-post="../config/{{ entry.entry_id }}/enable"
                     hx-target="body"
                     hx-swap="outerHTML"
                     hx-indicator="#enable-{{ entry_css_id }}-spinner">
@@ -145,7 +145,7 @@
             {% endif %}
             {# Remove button is available for all states #}
             <button type="button" class="pico-background-red-500" style="border-color: var(--pico-color-red-500);"
-                    hx-post="/config/{{ entry.entry_id }}/remove"
+                    hx-post="../config/{{ entry.entry_id }}/remove"
                     hx-confirm="Are you sure you want to remove this configuration entry? This will also remove all associated entities and MQTT topics."
                     hx-target="body"
                     hx-swap="outerHTML"

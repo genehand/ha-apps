@@ -228,7 +228,7 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"/integrations/{domain}"
+                response.headers["HX-Redirect"] = f"integrations/{domain}"
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to disable {domain}</div>',
@@ -275,7 +275,7 @@ class WebUI:
                 # Async install - return "Installing..." text that polls for completion
                 return HTMLResponse(
                     f'<span class="pico-color-jade-500" style="font-weight: 600;" '
-                    f'hx-get="/api/install-status/{full_name}" '
+                    f'hx-get="api/install-status/{full_name}" '
                     f'hx-trigger="every 2s" hx-swap="outerHTML">Installing...</span>'
                 )
             elif result:
@@ -308,19 +308,19 @@ class WebUI:
                 return HTMLResponse(f'<span style="color: #999;">Not found</span>')
 
             # Include polling attributes for incomplete statuses so HTMX continues polling
-            polling_attrs = f'hx-get="/api/install-status/{full_name}" hx-trigger="every 2s" hx-swap="outerHTML"'
+            polling_attrs = f'hx-get="api/install-status/{full_name}" hx-trigger="every 2s" hx-swap="outerHTML"'
 
             if task.status == "pending":
                 return HTMLResponse(
-                    f'<span {polling_attrs}><span class="spinner"></span> Pending...</span>'
+                    f'<span {polling_attrs} class="pico-color-jade-500" style="font-weight: 600;"><span class="spinner"></span> Pending...</span>'
                 )
             elif task.status == "downloading":
                 return HTMLResponse(
-                    f'<span {polling_attrs}><span class="spinner"></span> Downloading...</span>'
+                    f'<span {polling_attrs} class="pico-color-jade-500" style="font-weight: 600;"><span class="spinner"></span> Downloading...</span>'
                 )
             elif task.status == "installing":
                 return HTMLResponse(
-                    f'<span {polling_attrs}><span class="spinner"></span> Installing...</span>'
+                    f'<span {polling_attrs} class="pico-color-jade-500" style="font-weight: 600;"><span class="spinner"></span> Installing...</span>'
                 )
             elif task.status == "complete":
                 response = HTMLResponse(
@@ -358,7 +358,7 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = "/"
+                response.headers["HX-Redirect"] = ".."
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to remove {domain}</div>',
@@ -384,7 +384,7 @@ class WebUI:
                 f"</div>"
             )
             response = HTMLResponse(content=html)
-            response.headers["HX-Redirect"] = f"/integrations/{domain}"
+            response.headers["HX-Redirect"] = f"integrations/{domain}"
             return response
 
         @self._app.post("/config/{entry_id}/remove")
@@ -413,7 +413,7 @@ class WebUI:
                     f"successfully!</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"/integrations/{domain}"
+                response.headers["HX-Redirect"] = f"integrations/{domain}"
                 return response
             else:
                 return HTMLResponse(
@@ -542,7 +542,7 @@ class WebUI:
                     response = HTMLResponse(
                         f'<div class="alert alert-success">Configuration successful! Please enable the integration to use it.</div>'
                     )
-                    response.headers["HX-Redirect"] = f"/integrations/{domain}"
+                    response.headers["HX-Redirect"] = f"integrations/{domain}"
                     return response
                 else:
                     return HTMLResponse(
@@ -690,7 +690,7 @@ class WebUI:
                     custom_repos, success_message=message
                 )
                 # Trigger client-side redirect via HTMX
-                response.headers["HX-Location"] = "/#custom"
+                response.headers["HX-Location"] = "#custom"
                 return response
             else:
                 # Return error message for HTMX
@@ -717,7 +717,7 @@ class WebUI:
                     custom_repos, success_message=message
                 )
                 # Trigger client-side redirect via HTMX
-                response.headers["HX-Location"] = "/#custom"
+                response.headers["HX-Location"] = "#custom"
                 return response
             else:
                 return self._render_custom_repos_list(
@@ -765,7 +765,7 @@ class WebUI:
                 else:
                     actions_html = (
                         '<button type="button" class="secondary" '
-                        'hx-delete="/custom-repos/' + domain + '" '
+                        'hx-delete="custom-repos/' + domain + '" '
                         'hx-target="#custom-repos-list" '
                         'hx-swap="innerHTML" '
                         'hx-confirm="Are you sure you want to remove this repository?" '
@@ -898,7 +898,7 @@ class WebUI:
             <div class="container">
                 <h2>Configure {domain.title()}</h2>
                 {"<p>" + str(description) + "</p>" if description else ""}
-                <form hx-post="/config/{domain}" hx-target="#config-result" hx-swap="innerHTML">
+                <form hx-post="{domain}" hx-target="#config-result" hx-swap="innerHTML">
                     <input type="hidden" name="flow_id" value="{flow_id}">
                     <input type="hidden" name="step_id" value="{step_id}">
                     <div style="margin: 20px 0;">
