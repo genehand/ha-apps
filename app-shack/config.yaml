@@ -1,5 +1,5 @@
 name: Shack
-version: 0.4.9
+version: 0.4.10
 slug: shack
 description: HACS Shack - Run HACS integrations outside Home Assistant via MQTT
 url: https://github.com/genehand/ha-apps
@@ -9,8 +9,10 @@ arch:
 init: false
 startup: services
 boot: auto
-ports:
-  8080/tcp: 8080
+ingress: true
+ingress_port: 8080
+services:
+  - mqtt:need
 options:
   mqtt_host: core-mosquitto
   mqtt_port: 1883
@@ -19,8 +21,8 @@ options:
   log_level: INFO
   integration_log_levels: []
 schema:
-  mqtt_host: str
-  mqtt_port: int
+  mqtt_host: str?
+  mqtt_port: int?
   mqtt_username: str?
   mqtt_password: password?
   log_level: list(DEBUG|INFO|WARNING|ERROR|CRITICAL)

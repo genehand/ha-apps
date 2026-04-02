@@ -42,6 +42,22 @@ class Config:
             return config
 
     @classmethod
+    def _load_mqtt_services(cls) -> Optional[dict]:
+        """Load MQTT credentials from HA services if available.
+
+        Returns dict with host, port, username, password or None if not available.
+        """
+        services_path = "/data/services/mqtt/config.json"
+        if not os.path.exists(services_path):
+            return None
+
+        try:
+            with open(services_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+
+    @classmethod
     def from_dict(cls, data: dict) -> "Config":
         """Create Config from dictionary."""
         integration_log_levels = data.get("integration_log_levels", {})
@@ -52,11 +68,26 @@ class Config:
                 for item in integration_log_levels
                 if "name" in item
             }
+
+        # Check for built-in MQTT service credentials first
+        mqtt_services = cls._load_mqtt_services()
+
+        if mqtt_services:
+            mqtt_host = mqtt_services.get("host", "core-mosquitto")
+            mqtt_port = mqtt_services.get("port", 1883)
+            mqtt_username = mqtt_services.get("username")
+            mqtt_password = mqtt_services.get("password")
+        else:
+            mqtt_host = data.get("mqtt_host", "core-mosquitto")
+            mqtt_port = data.get("mqtt_port", 1883)
+            mqtt_username = data.get("mqtt_username") or None
+            mqtt_password = data.get("mqtt_password") or None
+
         return cls(
-            mqtt_host=data.get("mqtt_host", "core-mosquitto"),
-            mqtt_port=data.get("mqtt_port", 1883),
-            mqtt_username=data.get("mqtt_username") or None,
-            mqtt_password=data.get("mqtt_password") or None,
+            mqtt_host=mqtt_host,
+            mqtt_port=mqtt_port,
+            mqtt_username=mqtt_username,
+            mqtt_password=mqtt_password,
             log_level=data.get("log_level", "INFO"),
             integration_log_levels=integration_log_levels,
         )

@@ -1,6 +1,6 @@
 [project]
 name = "app-shack"
-version = "0.4.9"
+version = "0.4.10"
 description = "Home Assistant compatibility layer for running integrations outside of HA"
 requires-python = ">=3.14"
 dependencies = [
@@ -28,6 +28,9 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "FlightRadarAPI==1.4.0",
+    "pycountry==24.6.1",
 ]
 
 [tool.pytest.ini_options]

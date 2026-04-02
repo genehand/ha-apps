@@ -8,6 +8,7 @@ ENV BUILD_VERSION=${BUILD_VERSION}
 ADD https://astral.sh/uv/install.sh /uv-install.sh
 RUN sh uv-install.sh && rm uv-install.sh
 ENV PATH="/root/.local/bin:${PATH}"
+ENV UV_LINK_MODE=copy
 
 # Install build dependencies for packages with C/Rust extensions
 RUN apk add --no-cache \
