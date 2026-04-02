@@ -352,6 +352,104 @@ class TestEntityHasEntityName:
         assert entity.has_entity_name is False
 
 
+class TestEntityNameFromTranslationKey:
+    """Test cases for Entity name property with _attr_translation_key."""
+
+    def test_name_from_attr_translation_key(self):
+        """Test that name falls back to _attr_translation_key when no other name is set."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_name = None
+        entity._attr_translation_key = "recirculation_switch"
+
+        assert entity.name == "Recirculation Switch"
+
+    def test_name_from_translation_key_underscore_conversion(self):
+        """Test that translation_key is converted from snake_case to Title Case."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_name = None
+        entity._attr_translation_key = "outlet_temperature"
+
+        assert entity.name == "Outlet Temperature"
+
+    def test_attr_name_priority_over_translation_key(self):
+        """Test that _attr_name takes priority over _attr_translation_key."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_name = "Custom Name"
+        entity._attr_translation_key = "recirculation_switch"
+
+        assert entity.name == "Custom Name"
+
+    def test_entity_description_name_priority_over_translation_key(self):
+        """Test that entity_description.name takes priority over _attr_translation_key."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        sensor = SensorEntity()
+        sensor._attr_name = None
+        sensor._attr_translation_key = "recirculation_switch"
+        sensor.entity_description = SensorEntityDescription(
+            key="test", name="Description Name"
+        )
+
+        assert sensor.name == "Description Name"
+
+    def test_entity_description_translation_key_priority_over_attr_translation_key(
+        self,
+    ):
+        """Test that entity_description.translation_key takes priority over _attr_translation_key."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        sensor = SensorEntity()
+        sensor._attr_name = None
+        sensor._attr_translation_key = "recirculation_switch"
+        sensor.entity_description = SensorEntityDescription(
+            key="test", translation_key="outlet_temperature"
+        )
+
+        assert sensor.name == "Outlet Temperature"
+
+    def test_entity_description_key_takes_priority_over_attr_translation_key(self):
+        """Test that entity_description.key takes priority over _attr_translation_key."""
+        from shim.platforms.sensor import SensorEntity, SensorEntityDescription
+
+        sensor = SensorEntity()
+        sensor._attr_name = None
+        sensor._attr_translation_key = "recirculation_switch"
+        sensor.entity_description = SensorEntityDescription(
+            key="outlet_temp"  # This would become "Outlet Temp"
+        )
+
+        # entity_description.key should win over _attr_translation_key
+        # (entity_description is more specific)
+        assert sensor.name == "Outlet Temp"
+
+    def test_attr_translation_key_used_when_no_entity_description(self):
+        """Test that _attr_translation_key is used when no entity_description exists."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_name = None
+        entity._attr_translation_key = "recirculation_switch"
+        # No entity_description set
+
+        assert entity.name == "Recirculation Switch"
+
+    def test_name_none_when_no_sources_available(self):
+        """Test that name returns None when no name sources are available."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_name = None
+        # No entity_description, no _attr_translation_key
+
+        assert entity.name is None
+
+
 class TestBuildMqttDeviceConfig:
     """Test cases for build_mqtt_device_config function."""
 

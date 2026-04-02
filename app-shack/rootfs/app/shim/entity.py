@@ -330,6 +330,10 @@ class Entity:
             key = getattr(self.entity_description, "key", None)
             if key:
                 return self._translation_key_to_name(key)
+        # Fall back to _attr_translation_key if set
+        translation_key = getattr(self, "_attr_translation_key", None)
+        if translation_key:
+            return self._translation_key_to_name(translation_key)
         return None
 
     def _translation_key_to_name(self, translation_key: str) -> str:
