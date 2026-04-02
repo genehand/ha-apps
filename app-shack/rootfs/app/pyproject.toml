@@ -1,6 +1,6 @@
 [project]
 name = "app-shack"
-version = "0.4.4"
+version = "0.4.9"
 description = "Home Assistant compatibility layer for running integrations outside of HA"
 requires-python = ">=3.14"
 dependencies = [
@@ -14,16 +14,14 @@ dependencies = [
     "aiohttp>=3.9.0",
     "voluptuous>=0.14.0",
     "python-multipart>=0.0.6",
+    "cryptography>=42.0.0",
 
     # HACS integration dependencies
     "aiogithubapi>=22.10.1",
     "awesomeversion>=22.9.0",
 
     # Workaround for FlightRadarAPI
-    "beautifulsoup4",
-
-    # Fix for GIL warning - install from GitHub until new release (https://github.com/google/brotli/pull/1386)
-    "brotli @ git+https://github.com/google/brotli.git@5583858",
+    "beautifulsoup4"
 ]
 
 [dependency-groups]

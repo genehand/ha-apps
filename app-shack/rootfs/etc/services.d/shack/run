@@ -7,4 +7,14 @@
 
 bashio::log.info "Starting Shack..."
 
-uv run --directory /app main.py
+# Create venv at /data/.venv if it doesn't exist
+if [ ! -d "/data/.venv" ]; then
+    bashio::log.info "Creating virtual environment at /data/.venv..."
+    uv venv /data/.venv
+fi
+
+# Don't use uv sync to maintain packages installed for integrations
+bashio::log.info "Installing base packages..."
+uv pip install -r /app/pyproject.toml --python /data/.venv/bin/python
+
+exec /data/.venv/bin/python /app/main.py

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import shutil
 import signal
 import subprocess
 import sys
@@ -24,8 +23,7 @@ DEV_CONFIG_PATH = "shack-config.yaml"
 IS_ADDON = Path("/data").exists() and Path("/data").is_dir()
 CONFIG_DIR = Path("/data") if IS_ADDON else Path("./data")
 
-# Virtual environment paths
-APP_VENV = Path("/app/.venv")
+# Virtual environment path (persistent storage in addon mode)
 DATA_VENV = Path("/data/.venv")
 
 
@@ -76,60 +74,47 @@ def setup_logging(
 
 
 def setup_venv():
-    """Copy or sync base venv from /app/.venv to /data/.venv.
+    """Sync base packages to /data/.venv.
 
-    This ensures integration packages can be installed to a persistent location
-    that survives container restarts. When the base venv changes (new uv.lock),
-    we re-sync to pick up the updated base packages.
+    On startup: ensures all base packages from pyproject.toml are installed.
+    Uses uv pip install to preserve integration-installed packages.
     """
     if not IS_ADDON:
         # Local dev mode: use existing venv
         return
 
-    if not APP_VENV.exists():
-        # No base venv to copy (shouldn't happen in container)
-        return
-
-    # Check if we need to sync using uv.lock as version indicator
-    app_lock = Path("/app/uv.lock")
-    data_lock = DATA_VENV / "uv.lock"
-    needs_sync = False
-
     if not DATA_VENV.exists():
-        # First run: need to copy
-        needs_sync = True
-    elif app_lock.exists():
-        if not data_lock.exists():
-            # Base lock exists but wasn't copied: need to sync
-            needs_sync = True
-        else:
-            # Compare lock files to detect changes
-            try:
-                app_lock_stat = app_lock.stat()
-                data_lock_stat = data_lock.stat()
-                # Sync if size or mtime differs
-                if (
-                    app_lock_stat.st_size != data_lock_stat.st_size
-                    or abs(app_lock_stat.st_mtime - data_lock_stat.st_mtime) > 1
-                ):
-                    needs_sync = True
-            except (OSError, IOError):
-                # If we can't compare, assume sync needed
-                needs_sync = True
-
-    if not needs_sync:
+        # Venv should have been created by run script
+        print(f"Warning: {DATA_VENV} does not exist", flush=True)
         return
 
-    if DATA_VENV.exists():
-        print("Base venv changed, syncing to /data/.venv...", flush=True)
-        # Remove old venv and re-copy
-        shutil.rmtree(DATA_VENV)
-    else:
-        print(f"Copying base venv from {APP_VENV} to {DATA_VENV}...", flush=True)
-
-    # Copy the base venv to /data
-    shutil.copytree(APP_VENV, DATA_VENV, symlinks=True)
-    print("Venv sync complete.", flush=True)
+    # Sync base packages using uv pip install (not sync) to preserve
+    # integration-installed packages
+    print("Syncing base packages...", flush=True)
+    try:
+        result = subprocess.run(
+            [
+                "uv",
+                "pip",
+                "install",
+                "-r",
+                "/app/pyproject.toml",
+                "--python",
+                str(DATA_VENV / "bin" / "python"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            # Check if anything was actually installed
+            if "Installed" in result.stderr or "Upgraded" in result.stderr:
+                print("Base packages updated.", flush=True)
+            else:
+                print("Base packages are up to date.", flush=True)
+        else:
+            print(f"Base package sync warning: {result.stderr}", flush=True)
+    except Exception as e:
+        print(f"Base package sync error: {e}", flush=True)
 
 
 async def main():
