@@ -12,13 +12,20 @@ from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 # from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Environment, FileSystemLoader
 
 from ..logging import get_logger
 from ..core import ConfigEntry
 
 _LOGGER = get_logger(__name__)
+
+# CDN URLs for CSS and JS libraries
+PICO_CSS_URL = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"
+PICO_COLORS_URL = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.colors.min.css"
+
+# https://htmx.org/docs/#installing
+HTMX_URL = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"
+HTMX_SRI = "sha384-/TgkGk7p307TH7EXJDuUlgG3Ce1UVolAOFopFekQkkXihi5u/6OCvVKyz1W+idaz"
 
 
 class WebUI:
@@ -49,13 +56,16 @@ class WebUI:
         self._register_routes()
 
     def _render_template(self, template_name: str, **context) -> str:
-        """Render a template file directly without caching."""
-        template_path = self._template_dir / template_name
-        with open(template_path, "r") as f:
-            template_content = f.read()
+        """Render a template using Jinja2 environment with inheritance support."""
+        # Create environment with file system loader for template inheritance
+        env = Environment(loader=FileSystemLoader(str(self._template_dir)))
 
-        # Create template without environment caching
-        template = Template(template_content)
+        context.setdefault("PICO_CSS_URL", PICO_CSS_URL)
+        context.setdefault("PICO_COLORS_URL", PICO_COLORS_URL)
+        context.setdefault("HTMX_URL", HTMX_URL)
+        context.setdefault("HTMX_SRI", HTMX_SRI)
+
+        template = env.get_template(template_name)
         return template.render(**context)
 
     def _register_routes(self) -> None:
@@ -868,8 +878,9 @@ class WebUI:
         <head>
             <title>Configure {domain}</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
-            <link rel="stylesheet" href="/static/styles.css">
-            <script src="/static/htmx.min.js"></script>
+            <link rel="stylesheet" href="{PICO_CSS_URL}">
+            <link rel="stylesheet" href="{PICO_COLORS_URL}">
+            <script src="{HTMX_URL}" integrity="{HTMX_SRI}" crossorigin="anonymous"></script>
         </head>
         <body>
             <div class="container">
