@@ -51,6 +51,14 @@ class SwitchEntity(ToggleEntity):
         """Turn the entity off."""
         raise NotImplementedError()
 
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the entity on via sync method in executor."""
+        await self.hass.async_add_executor_job(self.turn_on, **kwargs)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the entity off via sync method in executor."""
+        await self.hass.async_add_executor_job(self.turn_off, **kwargs)
+
     def _mqtt_publish(self) -> None:
         """Publish state to MQTT."""
         if not hasattr(self.hass, "_mqtt_client"):

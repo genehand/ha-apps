@@ -941,3 +941,136 @@ class TestTextEntityStateAndAvailable:
         # Test with None value - should be unavailable
         entity_with_none = TestText(None)
         assert entity_with_none.available is False
+
+
+class TestSwitchEntityAsyncDelegation:
+    """Tests for SwitchEntity async method delegation to sync methods."""
+
+    def test_switch_entity_async_turn_on_delegates_to_sync(self):
+        """Test that async_turn_on() delegates to sync turn_on() method."""
+        import asyncio
+        from shim.platforms.switch import SwitchEntity
+
+        # Track if sync turn_on was called
+        turn_on_calls = []
+
+        class TestSwitch(SwitchEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_switch"
+                self._attr_name = "Test Switch"
+                self._attr_is_on = False
+
+            def turn_on(self, **kwargs):
+                """Sync turn_on implementation."""
+                turn_on_calls.append(kwargs)
+                self._attr_is_on = True
+
+        # Create a mock hass with async_add_executor_job
+        class MockHass:
+            async def async_add_executor_job(self, func, *args, **kwargs):
+                # Execute the sync function immediately
+                result = func(*args, **kwargs)
+                return result
+
+        entity = TestSwitch()
+        entity.hass = MockHass()
+
+        # Call async_turn_on
+        asyncio.run(entity.async_turn_on())
+
+        # Verify sync turn_on was called
+        assert len(turn_on_calls) == 1
+        assert entity._attr_is_on is True
+
+    def test_switch_entity_async_turn_off_delegates_to_sync(self):
+        """Test that async_turn_off() delegates to sync turn_off() method."""
+        import asyncio
+        from shim.platforms.switch import SwitchEntity
+
+        # Track if sync turn_off was called
+        turn_off_calls = []
+
+        class TestSwitch(SwitchEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_switch"
+                self._attr_name = "Test Switch"
+                self._attr_is_on = True
+
+            def turn_off(self, **kwargs):
+                """Sync turn_off implementation."""
+                turn_off_calls.append(kwargs)
+                self._attr_is_on = False
+
+        # Create a mock hass with async_add_executor_job
+        class MockHass:
+            async def async_add_executor_job(self, func, *args, **kwargs):
+                # Execute the sync function immediately
+                result = func(*args, **kwargs)
+                return result
+
+        entity = TestSwitch()
+        entity.hass = MockHass()
+
+        # Call async_turn_off
+        asyncio.run(entity.async_turn_off())
+
+        # Verify sync turn_off was called
+        assert len(turn_off_calls) == 1
+        assert entity._attr_is_on is False
+
+    def test_switch_entity_async_turn_on_passes_kwargs(self):
+        """Test that async_turn_on() passes kwargs to sync turn_on()."""
+        import asyncio
+        from shim.platforms.switch import SwitchEntity
+
+        received_kwargs = {}
+
+        class TestSwitch(SwitchEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_switch"
+                self._attr_name = "Test Switch"
+                self._attr_is_on = False
+
+            def turn_on(self, **kwargs):
+                """Sync turn_on implementation."""
+                nonlocal received_kwargs
+                received_kwargs = kwargs
+                self._attr_is_on = True
+
+        class MockHass:
+            async def async_add_executor_job(self, func, *args, **kwargs):
+                result = func(*args, **kwargs)
+                return result
+
+        entity = TestSwitch()
+        entity.hass = MockHass()
+
+        # Call async_turn_on with kwargs
+        asyncio.run(entity.async_turn_on(brightness=100, transition=2))
+
+        # Verify kwargs were passed
+        assert received_kwargs == {"brightness": 100, "transition": 2}
+
+    def test_switch_entity_inherits_from_toggle_entity(self):
+        """Test that SwitchEntity properly inherits from ToggleEntity."""
+        from shim.platforms.switch import SwitchEntity
+        from shim.entity import ToggleEntity
+
+        # Verify inheritance
+        assert issubclass(SwitchEntity, ToggleEntity)
+
+    def test_switch_entity_has_async_turn_methods(self):
+        """Test that SwitchEntity has both async and sync turn methods."""
+        from shim.platforms.switch import SwitchEntity
+
+        # Verify the methods exist
+        assert hasattr(SwitchEntity, "turn_on")
+        assert hasattr(SwitchEntity, "turn_off")
+        assert hasattr(SwitchEntity, "async_turn_on")
+        assert hasattr(SwitchEntity, "async_turn_off")
+
+        # Verify they are not the same as ToggleEntity's (which just raise)
+        from shim.entity import ToggleEntity
+
+        assert SwitchEntity.async_turn_on is not ToggleEntity.async_turn_on
+        assert SwitchEntity.async_turn_off is not ToggleEntity.async_turn_off
