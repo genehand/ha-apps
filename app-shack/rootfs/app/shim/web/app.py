@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 # from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -279,20 +279,23 @@ class WebUI:
 
             if task.status == "pending":
                 return HTMLResponse(
-                    f'<span class="spinner" {polling_attrs}></span> Pending...'
+                    f'<span {polling_attrs}><span class="spinner"></span> Pending...</span>'
                 )
             elif task.status == "downloading":
                 return HTMLResponse(
-                    f'<span class="spinner" {polling_attrs}></span> Downloading...'
+                    f'<span {polling_attrs}><span class="spinner"></span> Downloading...</span>'
                 )
             elif task.status == "installing":
                 return HTMLResponse(
-                    f'<span class="spinner" {polling_attrs}></span> Installing...'
+                    f'<span {polling_attrs}><span class="spinner"></span> Installing...</span>'
                 )
             elif task.status == "complete":
-                return HTMLResponse(
+                response = HTMLResponse(
                     '<span class="pico-color-jade-500" style="font-weight: 600;">✓ Installed</span>'
                 )
+                # Trigger page reload to show in Installed tab
+                response.headers["HX-Trigger"] = '{"reloadPage": {}}'
+                return response
             else:  # error
                 return HTMLResponse(
                     f'<span style="color: #f44336;">✗ Error: {task.error_message or "Unknown error"}</span>'
@@ -661,9 +664,12 @@ class WebUI:
             if success:
                 # Return updated custom repos list for HTMX
                 custom_repos = self._shim_manager.get_integration_manager().get_custom_repositories()
-                return self._render_custom_repos_list(
+                response = self._render_custom_repos_list(
                     custom_repos, success_message=message
                 )
+                # Trigger client-side redirect via HTMX
+                response.headers["HX-Location"] = "/#custom"
+                return response
             else:
                 # Return error message for HTMX
                 custom_repos = self._shim_manager.get_integration_manager().get_custom_repositories()
@@ -685,9 +691,12 @@ class WebUI:
                 self._shim_manager.get_integration_manager().get_custom_repositories()
             )
             if success:
-                return self._render_custom_repos_list(
+                response = self._render_custom_repos_list(
                     custom_repos, success_message=message
                 )
+                # Trigger client-side redirect via HTMX
+                response.headers["HX-Location"] = "/#custom"
+                return response
             else:
                 return self._render_custom_repos_list(
                     custom_repos, error_message=message
@@ -724,39 +733,46 @@ class WebUI:
                 is_installed = repo.get("installed", False)
 
                 installed_badge = (
-                    '<span style="color: #4caf50; margin-left: 10px;">✓ Installed</span>'
+                    '<span class="pico-color-jade-500" style="font-weight: 600; margin-left: 10px;">✓ Installed</span>'
                     if is_installed
                     else ""
                 )
 
                 if is_installed:
-                    actions_html = '<span style="color: #999; font-size: 12px;">Remove integration first</span>'
+                    actions_html = '<span class="pico-color-muted" style="font-size: 12px;">Remove integration first</span>'
                 else:
                     actions_html = (
-                        '<button type="button" class="btn btn-danger" '
+                        '<button type="button" class="secondary" '
                         'hx-delete="/custom-repos/' + domain + '" '
                         'hx-target="#custom-repos-list" '
                         'hx-swap="innerHTML" '
                         'hx-confirm="Are you sure you want to remove this repository?" '
-                        'hx-on::after-request="if(event.detail.successful) location.reload();">'
-                        "Remove</button>"
+                        'hx-indicator="#remove-repo-' + domain + '-spinner" '
+                        'hx-disabled-elt="this">'
+                        '<span id="remove-repo-'
+                        + domain
+                        + '-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>'
+                        '<span class="button-text">Remove</span>'
+                        "</button>"
                     )
 
                 html_parts.append(
-                    '<div class="integration-item">'
-                    '<div class="integration-info">'
+                    "<article>"
+                    '<div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">'
+                    "<div>"
                     "<h3>" + name + "</h3>"
-                    "<p>" + description + "</p>"
-                    '<div class="integration-meta">'
+                    '<p class="pico-color-muted">' + description + "</p>"
+                    '<div style="font-size: 12px; margin-top: 5px;">'
                     '<a href="'
                     + repo_url
-                    + '" target="_blank" style="color: #03a9f4;">'
+                    + '" target="_blank">'
                     + full_name
                     + "</a>"
                     + installed_badge
                     + "</div></div>"
-                    '<div class="integration-actions">' + actions_html + "</div>"
+                    '<div style="flex-shrink: 0;">' + actions_html + "</div>"
                     "</div>"
+                    "</article>"
                 )
             html_parts.append("</div>")
         else:

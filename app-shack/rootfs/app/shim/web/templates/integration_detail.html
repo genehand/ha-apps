@@ -202,8 +202,10 @@
                         hx-post="/integrations/{{ integration.domain }}/remove"
                         hx-confirm="Are you sure you want to remove this integration?"
                         hx-target="body"
-                        hx-swap="outerHTML">
-                    Remove
+                        hx-swap="outerHTML"
+                        hx-indicator="#remove-spinner">
+                    <span id="remove-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                    <span class="button-text">Remove</span>
                 </button>
             </div>
         </article>
@@ -222,8 +224,10 @@
                             hx-post="/config/{{ entry.entry_id }}/remove"
                             hx-confirm="Are you sure you want to remove this configuration entry? This will also remove all associated entities and MQTT topics."
                             hx-target="body"
-                            hx-swap="outerHTML">
-                        Remove
+                            hx-swap="outerHTML"
+                            hx-indicator="#remove-entry-{{ entry.entry_id }}-spinner">
+                        <span id="remove-entry-{{ entry.entry_id }}-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                        <span class="button-text">Remove</span>
                     </button>
                 </div>
                 {% endfor %}

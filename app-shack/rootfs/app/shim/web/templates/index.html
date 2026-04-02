@@ -118,6 +118,18 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        /* HTMX indicator styles */
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator,
+        .htmx-indicator.htmx-request {
+            display: inline-block;
+        }
+        .htmx-request .button-text,
+        .button-text.htmx-request {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -263,13 +275,15 @@
                     <h3 class="pico-color-primary" style="margin-top: 0;">Add Repository</h3>
                     <form hx-post="/custom-repos" 
                           hx-target="#custom-repos-list" 
-                          hx-swap="innerHTML"
-                          hx-on::after-request="if(event.detail.successful) { this.reset(); }">
+                          hx-swap="innerHTML">
                         <input type="url" 
                                name="repo_url" 
                                placeholder="https://github.com/owner/repo"
                                required>
-                        <button type="submit">Add Repository</button>
+                        <button type="submit" hx-indicator="#add-repo-spinner" hx-disabled-elt="this">
+                            <span id="add-repo-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                            <span class="button-text">Add Repository</span>
+                        </button>
                     </form>
                 </article>
                 
@@ -300,8 +314,10 @@
                                             hx-target="#custom-repos-list"
                                             hx-swap="innerHTML"
                                             hx-confirm="Are you sure you want to remove this repository?"
-                                            hx-on::after-request="if(event.detail.successful) location.reload();">
-                                        Remove
+                                            hx-indicator="#remove-repo-{{ repo.domain }}-spinner"
+                                            hx-disabled-elt="this">
+                                        <span id="remove-repo-{{ repo.domain }}-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                                        <span class="button-text">Remove</span>
                                     </button>
                                     {% endif %}
                                 </div>
@@ -349,6 +365,34 @@
         // Initialize theme on load
         setTheme(getPreferredTheme());
 
+        // Handle URL hash for tab switching on page load
+        function handleHashTab() {
+            const hash = window.location.hash.slice(1);
+            if (hash && ['installed', 'available', 'custom'].includes(hash)) {
+                // Show the tab content
+                document.querySelectorAll('.tab-content').forEach(tab => {
+                    tab.classList.remove('active');
+                });
+                document.getElementById(hash).classList.add('active');
+                
+                // Activate the tab button
+                document.querySelectorAll('.tab').forEach(tab => {
+                    tab.classList.remove('active');
+                    if (tab.getAttribute('onclick')?.includes(`'${hash}'`)) {
+                        tab.classList.add('active');
+                    }
+                });
+            }
+        }
+
+        // Handle hash on page load
+        handleHashTab();
+
+        // Handle HTMX reloadPage event for full page reloads
+        document.body.addEventListener('reloadPage', function(evt) {
+            window.location.reload();
+        });
+
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -359,6 +403,9 @@
             
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
+            
+            // Update URL hash to match the selected tab
+            window.location.hash = tabName;
         }
     </script>
 </body>
