@@ -371,6 +371,264 @@ class TestDeviceRegistry:
             finally:
                 patcher.unpatch()
 
+    @pytest.mark.asyncio
+    async def test_async_get_devices_for_config_entry(self):
+        """Test async_get_or_create_for_config_entry returns devices for a config entry."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                registry = dr.async_get(hass)
+
+                # Create devices for different config entries
+                device1 = registry.async_get_or_create(
+                    config_entry_id="entry_1",
+                    identifiers={("test_domain", "device_1")},
+                    name="Device 1",
+                )
+                device2 = registry.async_get_or_create(
+                    config_entry_id="entry_1",
+                    identifiers={("test_domain", "device_2")},
+                    name="Device 2",
+                )
+                device3 = registry.async_get_or_create(
+                    config_entry_id="entry_2",
+                    identifiers={("test_domain", "device_3")},
+                    name="Device 3",
+                )
+
+                # Get devices for entry_1
+                entry1_devices = registry.async_get_or_create_for_config_entry(
+                    "entry_1"
+                )
+
+                assert len(entry1_devices) == 2
+                assert device1 in entry1_devices
+                assert device2 in entry1_devices
+                assert device3 not in entry1_devices
+
+                # Get devices for entry_2
+                entry2_devices = registry.async_get_or_create_for_config_entry(
+                    "entry_2"
+                )
+                assert len(entry2_devices) == 1
+                assert device3 in entry2_devices
+
+            finally:
+                patcher.unpatch()
+
+    @pytest.mark.asyncio
+    async def test_async_get_devices_for_config_entry_empty(self):
+        """Test async_get_or_create_for_config_entry returns empty list for unknown entry."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                registry = dr.async_get(hass)
+
+                # Get devices for non-existent entry
+                devices = registry.async_get_or_create_for_config_entry("unknown_entry")
+
+                assert devices == []
+
+            finally:
+                patcher.unpatch()
+
+
+class TestMqttStub:
+    """Tests for the homeassistant.components.mqtt stub."""
+
+    @pytest.mark.asyncio
+    async def test_mqtt_module_imports(self):
+        """Test that homeassistant.components.mqtt can be imported."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.components import mqtt
+
+                assert mqtt is not None
+                assert hasattr(mqtt, "async_publish")
+                assert hasattr(mqtt, "async_subscribe")
+                assert hasattr(mqtt, "ReceiveMessage")
+                assert hasattr(mqtt, "MQTT_ERR_SUCCESS")
+            finally:
+                patcher.unpatch()
+
+    @pytest.mark.asyncio
+    async def test_mqtt_async_publish_returns_none(self):
+        """Test that mqtt.async_publish returns None (stub behavior)."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.components import mqtt
+
+                result = await mqtt.async_publish(hass, "test/topic", "payload")
+                assert result is None
+            finally:
+                patcher.unpatch()
+
+    @pytest.mark.asyncio
+    async def test_mqtt_async_subscribe_returns_unsubscribe(self):
+        """Test that mqtt.async_subscribe returns an unsubscribe function."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.components import mqtt
+
+                def dummy_callback(msg):
+                    pass
+
+                unsub = await mqtt.async_subscribe(hass, "test/topic", dummy_callback)
+                assert unsub is not None
+                assert callable(unsub)
+                # Call unsub to verify it works
+                unsub()
+            finally:
+                patcher.unpatch()
+
+    @pytest.mark.asyncio
+    async def test_mqtt_receive_message_class(self):
+        """Test that mqtt.ReceiveMessage can be instantiated."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.components import mqtt
+
+                msg = mqtt.ReceiveMessage(
+                    topic="test/topic",
+                    payload="test payload",
+                    qos=1,
+                    retain=True,
+                    timestamp=12345,
+                )
+                assert msg.topic == "test/topic"
+                assert msg.payload == "test payload"
+                assert msg.qos == 1
+                assert msg.retain is True
+                assert msg.timestamp == 12345
+            finally:
+                patcher.unpatch()
+
+
+class TestDeviceRegistryConstants:
+    """Tests for device registry connection constants."""
+
+    @pytest.mark.asyncio
+    async def test_connection_constants_exist(self):
+        """Test that device registry connection constants are available."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                assert hasattr(dr, "CONNECTION_NETWORK_MAC")
+                assert dr.CONNECTION_NETWORK_MAC == "mac"
+                assert hasattr(dr, "CONNECTION_UPNP")
+                assert dr.CONNECTION_UPNP == "upnp"
+                assert hasattr(dr, "CONNECTION_ASSUMED")
+                assert dr.CONNECTION_ASSUMED == "assumed"
+            finally:
+                patcher.unpatch()
+
+    @pytest.mark.asyncio
+    async def test_async_update_device_exists(self):
+        """Test that DeviceRegistry.async_update_device method exists."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                registry = dr.async_get(hass)
+                assert hasattr(registry, "async_update_device")
+                assert callable(registry.async_update_device)
+            finally:
+                patcher.unpatch()
+
+
+class TestEntityClassAttributes:
+    """Tests for Entity class-level attributes."""
+
+    def test_entity_class_attributes_exist(self):
+        """Test that Entity class has hass and platform as class attributes."""
+        from shim.entity import Entity
+
+        # These should be accessible as class attributes (for meross_lan compatibility)
+        assert hasattr(Entity, "hass")
+        assert hasattr(Entity, "platform")
+        assert Entity.hass is None
+        assert Entity.platform is None
+
+        # Instance should inherit these
+        entity = Entity()
+        assert entity.hass is None
+        assert entity.platform is None
+
 
 class TestConfigEntryUniqueId:
     """Tests for ConfigEntry.unique_id property."""

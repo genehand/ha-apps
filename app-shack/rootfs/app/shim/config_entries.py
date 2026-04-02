@@ -90,6 +90,11 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         self.cur_step_id = "user"  # Track current step for multi-step flows
         self._show_advanced_options = False  # Advanced options display setting
 
+    @property
+    def unique_id(self) -> Optional[str]:
+        """Return the unique ID of the flow from context."""
+        return self.context.get("unique_id")
+
     def __getattr__(self, name: str) -> any:
         """Provide default values for attributes that may not be set.
 

@@ -157,6 +157,9 @@ class ImportPatcher:
         # Create device_registry stub
         device_registry = types.ModuleType("homeassistant.helpers.device_registry")
 
+        # Store a global reference to the device registry for lookups without hass
+        _global_device_registry = None
+
         # Create DeviceEntry dataclass
         @dataclass
         class DeviceEntry:
@@ -169,6 +172,7 @@ class ImportPatcher:
             manufacturer: Optional[str] = None
             model: Optional[str] = None
             name: Optional[str] = None
+            name_by_user: Optional[str] = None
             sw_version: Optional[str] = None
             hw_version: Optional[str] = None
             entry_type: Optional[str] = None
@@ -236,18 +240,104 @@ class ImportPatcher:
                 """Get a device by id."""
                 return self._devices.get(device_id)
 
+            def async_get_or_create_for_config_entry(self, config_entry_id: str):
+                """Get all devices associated with a config entry."""
+                return [
+                    device
+                    for device in self._devices.values()
+                    if config_entry_id in device.config_entries
+                ]
+
+            def async_update_device(
+                self,
+                device_id: str,
+                *,
+                area_id: str = None,
+                name: str = None,
+                name_by_user: str = None,
+                new_identifiers: set = None,
+                merge_identifiers: set = None,
+                suggested_area: str = None,
+                sw_version: str = None,
+                hw_version: str = None,
+                via_device_id: str = None,
+                remove_config_entry_id: str = None,
+            ):
+                """Update device properties."""
+                device = self._devices.get(device_id)
+                if not device:
+                    return None
+
+                name_updated = False
+                if name is not None and device.name != name:
+                    device.name = name
+                    name_updated = True
+                if name_by_user is not None:
+                    device.name_by_user = name_by_user
+                if sw_version is not None:
+                    device.sw_version = sw_version
+                if hw_version is not None:
+                    device.hw_version = hw_version
+                if suggested_area is not None:
+                    device.suggested_area = suggested_area
+                if via_device_id is not None:
+                    device.via_device_id = via_device_id
+                if remove_config_entry_id is not None:
+                    device.config_entries.discard(remove_config_entry_id)
+
+                # If name was updated, republish MQTT discovery for entities of this device
+                if name_updated and self.hass:
+                    try:
+                        import asyncio
+
+                        # Schedule republish in the background
+                        asyncio.create_task(self._republish_device_discovery(device))
+                    except Exception:
+                        pass
+
+                return device
+
+            async def _republish_device_discovery(self, device):
+                """Republish MQTT discovery for all entities of a device."""
+                try:
+                    # Find integration loader
+                    loader = self.hass.data.get("integration_loader")
+                    if not loader:
+                        return
+
+                    # Get all entities
+                    all_entities = loader.get_entities()
+                    for entity in all_entities:
+                        # Check if entity belongs to this device
+                        device_info = getattr(entity, "device_info", None)
+                        if device_info and hasattr(device_info, "get"):
+                            identifiers = device_info.get("identifiers", set())
+                            if device.identifiers == identifiers:
+                                # Republish discovery for this entity
+                                if hasattr(entity, "_publish_mqtt_discovery"):
+                                    await entity._publish_mqtt_discovery()
+                except Exception:
+                    pass
+
         # Replace the simple DeviceRegistry type with our class
         device_registry.DeviceRegistry = DeviceRegistry
 
         # Create a function to get or create the registry instance
         def async_get(hass):
             """Get the device registry for the Home Assistant instance."""
-            # Store registry in hass.data
-            if not hasattr(hass, "data"):
-                hass.data = {}
-            if "device_registry" not in hass.data:
-                hass.data["device_registry"] = DeviceRegistry(hass)
-            return hass.data["device_registry"]
+            nonlocal _global_device_registry
+            # Store registry in hass.data if hass is provided
+            if hass is not None:
+                if not hasattr(hass, "data"):
+                    hass.data = {}
+                if "device_registry" not in hass.data:
+                    hass.data["device_registry"] = DeviceRegistry(hass)
+                    _global_device_registry = hass.data["device_registry"]
+                return hass.data["device_registry"]
+            # Return global registry if no hass provided
+            if _global_device_registry is None:
+                _global_device_registry = DeviceRegistry(None)
+            return _global_device_registry
 
         device_registry.async_get = async_get
 
@@ -281,6 +371,11 @@ class ImportPatcher:
             SERVICE = "service"
 
         device_registry.DeviceEntryType = DeviceEntryType
+
+        # Add connection type constants
+        device_registry.CONNECTION_NETWORK_MAC = "mac"
+        device_registry.CONNECTION_UPNP = "upnp"
+        device_registry.CONNECTION_ASSUMED = "assumed"
 
         homeassistant.helpers.device_registry = device_registry
         sys.modules["homeassistant.helpers.device_registry"] = device_registry
@@ -416,7 +511,18 @@ class ImportPatcher:
 
         # Create entity_registry stub module
         entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
-        entity_registry.async_get = lambda *args, **kwargs: None
+
+        # Import our EntityRegistry and return it via async_get
+        from .entity import EntityRegistry
+
+        def async_get(hass):
+            """Get the entity registry instance."""
+            registry = EntityRegistry()
+            if hass:
+                registry.setup(hass)
+            return registry
+
+        entity_registry.async_get = async_get
         entity_registry.RegistryEntry = type("RegistryEntry", (), {"entity_id": None})
 
         async def async_entries_for_config_entry(hass, config_entry_id):
@@ -1242,6 +1348,43 @@ class ImportPatcher:
         )
         homeassistant.components.webhook = webhook_stub
         sys.modules["homeassistant.components.webhook"] = webhook_stub
+
+        # Create mqtt stub - meross_lan depends on this for local MQTT discovery
+        mqtt_stub = types.ModuleType("homeassistant.components.mqtt")
+
+        async def _async_publish(hass, topic, payload, *args, **kwargs):
+            return None
+
+        async def _async_subscribe(hass, topic, msg_callback, *args, **kwargs):
+            return lambda: None
+
+        mqtt_stub.async_publish = _async_publish
+        mqtt_stub.async_subscribe = _async_subscribe
+        mqtt_stub.async_subscribe_topics = (
+            lambda hass, sub_state, topics, *args, **kwargs: None
+        )
+        mqtt_stub.async_unsubscribe_topics = (
+            lambda hass, sub_state, *args, **kwargs: None
+        )
+        mqtt_stub.async_wait_for_mqtt_client = lambda hass: True
+        mqtt_stub.is_mqtt_config_entry_loaded = lambda hass: True
+        mqtt_stub.ReceiveMessage = type(
+            "ReceiveMessage",
+            (),
+            {
+                "__init__": lambda self, **kwargs: setattr(
+                    self, "topic", kwargs.get("topic", "")
+                )
+                or setattr(self, "payload", kwargs.get("payload", ""))
+                or setattr(self, "qos", kwargs.get("qos", 0))
+                or setattr(self, "retain", kwargs.get("retain", False))
+                or setattr(self, "timestamp", kwargs.get("timestamp", 0)),
+            },
+        )
+        mqtt_stub.MQTT_ERR_SUCCESS = 0
+        mqtt_stub.MQTT_ERR_NO_CONN = 1
+        homeassistant.components.mqtt = mqtt_stub
+        sys.modules["homeassistant.components.mqtt"] = mqtt_stub
 
         # Create homeassistant.util.percentage stub
         percentage_stub = types.ModuleType("homeassistant.util.percentage")

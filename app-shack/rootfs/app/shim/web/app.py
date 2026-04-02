@@ -122,6 +122,28 @@ class WebUI:
                 integration_domain=domain
             )
 
+            # Get device registry and fetch devices for this integration's entries
+            hass = self._shim_manager.get_hass()
+            device_registry = hass.data.get("device_registry")
+            entry_ids = {e.entry_id for e in entries}
+            devices = []
+            if device_registry:
+                for device_entry in device_registry._devices.values():
+                    # Check if device is associated with any of this integration's config entries
+                    if device_entry.config_entries & entry_ids:
+                        devices.append(
+                            {
+                                "id": device_entry.id,
+                                "name": device_entry.name or device_entry.id,
+                                "manufacturer": device_entry.manufacturer,
+                                "model": device_entry.model,
+                                "sw_version": device_entry.sw_version,
+                                "identifiers": list(device_entry.identifiers)
+                                if device_entry.identifiers
+                                else [],
+                            }
+                        )
+
             # Convert to dict for template compatibility
             info_dict = info.to_dict()
             entries_dicts = [
@@ -148,6 +170,7 @@ class WebUI:
                 integration=info_dict,
                 entries=entries_dicts,
                 entities=entities_dicts,
+                devices=devices,
             )
             return HTMLResponse(content=html)
 

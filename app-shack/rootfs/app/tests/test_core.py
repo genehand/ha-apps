@@ -525,6 +525,179 @@ class TestFlowManager:
         # Verify flow is gone
         assert len(hass.config_entries.flow.async_progress()) == 0
 
+    @pytest.mark.asyncio
+    async def test_async_init_auto_submit_empty_form(self, tmp_path):
+        """Test that async_init auto-submits forms with no required fields.
+
+        This tests the meross_lan discovery use case where the flow
+        returns a form with empty schema that just needs confirmation.
+        """
+        from shim.config_entries import ConfigFlow
+        from shim.core import FlowManager
+        from shim.import_patch import ImportPatcher
+        import voluptuous as vol
+
+        # Set up import patching
+        hass = HomeAssistant(config_dir=tmp_path)
+        patcher = ImportPatcher(hass)
+        patcher.patch()
+
+        try:
+
+            class TestDiscoveryFlow(ConfigFlow):
+                """Flow that simulates meross_lan discovery behavior."""
+
+                handler = "test_domain"
+
+                async def async_step_integration_discovery(self, discovery_info):
+                    # Store data and return a finalize form (like meross_lan)
+                    self._title = "Test Device"
+                    self.device_config = discovery_info
+                    return self.async_show_form(
+                        step_id="finalize",
+                        data_schema=vol.Schema({}),  # Empty schema - no required fields
+                    )
+
+                async def async_step_finalize(self, user_input=None):
+                    # Create entry when finalize is called
+                    return self.async_create_entry(
+                        title=self._title,
+                        data=self.device_config,
+                    )
+
+            # Create a mock loader that returns our test flow
+            class MockLoader:
+                async def start_config_flow(self, domain):
+                    # Return the initial form result (simulating what meross_lan does)
+                    flow = TestDiscoveryFlow()
+                    flow.hass = hass
+                    flow.flow_id = "test_flow_123"
+                    flow.context = {"source": "integration_discovery"}
+                    # Store in flow progress so async_init can find it
+                    hass.config_entries._flow_progress["test_flow_123"] = flow
+                    return {
+                        "type": "form",
+                        "flow_id": "test_flow_123",
+                        "step_id": "integration_discovery",
+                        "handler": "test_domain",
+                    }
+
+            mock_loader = MockLoader()
+            hass.data["integration_loader"] = mock_loader
+
+            # Create a real FlowManager
+            flow_manager = FlowManager(hass, hass.config_entries)
+
+            # Call async_init with discovery data
+            discovery_data = {"host": "192.168.1.100", "device_id": "abc123"}
+            result = await flow_manager.async_init(
+                "test_domain",
+                context={"source": "integration_discovery"},
+                data=discovery_data,
+            )
+
+            # Should have auto-completed and created entry
+            assert result["type"] == "create_entry"
+            assert result["title"] == "Test Device"
+            assert result["data"] == discovery_data
+
+        finally:
+            patcher.unpatch()
+
+    @pytest.mark.asyncio
+    async def test_async_init_auto_submit_from_menu(self, tmp_path):
+        """Test that async_init handles menu -> discovery -> auto-submit flow.
+
+        This tests the meross_lan discovery pattern where:
+        1. async_step_user returns a menu
+        2. async_step_integration_discovery is called with discovery data
+        3. Returns a finalize form that should auto-submit
+        """
+        from shim.config_entries import ConfigFlow
+        from shim.core import FlowManager
+        from shim.import_patch import ImportPatcher
+        import voluptuous as vol
+
+        # Set up import patching
+        hass = HomeAssistant(config_dir=tmp_path)
+        patcher = ImportPatcher(hass)
+        patcher.patch()
+
+        try:
+
+            class TestDiscoveryFlow(ConfigFlow):
+                """Flow that simulates meross_lan menu-based discovery."""
+
+                handler = "test_domain"
+
+                async def async_step_user(self, user_input=None):
+                    # Return a menu (like meross_lan does)
+                    return self.async_show_menu(
+                        step_id="user",
+                        menu_options=["profile", "device"],
+                    )
+
+                async def async_step_integration_discovery(self, discovery_info):
+                    # Discovery returns a finalize form
+                    self._title = "Test Device"
+                    self.device_config = discovery_info
+                    return self.async_show_form(
+                        step_id="finalize",
+                        data_schema=vol.Schema({}),  # Empty schema
+                    )
+
+                async def async_step_finalize(self, user_input=None):
+                    # Create entry when finalize is called
+                    return self.async_create_entry(
+                        title=self._title,
+                        data=self.device_config,
+                    )
+
+            # Create a mock loader that returns our test flow
+            class MockLoader:
+                async def start_config_flow(self, domain):
+                    flow = TestDiscoveryFlow()
+                    flow.hass = hass
+                    flow.flow_id = "test_flow_123"
+                    flow.handler = "test_domain"
+                    flow.context = {}
+                    hass.config_entries._flow_progress["test_flow_123"] = flow
+                    # Return menu from async_step_user
+                    return {
+                        "type": "menu",
+                        "flow_id": "test_flow_123",
+                        "step_id": "user",
+                        "handler": "test_domain",
+                    }
+
+            mock_loader = MockLoader()
+            hass.data["integration_loader"] = mock_loader
+
+            # Create a real FlowManager
+            flow_manager = FlowManager(hass, hass.config_entries)
+
+            # Call async_init with discovery data (like meross_lan does)
+            discovery_data = {"host": "192.168.1.100", "device_id": "abc123"}
+            result = await flow_manager.async_init(
+                "test_domain",
+                context={"source": "integration_discovery"},
+                data=discovery_data,
+            )
+
+            # Should have gone: menu -> integration_discovery -> finalize -> create_entry
+            assert result["type"] == "create_entry"
+            assert result["title"] == "Test Device"
+            assert result["data"] == discovery_data
+
+            # Verify the config entry was actually created
+            entries = hass.config_entries.async_entries("test_domain")
+            assert len(entries) == 1
+            assert entries[0].title == "Test Device"
+            assert entries[0].data == discovery_data
+
+        finally:
+            patcher.unpatch()
+
 
 class TestConfigFlow:
     """Test cases for ConfigFlow class."""
@@ -565,6 +738,27 @@ class TestConfigFlow:
         result = await flow.async_set_unique_id("device_789", raise_on_progress=False)
         assert result is None  # No existing entry
         assert flow.context["unique_id"] == "device_789"
+
+    def test_unique_id_property(self):
+        """Test ConfigFlow.unique_id property returns unique_id from context."""
+        from shim.config_entries import ConfigFlow
+
+        class TestConfigFlow(ConfigFlow):
+            pass
+
+        flow = TestConfigFlow()
+        flow.context = {}
+
+        # Initially should be None
+        assert flow.unique_id is None
+
+        # Set via context (like async_set_unique_id does)
+        flow.context["unique_id"] = "test_device_123"
+        assert flow.unique_id == "test_device_123"
+
+        # Test with None in context
+        flow.context["unique_id"] = None
+        assert flow.unique_id is None
 
     @pytest.mark.asyncio
     async def test_async_set_unique_id_returns_existing_entry(self, tmp_path):

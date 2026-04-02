@@ -165,8 +165,33 @@ def build_mqtt_device_config(device_info: Any) -> Dict[str, Any]:
         "identifiers": format_device_identifiers(
             get_device_info_attr(device_info, "identifiers", set())
         ),
-        "name": get_device_info_attr(device_info, "name"),
     }
+
+    # Try to get name from device_info first, then look up in device registry
+    name = get_device_info_attr(device_info, "name")
+    if not name and get_device_info_attr(device_info, "identifiers"):
+        # Look up device in registry to get the name
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            # Get the registry - works with or without hass
+            registry = dr.async_get(None)
+            if registry and hasattr(registry, "_devices"):
+                # Get identifiers from device_info
+                identifiers = get_device_info_attr(device_info, "identifiers", set())
+                # Look for matching device in registry
+                for device_id, device in registry._devices.items():
+                    # Check if any identifier matches
+                    if hasattr(device, "identifiers"):
+                        # Check for identifier overlap
+                        if identifiers & device.identifiers:
+                            name = device.name
+                            break
+        except Exception:
+            pass
+
+    if name:
+        config["name"] = name
 
     manufacturer = get_device_info_attr(device_info, "manufacturer")
     if manufacturer:
@@ -284,9 +309,29 @@ class EntityRegistry:
         """Get all registered entities."""
         return list(self._entities.values())
 
+    def async_update_entity(
+        self, entity_id: str, *, name: str = None, icon: str = None, **kwargs
+    ):
+        """Update entity properties."""
+        entity = self._entities.get(entity_id)
+        if entity:
+            if name is not None:
+                entity._attr_name = name
+            if icon is not None:
+                entity._attr_icon = icon
+            # Update any other attributes
+            for key, value in kwargs.items():
+                if hasattr(entity, key):
+                    setattr(entity, key, value)
+        return entity
+
 
 class Entity:
     """Base class for all entities."""
+
+    # Class attributes (can be accessed via Entity.hass, Entity.platform)
+    hass: Optional[Any] = None
+    platform: Optional[Any] = None
 
     # Entity properties
     entity_id: Optional[str] = None
@@ -306,8 +351,6 @@ class Entity:
 
     def __init__(self):
         """Initialize the entity."""
-        self.hass = None
-        self.platform = None
         self._added = False
         self._available = True
 

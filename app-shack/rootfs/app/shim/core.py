@@ -700,7 +700,7 @@ class FlowManager:
             return {"type": "abort", "reason": "failed_to_start"}
 
         # If there's data (discovery), continue with that step
-        if data is not None and result.get("type") == "form":
+        if data is not None:
             flow_id = result.get("flow_id")
             # Find the appropriate step method based on context source
             source = (context or {}).get("source", "user")
@@ -711,6 +711,80 @@ class FlowManager:
                 step_func = getattr(flow, step_method)
                 result = await step_func(data)
                 result["flow_id"] = flow_id
+
+                # Auto-complete if the step returned a form/menu with no required fields
+                # This handles discovery flows that just need confirmation (like meross_lan finalize step)
+                if result.get("type") in ("form", "menu"):
+                    data_schema = result.get("data_schema")
+                    if data_schema is not None or result.get("type") == "menu":
+                        try:
+                            # Check if schema has any required fields
+                            has_required = False
+                            if data_schema is not None and hasattr(
+                                data_schema, "schema"
+                            ):
+                                schema_dict = data_schema.schema
+                                if isinstance(schema_dict, dict):
+                                    for key in schema_dict.keys():
+                                        # Check if key is a Required marker
+                                        if hasattr(
+                                            key, "__class__"
+                                        ) and key.__class__.__name__ in ("Required",):
+                                            has_required = True
+                                            break
+
+                            # If no required fields, auto-submit the form
+                            if not has_required:
+                                _LOGGER.debug(
+                                    f"Auto-submitting {result.get('type')} for flow {flow_id}, step {result.get('step_id')}"
+                                )
+                                step_id = result.get("step_id", "user")
+                                step_method = f"async_step_{step_id}"
+                                if hasattr(flow, step_method):
+                                    step_func = getattr(flow, step_method)
+                                    result = await step_func({})  # Empty user input
+                                    result["flow_id"] = flow_id
+                        except Exception as e:
+                            _LOGGER.warning(f"Error auto-submitting form: {e}")
+
+        # If result is create_entry, actually create the config entry
+        if result.get("type") == "create_entry":
+            try:
+                flow = self._config_entries._flow_progress.get(flow_id)
+                if flow:
+                    from .config_entries import ConfigEntry
+
+                    entry = ConfigEntry(
+                        entry_id=flow_id,
+                        version=getattr(flow, "VERSION", 1),
+                        domain=flow.handler,
+                        title=result.get("title", "Unknown"),
+                        data=result.get("data", {}),
+                    )
+                    # Set unique_id if available
+                    if flow.unique_id:
+                        entry._unique_id = flow.unique_id
+                    await self._config_entries.async_add(entry)
+                    _LOGGER.debug(
+                        f"Created config entry {entry.entry_id} for {flow.handler}"
+                    )
+                    # Clean up the flow
+                    self._config_entries._flow_progress.pop(flow_id, None)
+
+                    # Set up the integration to create entities
+                    loader = self._hass.data.get("integration_loader")
+                    if loader:
+                        try:
+                            await loader.setup_integration(entry)
+                            _LOGGER.debug(
+                                f"Set up integration {flow.handler} for entry {entry.entry_id}"
+                            )
+                        except Exception as e:
+                            _LOGGER.error(
+                                f"Error setting up integration {flow.handler}: {e}"
+                            )
+            except Exception as e:
+                _LOGGER.error(f"Error creating config entry from flow: {e}")
 
         return result
 

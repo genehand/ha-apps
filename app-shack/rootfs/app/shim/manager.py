@@ -76,6 +76,17 @@ class ShimManager:
         # Load and setup enabled integrations
         await self._load_enabled_integrations()
 
+        # Show helpful message for meross_lan users about expected warnings
+        enabled_domains = {
+            info.domain for info in self._integration_manager.get_enabled_integrations()
+        }
+        if "meross_lan" in enabled_domains:
+            _LOGGER.info(
+                "Note: 'Unable to identify abilities' and "
+                "'KeyError in attach_mqtt' warnings are usually for devices "
+                "in your Meross cloud account that are currently unreachable."
+            )
+
         # Start periodic update checks
         self._update_check_task = asyncio.create_task(self._periodic_update_checks())
 
