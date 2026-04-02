@@ -1704,3 +1704,53 @@ class TestWaterHeaterModesDiscovery:
         assert "idle" in final_modes, "idle should be added to modes after seeing it"
         assert "off" in final_modes
         assert "on" in final_modes
+
+
+class TestSensorEntityStateWithZero:
+    """Tests for sensor entity state handling with zero values."""
+
+    def test_sensor_entity_state_with_string_zero(self):
+        """Test that sensor entities with '0' as state show correctly (nws_alerts issue)."""
+        from shim.platforms.sensor import SensorEntity
+
+        class TestSensor(SensorEntity):
+            def __init__(self, native_value):
+                self._attr_native_value = native_value
+                self._attr_unique_id = "test_sensor"
+                self._attr_name = "Test Sensor"
+
+        # Test with string "0" - this is the nws_alerts case
+        entity_with_string_zero = TestSensor("0")
+        assert entity_with_string_zero.native_value == "0"
+        assert entity_with_string_zero.state == "0"
+        assert entity_with_string_zero.available is True
+
+        # Test with integer 0
+        entity_with_int_zero = TestSensor(0)
+        assert entity_with_int_zero.native_value == 0
+        assert entity_with_int_zero.state == "0"
+        assert entity_with_int_zero.available is True
+
+        # Test with float 0.0
+        entity_with_float_zero = TestSensor(0.0)
+        assert entity_with_float_zero.native_value == 0.0
+        assert entity_with_float_zero.state == "0.0"
+        assert entity_with_float_zero.available is True
+
+    def test_sensor_entity_available_with_zero_values(self):
+        """Test that sensor entities with zero values are available."""
+        from shim.platforms.sensor import SensorEntity
+
+        class TestSensor(SensorEntity):
+            def __init__(self, native_value):
+                self._attr_native_value = native_value
+                self._attr_unique_id = "test_sensor"
+                self._attr_name = "Test Sensor"
+
+        # All zero values should be available
+        assert TestSensor("0").available is True
+        assert TestSensor(0).available is True
+        assert TestSensor(0.0).available is True
+
+        # But None should be unavailable
+        assert TestSensor(None).available is False

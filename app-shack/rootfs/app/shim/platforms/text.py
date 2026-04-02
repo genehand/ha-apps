@@ -60,6 +60,15 @@ class TextEntity(Entity):
         return self.native_value
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available.
+
+        Text entities are available if native_value is not None.
+        An empty string is a valid state (no text entered).
+        """
+        return self.native_value is not None
+
+    @property
     def pattern(self) -> str | None:
         """Return the regex pattern for the text."""
         # Check entity_description first

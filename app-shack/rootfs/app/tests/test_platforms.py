@@ -724,3 +724,220 @@ class TestNumberEntityValueClamping:
         value = entity.native_value
         clamped_value = max(min_val, min(max_val, value))
         assert clamped_value == 25.0
+
+    def test_number_entity_state_property(self):
+        """Test that NumberEntity state property returns native_value as string."""
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self, native_value):
+                self._attr_native_value = native_value
+                self._attr_native_min_value = 0.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        # Test with a valid value - state should return string representation
+        entity_with_value = TestNumber(45.5)
+        assert entity_with_value.native_value == 45.5
+        assert entity_with_value.state == "45.5"
+
+        # Test with zero value - state should return "0.0" not None
+        entity_with_zero = TestNumber(0.0)
+        assert entity_with_zero.native_value == 0.0
+        assert entity_with_zero.state == "0.0"
+
+        # Test with None value - state should return None
+        entity_with_none = TestNumber(None)
+        assert entity_with_none.native_value is None
+        assert entity_with_none.state is None
+
+    def test_number_entity_available_property(self):
+        """Test that NumberEntity available property reflects native_value status."""
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self, native_value):
+                self._attr_native_value = native_value
+                self._attr_native_min_value = 0.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        # Test with a valid value - should be available
+        entity_with_value = TestNumber(45.5)
+        assert entity_with_value.available is True
+
+        # Test with zero value - should be available (0 is a valid number)
+        entity_with_zero = TestNumber(0.0)
+        assert entity_with_zero.available is True
+
+        # Test with None value - should be unavailable
+        entity_with_none = TestNumber(None)
+        assert entity_with_none.available is False
+
+
+class TestSelectEntityStateAndAvailable:
+    """Tests for select entity state and available properties."""
+
+    def test_select_entity_state_property(self):
+        """Test that SelectEntity state property returns current_option with translation."""
+        from shim.platforms.select import SelectEntity, SelectEntityDescription
+
+        class TestSelect(SelectEntity):
+            def __init__(self, current_option, options_map=None):
+                self._attr_current_option = current_option
+                self._attr_options = ["auto", "manual", "sleep"]
+                self._attr_unique_id = "test_select"
+                self._attr_name = "Test Select"
+                if options_map:
+                    self.entity_description = SelectEntityDescription(
+                        key="test",
+                        options=self._attr_options,
+                        options_map=options_map,
+                    )
+
+        # Test with a valid option - state should return the option string
+        entity_with_value = TestSelect("auto")
+        assert entity_with_value.current_option == "auto"
+        assert entity_with_value.state == "auto"
+
+        # Test with options_map translation - state should return translated value
+        options_map = {"auto": "Automatic", "manual": "Manual Mode"}
+        entity_with_translation = TestSelect("auto", options_map=options_map)
+        assert entity_with_translation.current_option == "auto"
+        assert entity_with_translation.state == "Automatic"
+
+        # Test translation for another option
+        entity_manual = TestSelect("manual", options_map=options_map)
+        assert entity_manual.state == "Manual Mode"
+
+        # Test with empty string - state should return empty string (valid selection)
+        entity_with_empty = TestSelect("")
+        assert entity_with_empty.current_option == ""
+        assert entity_with_empty.state == ""
+
+        # Test with None value - state should return None
+        entity_with_none = TestSelect(None)
+        assert entity_with_none.current_option is None
+        assert entity_with_none.state is None
+
+    def test_select_entity_available_property(self):
+        """Test that SelectEntity available property reflects current_option status."""
+        from shim.platforms.select import SelectEntity
+
+        class TestSelect(SelectEntity):
+            def __init__(self, current_option):
+                self._attr_current_option = current_option
+                self._attr_options = ["auto", "manual", "sleep"]
+                self._attr_unique_id = "test_select"
+                self._attr_name = "Test Select"
+
+        # Test with a valid option - should be available
+        entity_with_value = TestSelect("manual")
+        assert entity_with_value.available is True
+
+        # Test with empty string - should be available (empty is a valid selection)
+        entity_with_empty = TestSelect("")
+        assert entity_with_empty.available is True
+
+        # Test with None value - should be unavailable
+        entity_with_none = TestSelect(None)
+        assert entity_with_none.available is False
+
+
+class TestButtonEntityStateAndAvailable:
+    """Tests for button entity state and available properties."""
+
+    def test_button_entity_state_property(self):
+        """Test that ButtonEntity state property returns 'Press'."""
+        from shim.platforms.button import ButtonEntity
+
+        class TestButton(ButtonEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_button"
+                self._attr_name = "Test Button"
+
+        entity = TestButton()
+        # Buttons should always show "Press" as their state
+        assert entity.state == "Press"
+
+    def test_button_entity_available_property(self):
+        """Test that ButtonEntity available property is always True."""
+        from shim.platforms.button import ButtonEntity
+
+        class TestButton(ButtonEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_button"
+                self._attr_name = "Test Button"
+
+        entity = TestButton()
+        # Buttons should always be available
+        assert entity.available is True
+
+    def test_button_entity_with_device_class(self):
+        """Test ButtonEntity with device class."""
+        from shim.platforms.button import ButtonEntity, ButtonDeviceClass
+
+        class ResetFilterButton(ButtonEntity):
+            def __init__(self):
+                self._attr_unique_id = "reset_filter"
+                self._attr_name = "Reset Filter Life"
+                self._attr_device_class = ButtonDeviceClass.RESTART
+
+        entity = ResetFilterButton()
+        assert entity.state == "Press"
+        assert entity.available is True
+        assert entity.device_class == "restart"
+
+
+class TestTextEntityStateAndAvailable:
+    """Tests for text entity state and available properties."""
+
+    def test_text_entity_state_property(self):
+        """Test that TextEntity state property returns native_value."""
+        from shim.platforms.text import TextEntity
+
+        class TestText(TextEntity):
+            def __init__(self, native_value):
+                self._attr_native_value = native_value
+                self._attr_unique_id = "test_text"
+                self._attr_name = "Test Text"
+
+        # Test with a valid string - state should return the string
+        entity_with_value = TestText("Hello World")
+        assert entity_with_value.native_value == "Hello World"
+        assert entity_with_value.state == "Hello World"
+
+        # Test with empty string - state should return empty string (valid state)
+        entity_with_empty = TestText("")
+        assert entity_with_empty.native_value == ""
+        assert entity_with_empty.state == ""
+
+        # Test with None value - state should return None
+        entity_with_none = TestText(None)
+        assert entity_with_none.native_value is None
+        assert entity_with_none.state is None
+
+    def test_text_entity_available_property(self):
+        """Test that TextEntity available property handles empty strings correctly."""
+        from shim.platforms.text import TextEntity
+
+        class TestText(TextEntity):
+            def __init__(self, native_value):
+                self._attr_native_value = native_value
+                self._attr_unique_id = "test_text"
+                self._attr_name = "Test Text"
+
+        # Test with a valid string - should be available
+        entity_with_value = TestText("Hello")
+        assert entity_with_value.available is True
+
+        # Test with empty string - should be available (empty is a valid text state)
+        # This is the key fix for flightradar24 "Airport track" issue
+        entity_with_empty = TestText("")
+        assert entity_with_empty.available is True
+
+        # Test with None value - should be unavailable
+        entity_with_none = TestText(None)
+        assert entity_with_none.available is False

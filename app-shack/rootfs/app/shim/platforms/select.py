@@ -42,6 +42,23 @@ class SelectEntity(Entity):
         return self._attr_current_option
 
     @property
+    def state(self) -> Optional[str]:
+        """Return the state of the entity."""
+        current = self.current_option
+        if current is None:
+            return None
+        # Apply options_map translation if available (for display consistency with MQTT)
+        options_map = self._get_options_map()
+        if options_map and current in options_map:
+            return options_map[current]
+        return current
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.current_option is not None
+
+    @property
     def options(self) -> List[str]:
         """Return a set of selectable options."""
         return self._attr_options

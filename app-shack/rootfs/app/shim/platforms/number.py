@@ -57,6 +57,18 @@ class NumberEntity(Entity):
         return self._attr_native_value
 
     @property
+    def state(self) -> Optional[str]:
+        """Return the state of the entity."""
+        if self.native_value is None:
+            return None
+        return str(self.native_value)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.native_value is not None
+
+    @property
     def native_min_value(self) -> float:
         """Return the minimum value."""
         return self._attr_native_min_value

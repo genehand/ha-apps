@@ -39,6 +39,23 @@ class ButtonEntity(Entity):
 
     _attr_device_class: Optional[str] = None
 
+    @property
+    def state(self) -> Optional[str]:
+        """Return the state of the entity.
+
+        Buttons don't have a traditional state - they are momentary actions.
+        Return a static string to indicate the button is present and pressable.
+        """
+        return "Press"
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available.
+
+        Buttons are always available unless explicitly disabled.
+        """
+        return True
+
     def press(self) -> None:
         """Press the button."""
         raise NotImplementedError()

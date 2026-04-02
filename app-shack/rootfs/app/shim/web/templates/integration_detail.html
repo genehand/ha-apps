@@ -246,7 +246,7 @@
                         <div style="font-size: 12px; color: var(--pico-muted-color);">{{ entity.entity_id }}</div>
                     </div>
                     <div style="text-align: right;">
-                        <div style="font-size: 18px; font-weight: bold;">{{ entity.state or 'unavailable' }}</div>
+                        <div style="font-size: 18px; font-weight: bold;">{{ entity.state if entity.available else 'unavailable' }}</div>
                         <div style="font-size: 12px; color: var(--pico-muted-color);">{{ 'available' if entity.available else 'unavailable' }}</div>
                     </div>
                 </div>

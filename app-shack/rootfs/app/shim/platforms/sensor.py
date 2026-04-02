@@ -243,6 +243,15 @@ class SensorEntity(Entity):
         return str(self.native_value)
 
     @property
+    def available(self) -> bool:
+        """Return True if entity is available.
+
+        Sensor entities are available if native_value is not None.
+        A value of 0 or "0" is a valid state (not the same as unavailable).
+        """
+        return self.native_value is not None
+
+    @property
     def unit_of_measurement(self) -> Optional[str]:
         """Return the unit of measurement of this entity."""
         return self.native_unit_of_measurement
