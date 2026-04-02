@@ -15,3 +15,5 @@ VERSION=$(grep "^version:" "$CONFIG_FILE" | sed 's/version: //' | tr -d '[:space
 sed -i.bak "s/^version = .*/version = \"$VERSION\"/" "$PYPROJECT_FILE" && rm -f "$PYPROJECT_FILE.bak"
 
 echo "Synced version $VERSION to pyproject.toml"
+
+uv --directory rootfs/app sync

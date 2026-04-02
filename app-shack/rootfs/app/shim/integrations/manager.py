@@ -128,7 +128,10 @@ class IntegrationManager:
             _LOGGER.info(f"Running in local dev mode - using {self._venv_dir}")
 
         # Construct site-packages path and add to sys.path for imports
-        python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        # Use abiflags (e.g., 't' for free-threading) to get correct directory name
+        python_version = (
+            f"python{sys.version_info.major}.{sys.version_info.minor}{sys.abiflags}"
+        )
         self._persistent_packages_dir = (
             self._venv_dir / "lib" / python_version / "site-packages"
         )
