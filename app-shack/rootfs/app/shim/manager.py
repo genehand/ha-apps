@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 from paho.mqtt.client import Client, MQTTMessage
 
+from config import create_persistent_notification
+
 from .logging import get_logger
 from .core import HomeAssistant, ConfigEntry
 from .storage import Storage
@@ -86,6 +88,9 @@ class ShimManager:
                 "'KeyError in attach_mqtt' warnings are usually for devices "
                 "in your Meross cloud account that are currently unreachable."
             )
+
+        # Initial update check and notify (in background, don't block startup)
+        asyncio.create_task(self._initial_update_check())
 
         # Start periodic update checks
         self._update_check_task = asyncio.create_task(self._periodic_update_checks())
@@ -472,6 +477,32 @@ class ShimManager:
                 if not success:
                     _LOGGER.error(f"Failed to setup {info.domain}")
 
+    async def _initial_update_check(self) -> None:
+        """Check for updates on startup and send notification if any found.
+
+        This runs in the background immediately after startup to notify
+        users of available updates without waiting for the periodic check.
+        """
+        try:
+            # Give integrations a moment to fully initialize
+            await asyncio.sleep(5)
+
+            if not self._running:
+                return
+
+            _LOGGER.info("Running initial update check")
+            updates = await self._integration_manager.check_for_updates()
+
+            if updates:
+                _LOGGER.info(f"Found {len(updates)} available updates on startup")
+                # This will trigger notification via _notification_callback
+                # which calls _send_ha_notification
+            else:
+                _LOGGER.debug("No updates available on startup")
+
+        except Exception as e:
+            _LOGGER.debug(f"Initial update check failed: {e}")
+
     async def _periodic_update_checks(self) -> None:
         """Periodically check for integration updates."""
         while self._running:
@@ -544,44 +575,45 @@ class ShimManager:
         """Send a notification to Home Assistant via persistent_notification.
 
         This is used by the IntegrationManager to send aggregated update notifications.
+        Uses Supervisor API first, falls back to MQTT for automation handling.
         """
-        if not self._mqtt_client:
-            _LOGGER.warning("Cannot send HA notification - MQTT client not available")
-            return
-
         # Create a notification ID based on the title
         notification_id = (
             f"shim_{title.lower().replace(' ', '_').replace('-', '_')[:30]}"
         )
 
-        # Use the HA persistent_notification service via MQTT
-        service_topic = f"homeassistant/services/persistent_notification/create"
+        # Try Supervisor API first (for persistent notifications in HA)
+        success = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: create_persistent_notification(title, message, notification_id),
+        )
 
-        # Publish service call
-        payload = {
-            "notification_id": notification_id,
-            "title": title,
-            "message": message,
-        }
+        if success:
+            _LOGGER.info(f"Sent HA persistent notification: {title}")
+        else:
+            _LOGGER.debug("Supervisor API notification failed, using MQTT fallback")
 
-        try:
-            # Publish to the service topic - HA should pick this up
-            topic = f"{self._mqtt_base_topic}/notification"
-            self._mqtt_client.publish(
-                topic,
-                json.dumps(
-                    {
-                        "title": title,
-                        "message": message,
-                        "notification_id": notification_id,
-                    }
-                ),
-                qos=0,
-                retain=False,
-            )
-            _LOGGER.info(f"Sent HA notification: {title}")
-        except Exception as e:
-            _LOGGER.error(f"Failed to send HA notification: {e}")
+        # Always publish to MQTT as fallback / for automations
+        if self._mqtt_client:
+            try:
+                topic = f"{self._mqtt_base_topic}/notification"
+                self._mqtt_client.publish(
+                    topic,
+                    json.dumps(
+                        {
+                            "title": title,
+                            "message": message,
+                            "notification_id": notification_id,
+                        }
+                    ),
+                    qos=0,
+                    retain=False,
+                )
+                if not success:
+                    _LOGGER.info(f"Sent notification via MQTT: {title}")
+            except Exception as e:
+                if not success:
+                    _LOGGER.error(f"Failed to send HA notification: {e}")
 
     # Public API for web UI
     def get_hass(self) -> HomeAssistant:

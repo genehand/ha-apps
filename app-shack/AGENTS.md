@@ -84,6 +84,12 @@ uv run python3 main.py
 
 ### Running Tests
 
+**Important:** Always run tests from the app directory:
+
+```bash
+cd app-shack/rootfs/app
+```
+
 ```bash
 # Unit tests only (fast)
 uv run pytest tests/ -v -m "not integration"

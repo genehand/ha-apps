@@ -48,6 +48,80 @@ def _query_supervisor_api(path: str) -> Optional[dict]:
         return None
 
 
+def _post_supervisor_api(path: str, data: dict) -> bool:
+    """Post data to the Home Assistant Supervisor API.
+
+    Args:
+        path: API endpoint path (e.g., '/core/api/services/persistent_notification/create')
+        data: JSON-serializable data to POST
+
+    Returns True on success, False on failure.
+    """
+    token = _get_supervisor_token()
+    if not token:
+        logger.debug("SUPERVISOR_TOKEN not set, not running as add-on")
+        return False
+
+    try:
+        import urllib.request
+        import urllib.error
+
+        url = f"http://supervisor{path}"
+        body = json.dumps(data).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            # Successful service calls return 200 with empty body or JSON
+            return response.status == 200
+
+    except Exception as e:
+        logger.debug("Supervisor API POST failed for %s: %s", path, e)
+        return False
+
+
+def create_persistent_notification(
+    title: str, message: str, notification_id: Optional[str] = None
+) -> bool:
+    """Create a persistent notification in Home Assistant.
+
+    Uses the Supervisor API to call the persistent_notification.create service.
+    Falls back to logging if not running as add-on or if the call fails.
+
+    Args:
+        title: Notification title
+        message: Notification message (HTML supported)
+        notification_id: Optional unique ID for the notification (for updates/dismissal)
+
+    Returns True if notification was created successfully, False otherwise.
+    """
+    service_data = {
+        "title": title,
+        "message": message,
+    }
+    if notification_id:
+        service_data["notification_id"] = notification_id
+
+    success = _post_supervisor_api(
+        "/core/api/services/persistent_notification/create", service_data
+    )
+
+    if success:
+        logger.debug("Created persistent notification: %s", title)
+    else:
+        logger.debug("Failed to create persistent notification via Supervisor API")
+
+    return success
+
+
 @dataclass
 class Config:
     """Add-on configuration."""
