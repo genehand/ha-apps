@@ -1191,6 +1191,10 @@ class IntegrationManager:
                 _LOGGER.error(f"Failed to load manifest for {actual_domain}")
                 return False
 
+            # Preserve enabled state from existing integration if present
+            existing_info = self._integrations.get(actual_domain)
+            was_enabled = existing_info.enabled if existing_info else False
+
             # Update integration info using actual domain
             info = IntegrationInfo(
                 domain=actual_domain,
@@ -1199,6 +1203,7 @@ class IntegrationManager:
                 description=manifest.get("documentation", ""),
                 source=source,
                 repository_url=repo_url,
+                enabled=was_enabled,
                 installed_at=datetime.now().isoformat(),
                 latest_version=version or manifest.get("version", "unknown"),
                 config_flow=manifest.get("config_flow", False),

@@ -57,8 +57,11 @@
                         <button type="button"
                                 hx-post="integrations/{{ integration.domain }}/update"
                                 hx-target="body"
-                                hx-swap="outerHTML">
-                            Update
+                                hx-swap="outerHTML"
+                                hx-indicator="#update-{{ integration.domain }}-spinner"
+                                hx-disabled-elt="this">
+                            <span id="update-{{ integration.domain }}-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                            <span class="button-text">Update</span>
                         </button>
                         {% endif %}
                     </div>
