@@ -278,3 +278,27 @@ class FrozenEntityDescription(EntityDescription):
 Keep them in sync for consistency.
 
 **Local Testing**: Run `uv run python3 main.py` (uv will auto-sync dependencies).
+
+## Web UI and HA Ingress
+
+The Web UI uses **relative paths** for all HTMX redirects to support both direct access and Home Assistant ingress:
+
+### Path Rules
+
+- **Always use relative paths** in `HX-Redirect` headers
+- **Never use absolute paths** starting with `/`
+
+### Examples
+
+| Endpoint | Path Format | Result |
+|----------|-------------|--------|
+| `/integrations/{domain}/enable` | `integrations/{domain}` | `/integrations/dreo` |
+| `/integrations/{domain}/update` | `../integrations/{domain}` | `/integrations/dreo` |
+| `/integrations/{domain}/disable` | `integrations/{domain}` | `/integrations/dreo` |
+| `/config/{entry_id}/remove` | `integrations/{domain}` | `/integrations/dreo` |
+
+### Why Relative Paths?
+
+When running through HA ingress, the app is served under a dynamic path like `/api/hassio_ingress/{token}/`. Absolute paths would break this by redirecting to the root of the domain. Relative paths ensure redirects work correctly in both scenarios:
+- Direct access: `http://localhost:8080/integrations/dreo`
+- HA ingress: `http://homeassistant.local/api/hassio_ingress/xxx/integrations/dreo`

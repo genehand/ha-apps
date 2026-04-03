@@ -94,7 +94,7 @@ async def main():
     shim_manager = ShimManager(
         config_dir=CONFIG_DIR,
         mqtt_client=mqtt_bridge.client,
-        mqtt_base_topic="shim",
+        mqtt_base_topic="shack",
     )
 
     # Initialize Web UI

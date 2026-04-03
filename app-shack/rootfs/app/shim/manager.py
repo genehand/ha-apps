@@ -421,9 +421,40 @@ class ShimManager:
         for entry in entries:
             await self._integration_loader.unload_integration(entry)
 
-        # Install new version
+        # Determine the correct identifier for installation
+        # For HACS default repos, we need the full_name (owner/repo)
+        # For custom repos, we can use the domain
+        full_name = info.full_name
+
+        # If full_name is missing (existing integration from before this field was added),
+        # try to resolve it by matching repository_url
+        if info.source == "hacs_default" and not full_name:
+            _LOGGER.debug(f"Resolving full_name for {domain} from repository_url")
+            full_name = self._integration_manager.resolve_full_name_by_url(
+                info.repository_url
+            )
+            if full_name:
+                # Store it for future updates
+                self._integration_manager.update_integration_field(
+                    domain, full_name=full_name
+                )
+                _LOGGER.info(f"Resolved and stored full_name for {domain}: {full_name}")
+
+        if info.source == "hacs_default" and full_name:
+            install_target = full_name
+            source = "hacs_default"
+        elif info.source == "custom":
+            install_target = domain
+            source = "custom"
+        else:
+            _LOGGER.error(
+                f"Cannot update {domain}: unable to resolve repository (source={info.source}, full_name={full_name})"
+            )
+            return
+
+        # Install new version (blocking wait for update completion)
         success = await self._integration_manager.install_integration(
-            domain, version=info.latest_version
+            install_target, version=info.latest_version, source=source, wait=True
         )
 
         if success:
@@ -432,6 +463,8 @@ class ShimManager:
                 await self._integration_loader.setup_integration(entry)
 
             _LOGGER.info(f"Successfully updated {domain} to {info.latest_version}")
+        else:
+            _LOGGER.error(f"Failed to update {domain} to {info.latest_version}")
 
     async def _load_enabled_integrations(self) -> None:
         """Load all enabled integrations."""
@@ -495,8 +528,21 @@ class ShimManager:
 
             if updates:
                 _LOGGER.info(f"Found {len(updates)} available updates on startup")
-                # This will trigger notification via _notification_callback
-                # which calls _send_ha_notification
+                # Build and send notification (same format as periodic check)
+                update_count = len(updates)
+                integration_list = ", ".join(
+                    [
+                        f"{u.name} ({u.version} → {u.latest_version})"
+                        for u in updates[:5]
+                    ]
+                )
+                if update_count > 5:
+                    integration_list += f" and {update_count - 5} more"
+                title = f"{update_count} integration update{'s' if update_count > 1 else ''} available"
+                message = f"Updates available for: {integration_list}"
+                await self._send_ha_notification(title, message)
+                # Also publish update entity state
+                await self._publish_update_notification(updates)
             else:
                 _LOGGER.debug("No updates available on startup")
 

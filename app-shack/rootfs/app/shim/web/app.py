@@ -200,7 +200,7 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"/integrations/{domain}"
+                response.headers["HX-Redirect"] = f"integrations/{domain}"
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to enable {domain}</div>',
@@ -386,7 +386,7 @@ class WebUI:
                 f"</div>"
             )
             response = HTMLResponse(content=html)
-            response.headers["HX-Redirect"] = f"integrations/{domain}"
+            response.headers["HX-Redirect"] = f"../integrations/{domain}"
             return response
 
         @self._app.post("/config/{entry_id}/remove")

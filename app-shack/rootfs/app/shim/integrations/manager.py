@@ -65,6 +65,7 @@ class IntegrationInfo:
         config_flow: bool = False,
         requirements: Optional[List[str]] = None,
         dependencies: Optional[List[str]] = None,
+        full_name: Optional[str] = None,
     ):
         self.domain = domain
         self.name = name
@@ -80,6 +81,7 @@ class IntegrationInfo:
         self.config_flow = config_flow
         self.requirements = requirements or []
         self.dependencies = dependencies or []
+        self.full_name = full_name  # HACS full_name (owner/repo) for HACS default repos
 
     def to_dict(self) -> dict:
         """Convert to dictionary for templates/API."""
@@ -98,6 +100,7 @@ class IntegrationInfo:
             "config_flow": self.config_flow,
             "requirements": self.requirements,
             "dependencies": self.dependencies,
+            "full_name": self.full_name,
         }
 
 
@@ -1201,6 +1204,7 @@ class IntegrationManager:
                 config_flow=manifest.get("config_flow", False),
                 requirements=manifest.get("requirements", []),
                 dependencies=manifest.get("dependencies", []),
+                full_name=full_name if source == "hacs_default" else None,
             )
 
             self._integrations[actual_domain] = info
@@ -1363,6 +1367,54 @@ class IntegrationManager:
     def get_enabled_integrations(self) -> List[IntegrationInfo]:
         """Get all enabled integrations."""
         return [info for info in self._integrations.values() if info.enabled]
+
+    def update_integration_field(self, domain: str, **kwargs) -> bool:
+        """Update specific fields of an integration.
+
+        Args:
+            domain: The integration domain
+            **kwargs: Fields to update (e.g., full_name="owner/repo")
+
+        Returns:
+            True if updated successfully, False if integration not found
+        """
+        info = self._integrations.get(domain)
+        if not info:
+            return False
+
+        # Update the specified fields
+        for key, value in kwargs.items():
+            if hasattr(info, key):
+                setattr(info, key, value)
+
+        # Save to storage
+        self._save_integrations()
+        return True
+
+    def resolve_full_name_by_url(self, repository_url: str) -> Optional[str]:
+        """Resolve full_name by matching repository_url in HACS repos.
+
+        This is used for backwards compatibility with existing integrations
+        that were installed before the full_name field was added.
+
+        Args:
+            repository_url: The repository URL to match (e.g., "https://github.com/owner/repo")
+
+        Returns:
+            The full_name (e.g., "owner/repo") or None if not found
+        """
+        if not repository_url:
+            return None
+
+        # Normalize URL for comparison
+        normalized_url = repository_url.rstrip("/")
+
+        for full_name, info in self._hacs_repos.items():
+            repo_url = info.get("repository_url", "")
+            if repo_url.rstrip("/") == normalized_url:
+                return full_name
+
+        return None
 
     def get_available_integrations(self) -> List[dict]:
         """Get integrations available from HACS with rich metadata."""
