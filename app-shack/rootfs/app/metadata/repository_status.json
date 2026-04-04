@@ -14,14 +14,15 @@
     "AlexandrErohin/home-assistant-flightradar24": {
       "version": "1.31.1"
     },
-    "libdyson-wg/ha-dyson": {
-      "version": "1.7.0"
-    },
-    "heyajohnny/cryptoinfo": {
-      "version": "1.0.10"
+    "explosivo22/rinnaicontrolr-ha": {
+      "version": "2.2.6",
+      "notes": "Rinnai water heater integration (custom repo)"
     },
     "finity69x2/nws_alerts": {
       "version": "6.6.1"
+    },
+    "heyajohnny/cryptoinfo": {
+      "version": "1.0.10"
     },
     "JeffSteinbok/hass-dreo": {
       "version": "1.7.7"
@@ -29,9 +30,11 @@
     "krahabb/meross_lan": {
       "version": "5.8.0"
     },
-    "explosivo22/rinnaicontrolr-ha": {
-      "version": "2.2.6",
-      "notes": "Rinnai water heater integration (custom repo)"
+    "libdyson-wg/ha-dyson": {
+      "version": "1.7.0"
+    },
+    "marcolivierarsenault/moonraker-home-assistant": {
+      "version": "1.13.3"
     },
     "schmittx/home-assistant-leviton-decora-smart-wifi": {
       "version": "1.7.1",

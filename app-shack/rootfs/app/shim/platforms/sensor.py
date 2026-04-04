@@ -155,6 +155,7 @@ class SensorEntityDescription(
     state_class: str | None = None
     native_unit_of_measurement: str | None = None
     options: list[str] | None = None
+    suggested_display_precision: int | None = None
 
 
 class SensorEntity(Entity):

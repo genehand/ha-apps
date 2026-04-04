@@ -288,6 +288,54 @@ class IntegrationLoader:
                 del self._entities[platform_domain]
                 _LOGGER.debug(f"Cleaned up empty platform list: {platform_domain}")
 
+    async def _remove_platform_entities(
+        self, domain: str, platform: str, cleanup_mqtt: bool = True
+    ) -> bool:
+        """Remove all entities for a specific platform of an integration domain.
+
+        Args:
+            domain: The integration domain (e.g., "moonraker").
+            platform: The platform domain (e.g., "sensor", "light").
+            cleanup_mqtt: Whether to clean up MQTT topics.
+
+        Returns:
+            True if any entities were removed, False otherwise.
+        """
+        platform_key = f"{domain}.{platform}"
+        entities_to_remove = []
+
+        # Check both the platform key and the raw platform name
+        for platform_domain, entities in list(self._entities.items()):
+            for entity in list(entities):
+                entity_domain = getattr(entity, "integration_domain", None)
+                if entity_domain == domain and platform_domain == platform:
+                    entities_to_remove.append((platform_domain, entity))
+
+        if not entities_to_remove:
+            _LOGGER.debug(f"No {platform} entities found for {domain}")
+            return True
+
+        _LOGGER.info(
+            f"Removing {len(entities_to_remove)} {platform} entities for {domain}"
+        )
+
+        for platform_domain, entity in entities_to_remove:
+            try:
+                _LOGGER.debug(f"Removing entity {entity.entity_id}")
+                await entity.async_remove(cleanup_mqtt=cleanup_mqtt)
+                self._entities[platform_domain].remove(entity)
+                _LOGGER.debug(f"Successfully removed entity {entity.entity_id}")
+            except Exception as e:
+                _LOGGER.warning(f"Error removing entity {entity.entity_id}: {e}")
+
+        # Clean up empty platform lists
+        for platform_domain in list(self._entities.keys()):
+            if not self._entities[platform_domain]:
+                del self._entities[platform_domain]
+                _LOGGER.debug(f"Cleaned up empty platform list: {platform_domain}")
+
+        return True
+
     async def remove_config_entry(self, entry: ConfigEntry) -> bool:
         """Remove a specific config entry and its entities."""
         domain = entry.domain

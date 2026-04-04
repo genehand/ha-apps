@@ -19,6 +19,7 @@ from . import humidifier
 from . import number
 from . import lock
 from . import water_heater
+from . import camera
 
 __all__ = [
     "fan",
@@ -37,4 +38,5 @@ __all__ = [
     "number",
     "lock",
     "water_heater",
+    "camera",
 ]

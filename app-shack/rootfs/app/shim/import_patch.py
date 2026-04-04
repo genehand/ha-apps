@@ -41,6 +41,7 @@ class ImportPatcher:
             "homeassistant.helpers.deprecation": "_stub_helpers_deprecation",
             "homeassistant.util.hass_dict": "_stub_util_hass_dict",
             "homeassistant.util.signal_type": "_stub_util_signal_type",
+            "homeassistant.util.network": "_stub_util_network",
         }
 
         for module_name, stub_filename in stubs.items():
@@ -94,6 +95,7 @@ class ImportPatcher:
         homeassistant_util.event_type = ha_event_type
         homeassistant_util.hass_dict = sys.modules["homeassistant.util.hass_dict"]
         homeassistant_util.signal_type = sys.modules["homeassistant.util.signal_type"]
+        homeassistant_util.network = sys.modules["homeassistant.util.network"]
         sys.modules["homeassistant.util"] = homeassistant_util
         sys.modules["homeassistant.util.event_type"] = ha_event_type
 
@@ -1324,6 +1326,17 @@ class ImportPatcher:
         homeassistant.components.number = platforms.number
         homeassistant.components.lock = platforms.lock
         homeassistant.components.water_heater = platforms.water_heater
+        homeassistant.components.camera = platforms.camera
+
+        # Create mjpeg.camera stub (submodule of camera)
+        mjpeg_camera = types.ModuleType("homeassistant.components.mjpeg.camera")
+        mjpeg_camera.MjpegCamera = platforms.camera.MjpegCamera
+        homeassistant.components.mjpeg = types.ModuleType(
+            "homeassistant.components.mjpeg"
+        )
+        homeassistant.components.mjpeg.camera = mjpeg_camera
+        sys.modules["homeassistant.components.mjpeg"] = homeassistant.components.mjpeg
+        sys.modules["homeassistant.components.mjpeg.camera"] = mjpeg_camera
 
         # Create sensor.const stub module for integrations that import from there
         sensor_const = types.ModuleType("homeassistant.components.sensor.const")
@@ -1346,6 +1359,31 @@ class ImportPatcher:
         )
         homeassistant.components.sensor.const = sensor_const
         sys.modules["homeassistant.components.sensor.const"] = sensor_const
+
+        # Create light.const stub module for integrations that import from there
+        light_const = types.ModuleType("homeassistant.components.light.const")
+        light_const.DOMAIN = platforms.light.DOMAIN
+        light_const.ColorMode = platforms.light.ColorMode
+        light_const.ATTR_BRIGHTNESS = platforms.light.ATTR_BRIGHTNESS
+        light_const.ATTR_COLOR_TEMP = platforms.light.ATTR_COLOR_TEMP
+        light_const.ATTR_EFFECT = platforms.light.ATTR_EFFECT
+        light_const.ATTR_HS_COLOR = platforms.light.ATTR_HS_COLOR
+        light_const.ATTR_RGB_COLOR = platforms.light.ATTR_RGB_COLOR
+        light_const.ATTR_RGBW_COLOR = platforms.light.ATTR_RGBW_COLOR
+        light_const.ATTR_RGBWW_COLOR = platforms.light.ATTR_RGBWW_COLOR
+        light_const.ATTR_XY_COLOR = platforms.light.ATTR_XY_COLOR
+        light_const.ATTR_WHITE_VALUE = platforms.light.ATTR_WHITE_VALUE
+        light_const.ATTR_TRANSITION = platforms.light.ATTR_TRANSITION
+        light_const.ATTR_FLASH = platforms.light.ATTR_FLASH
+        light_const.SUPPORT_BRIGHTNESS = platforms.light.SUPPORT_BRIGHTNESS
+        light_const.SUPPORT_COLOR = platforms.light.SUPPORT_COLOR
+        light_const.SUPPORT_COLOR_TEMP = platforms.light.SUPPORT_COLOR_TEMP
+        light_const.SUPPORT_EFFECT = platforms.light.SUPPORT_EFFECT
+        light_const.SUPPORT_FLASH = platforms.light.SUPPORT_FLASH
+        light_const.SUPPORT_TRANSITION = platforms.light.SUPPORT_TRANSITION
+        light_const.SUPPORT_WHITE_VALUE = platforms.light.SUPPORT_WHITE_VALUE
+        homeassistant.components.light.const = light_const
+        sys.modules["homeassistant.components.light.const"] = light_const
 
         # Create persistent_notification stub module
         persistent_notification = types.ModuleType(
@@ -1393,6 +1431,7 @@ class ImportPatcher:
         sys.modules["homeassistant.components.number"] = platforms.number
         sys.modules["homeassistant.components.lock"] = platforms.lock
         sys.modules["homeassistant.components.water_heater"] = platforms.water_heater
+        sys.modules["homeassistant.components.camera"] = platforms.camera
 
         _LOGGER.debug("Platform modules patched")
 

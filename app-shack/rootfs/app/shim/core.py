@@ -439,6 +439,33 @@ class ConfigEntries:
         # TODO: Implement reload logic
         _LOGGER.info(f"Reloading config entry {entry_id}")
 
+    async def async_forward_entry_unload(
+        self, entry: "ConfigEntry", platform: str
+    ) -> bool:
+        """Unload a specific platform for a config entry.
+
+        This is called by integrations during async_unload_entry to unload
+        individual platforms (e.g., sensor, switch, light).
+
+        Args:
+            entry: The config entry to unload the platform for.
+            platform: The platform domain to unload (e.g., "sensor", "light").
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            # Get the loader from hass.data (set by ShimManager)
+            loader = self._hass.data.get("integration_loader")
+            if loader:
+                # Remove entities for this specific platform/domain combination
+                await loader._remove_platform_entities(entry.domain, platform)
+                _LOGGER.debug(f"Unloaded {platform} platform for {entry.entry_id}")
+            return True
+        except Exception as e:
+            _LOGGER.warning(f"Failed to unload {platform} for {entry.entry_id}: {e}")
+            return False
+
     def async_progress(self) -> List[dict]:
         """Return in-progress config flows."""
         return list(self._flow_progress.values())
@@ -477,6 +504,22 @@ class ConfigEntries:
         self, entry: ConfigEntry, platforms: List[str]
     ) -> None:
         """Forward entry setup to platforms."""
+        # Filter out camera platforms (they're slow and don't integrate well with MQTT)
+        SKIP_PLATFORMS = {"camera", "mjpeg"}
+        filtered_platforms = [
+            p
+            for p in platforms
+            if (p.value if hasattr(p, "value") else str(p)) not in SKIP_PLATFORMS
+        ]
+        if len(filtered_platforms) != len(platforms):
+            skipped = [
+                p
+                for p in platforms
+                if (p.value if hasattr(p, "value") else str(p)) in SKIP_PLATFORMS
+            ]
+            _LOGGER.debug(f"Skipping camera platforms for {entry.domain}: {skipped}")
+            platforms = filtered_platforms
+
         _LOGGER.debug(f"Setting up platforms {platforms} for {entry.domain}")
 
         # Ensure custom_components parent is in path for platform imports

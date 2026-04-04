@@ -726,4 +726,9 @@ class ShimManager:
             entry.unique_id = unique_id
 
         await self._hass.config_entries.async_add(entry)
+
+        # If integration is already enabled, set up the new entry immediately
+        if info.enabled:
+            await self._integration_loader.setup_integration(entry)
+
         return entry

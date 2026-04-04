@@ -564,6 +564,31 @@ class WebUI:
                                 f"Field '{key}': no validator found, keeping as-is"
                             )
                             converted_input[key] = value
+
+                    # Add missing schema fields with their default values
+                    # This handles unchecked checkboxes which browsers don't submit
+                    for schema_key, schema_val in schema_dict.items():
+                        field_name = (
+                            schema_key.schema
+                            if hasattr(schema_key, "schema")
+                            else schema_key
+                        )
+                        if field_name not in converted_input:
+                            # Check if this is an Optional field with a default
+                            if hasattr(schema_key, "default"):
+                                default_value = schema_key.default
+                                # Voluptuous default may be a callable (lambda) that returns the actual value
+                                if callable(default_value):
+                                    try:
+                                        default_value = default_value()
+                                    except Exception:
+                                        # If calling fails, skip this field
+                                        continue
+                                _LOGGER.debug(
+                                    f"Field '{field_name}': missing from form, using default={repr(default_value)}"
+                                )
+                                converted_input[field_name] = default_value
+
                     user_input = converted_input
                     _LOGGER.debug(f"Final user_input: {user_input}")
 
@@ -902,12 +927,17 @@ class WebUI:
             if flow:
                 flow._last_form_schema = schema
 
-        # Translate error messages
+        # Load translations for field labels and error messages
+        translations = self._load_integration_translations(domain)
+
+        # Translate error messages (check integration translations first, then fall back)
         translated_errors = {}
+        config_errors = translations.get("config", {}).get("error", {})
         for key, error_key in errors.items():
             if isinstance(error_key, str):
-                translated_errors[key] = self.ERROR_TRANSLATIONS.get(
-                    error_key, error_key
+                # First check integration translations, then static translations
+                translated_errors[key] = config_errors.get(
+                    error_key, self.ERROR_TRANSLATIONS.get(error_key, error_key)
                 )
             else:
                 translated_errors[key] = str(error_key)
@@ -916,8 +946,7 @@ class WebUI:
         # This is a simplified version - real implementation would need full schema parsing
         fields = self._parse_schema(schema)
 
-        # Load translations for field labels and descriptions
-        translations = self._load_integration_translations(domain)
+        # Apply field translations
         if translations:
             self._apply_field_translations(fields, translations, step_id)
 
@@ -1367,13 +1396,17 @@ class WebUI:
         if not isinstance(value, str):
             return value
 
-        # Handle empty strings
+        validator_class = validator.__class__.__name__
+
+        # Handle plain Python types (int, float, bool, str)
+        if validator is str or validator_class == "type" and validator == str:
+            # Keep empty strings for str validators (integrations expect "" not None)
+            return value
+
+        # Handle empty strings for non-str types
         if value == "":
             return None
 
-        validator_class = validator.__class__.__name__
-
-        # Handle plain Python types (int, float, bool)
         if validator is int or validator_class == "type" and validator == int:
             try:
                 return int(value)
