@@ -619,11 +619,15 @@ class ConfigEntries:
                                     if desc_enabled is not None:
                                         entity_enabled = desc_enabled
 
+                                # Note: We still publish disabled entities to MQTT
+                                # so users can enable them in HA if needed.
+                                # The platform's _publish_mqtt_discovery will set
+                                # enabled_by_default: false for disabled entities.
                                 if not entity_enabled:
                                     _LOGGER.debug(
-                                        f"Skipping disabled entity {entity.entity_id}"
+                                        f"Entity {entity.entity_id} is disabled by default, "
+                                        f"but still publishing to MQTT for optional enable"
                                     )
-                                    continue
 
                                 # Set integration domain for tracking
                                 entity._attr_integration_domain = entry.domain
