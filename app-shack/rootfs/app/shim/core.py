@@ -416,14 +416,23 @@ class ConfigEntries:
                     _LOGGER.info(f"Removed config entry {entry_id}")
                     return
 
-    async def async_update_entry(self, entry: ConfigEntry, **kwargs) -> None:
-        """Update an entry."""
+    def async_update_entry(self, entry: ConfigEntry, **kwargs) -> bool:
+        """Update an entry.
+
+        Returns True if changes were made, False otherwise.
+        """
+        changed = False
         for key, value in kwargs.items():
             if hasattr(entry, key):
-                setattr(entry, key, value)
+                current_value = getattr(entry, key)
+                if current_value != value:
+                    setattr(entry, key, value)
+                    changed = True
 
-        self._save_entries()
-        _LOGGER.debug(f"Updated config entry {entry.entry_id}")
+        if changed:
+            self._save_entries()
+            _LOGGER.debug(f"Updated config entry {entry.entry_id}")
+        return changed
 
     async def async_reload(self, entry_id: str) -> None:
         """Reload an entry."""
