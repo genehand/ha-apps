@@ -37,16 +37,20 @@ class ImportPatcher:
 
         # STEP 1: Inject stub modules FIRST
         # This prevents ImportError for HA-internal dependencies
+        # Format: module_name -> (filename, directory)
         stubs = {
-            "homeassistant.helpers.deprecation": "_stub_helpers_deprecation",
-            "homeassistant.util.hass_dict": "_stub_util_hass_dict",
-            "homeassistant.util.signal_type": "_stub_util_signal_type",
-            "homeassistant.util.network": "_stub_util_network",
+            "homeassistant.helpers.deprecation": (
+                "_stub_helpers_deprecation",
+                "ha_fetched",
+            ),
+            "homeassistant.util.hass_dict": ("_stub_util_hass_dict", "ha_fetched"),
+            "homeassistant.util.signal_type": ("_stub_util_signal_type", "ha_fetched"),
+            "homeassistant.util.network": ("network", "stubs"),
         }
 
-        for module_name, stub_filename in stubs.items():
+        for module_name, (stub_filename, stub_dir) in stubs.items():
             stub_module = types.ModuleType(module_name)
-            stub_path = Path(__file__).parent / "ha_fetched" / f"{stub_filename}.py"
+            stub_path = Path(__file__).parent / stub_dir / f"{stub_filename}.py"
             if stub_path.exists():
                 # Execute stub file content in the module
                 stub_code = stub_path.read_text()
