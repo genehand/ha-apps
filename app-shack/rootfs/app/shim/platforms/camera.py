@@ -43,9 +43,78 @@ class Camera(Entity):
         """Return stream of camera."""
         raise NotImplementedError()
 
+    async def _publish_mqtt_discovery(self) -> None:
+        """Publish MQTT discovery config for camera.
+
+        Only publishes for non-streaming cameras (static images like thumbnails).
+        Streaming cameras (MjpegCamera) are skipped as they don't work well over MQTT.
+        """
+        # Skip streaming cameras - only publish thumbnail/static cameras
+        if self.is_streaming or isinstance(self, MjpegCamera):
+            from ..logging import get_logger
+
+            _LOGGER = get_logger(__name__)
+            _LOGGER.debug(
+                f"Skipping MQTT discovery for streaming camera {self.entity_id}"
+            )
+            return
+
+        # For static cameras, publish camera-specific discovery with image_topic
+        if not self.entity_id:
+            return
+
+        if not hasattr(self.hass, "_mqtt_client"):
+            return
+
+        mqtt = self.hass._mqtt_client
+        if not mqtt.is_connected():
+            return
+
+        base_topic = self._get_mqtt_base_topic()
+        if not base_topic:
+            return
+
+        from ..entity import (
+            get_entity_name_for_discovery,
+            get_mqtt_safe_unique_id,
+            build_mqtt_device_config,
+        )
+        import json
+
+        discovery_topic = f"{base_topic}/config"
+        image_topic = f"{base_topic}/image"
+
+        config = {
+            "name": get_entity_name_for_discovery(
+                self.name, self.device_info, self.has_entity_name
+            ),
+            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
+            "topic": image_topic,  # Required for MQTT camera
+        }
+
+        if self.device_info:
+            config["device"] = build_mqtt_device_config(self.device_info)
+
+        if self.icon:
+            config["icon"] = self.icon
+
+        if self.entity_category:
+            config["entity_category"] = self.entity_category
+
+        # Check if entity is disabled by default
+        if not self.entity_registry_enabled_default:
+            config["enabled_by_default"] = False
+
+        mqtt.publish(discovery_topic, json.dumps(config), qos=0, retain=True)
+
+        # Publish empty image initially (entity will update with actual image)
+        mqtt.publish(image_topic, "", qos=0, retain=True)
+
 
 class MjpegCamera(Camera):
-    """MJPEG camera entity."""
+    """MJPEG streaming camera entity."""
+
+    _attr_is_streaming: bool = True
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the camera."""

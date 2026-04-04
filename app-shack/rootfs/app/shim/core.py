@@ -504,22 +504,6 @@ class ConfigEntries:
         self, entry: ConfigEntry, platforms: List[str]
     ) -> None:
         """Forward entry setup to platforms."""
-        # Filter out camera platforms (they're slow and don't integrate well with MQTT)
-        SKIP_PLATFORMS = {"camera", "mjpeg"}
-        filtered_platforms = [
-            p
-            for p in platforms
-            if (p.value if hasattr(p, "value") else str(p)) not in SKIP_PLATFORMS
-        ]
-        if len(filtered_platforms) != len(platforms):
-            skipped = [
-                p
-                for p in platforms
-                if (p.value if hasattr(p, "value") else str(p)) in SKIP_PLATFORMS
-            ]
-            _LOGGER.debug(f"Skipping camera platforms for {entry.domain}: {skipped}")
-            platforms = filtered_platforms
-
         _LOGGER.debug(f"Setting up platforms {platforms} for {entry.domain}")
 
         # Ensure custom_components parent is in path for platform imports
