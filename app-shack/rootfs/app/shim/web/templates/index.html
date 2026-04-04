@@ -4,6 +4,20 @@
 {% block header_title %}🏚️ HACS Shack{% endblock %}
 
 {% block content %}
+<style>
+    @media (max-width: 600px) {
+        .integration-row {
+            flex-direction: column !important;
+            align-items: stretch !important;
+        }
+        .integration-row > div:first-child {
+            margin-bottom: 1rem;
+        }
+        .integration-row .button-group {
+            justify-content: flex-end;
+        }
+    }
+</style>
 <article>
     <div class="tabs">
         <button type="button" class="tab active" onclick="showTab('installed')">Installed</button>
@@ -16,8 +30,8 @@
         <div class="integration-list">
             {% for integration in integrations %}
             <article class="integration-item {{ 'enabled' if integration.enabled else 'disabled' }}">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
+                <div class="integration-row" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="flex: 1; min-width: 0;">
                         <h5 style="margin-bottom: 0.5rem;">
                             <span class="status-indicator {{ 'status-enabled' if integration.enabled else 'status-disabled' }}"></span>
                             {{ integration.name }}
@@ -33,7 +47,7 @@
                             {% endif %}
                         </div>
                     </div>
-                    <div style="display: flex; gap: 0.5rem;">
+                    <div class="button-group" style="display: flex; gap: 0.5rem; flex-shrink: 0;">
                         <form action="integrations/{{ integration.domain }}" method="get" style="display: inline;">
                             <button type="submit" class="secondary">Manage</button>
                         </form>
@@ -77,13 +91,13 @@
         {% endif %}
     </div>
 
-    <div id="available" class="tab-content">
+<div id="available" class="tab-content">
         {% if available %}
         <div class="integration-list">
             {% for item in available %}
             <article style="margin-bottom: 0;">
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
-                    <div>
+                <div class="integration-row" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+                    <div style="flex: 1; min-width: 0;">
                         <h5 style="margin-bottom: 0.5rem;">
                             {{ item.name }}
                             {% if item.verified %}
@@ -102,7 +116,7 @@
                         </div>
                         {% endif %}
                     </div>
-                    <div style="flex-shrink: 0;">
+                    <div class="button-group" style="flex-shrink: 0;">
                         {% if item.unsupported %}
                         <span class="pico-color-grey-500" style="font-weight: 600;" title="{{ item.unsupported_reason }}">Unsupported</span>
                         {% elif item.installed %}
@@ -159,8 +173,8 @@
             <div class="integration-list">
                 {% for repo in custom_repos %}
                 <article>
-                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
-                        <div>
+                    <div class="integration-row" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+                        <div style="flex: 1; min-width: 0;">
                             <h3>{{ repo.name }}</h3>
                             <p class="pico-color-muted">{{ repo.description or 'No description' }}</p>
                             <div style="font-size: 12px; margin-top: 5px;">
@@ -172,7 +186,7 @@
                                 {% endif %}
                             </div>
                         </div>
-                        <div style="flex-shrink: 0;">
+                        <div class="button-group" style="flex-shrink: 0;">
                             {% if repo.installed %}
                             <span class="pico-color-muted" style="font-size: 12px;">Remove integration first</span>
                             {% else %}

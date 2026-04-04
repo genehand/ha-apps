@@ -806,3 +806,58 @@ class TestConfigFlow:
         assert result is None
         # When unique_id is None, context unique_id should be set to None
         assert flow.context["unique_id"] is None
+
+
+class TestUpdateFailed:
+    """Test cases for UpdateFailed exception handling."""
+
+    def test_update_failed_simple_message(self):
+        """Test UpdateFailed with a simple string message."""
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        exc = UpdateFailed("Simple error message")
+        assert str(exc) == "Simple error message"
+
+    def test_update_failed_printf_style_without_args(self):
+        """Test UpdateFailed handles printf-style format strings without args.
+
+        This tests the fix for the nws_alerts bug where they pass:
+        raise UpdateFailed("Problem: (%s) - %s", r.status, r.content) from error
+        But 'error' doesn't exist and args weren't passed correctly.
+        """
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        # Simulate the buggy pattern from nws_alerts
+        exc = UpdateFailed("Problem updating NWS data: (%s) - %s")
+        # Should be sanitized to replace %s with ?
+        assert str(exc) == "Problem updating NWS data: (?) - ?"
+
+    def test_update_failed_printf_style_with_args(self):
+        """Test UpdateFailed with proper printf-style formatting."""
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        # Properly formatted with args
+        exc = UpdateFailed("Status: %s, Content: %s", 503, "stream reader")
+        assert str(exc) == "Status: 503, Content: stream reader"
+
+    def test_update_failed_mixed_formatting(self):
+        """Test UpdateFailed handles various format specifiers."""
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        # Various printf specifiers without args
+        exc = UpdateFailed("Values: %s %d %r")
+        assert "?" in str(exc)
+        assert "%s" not in str(exc)
+        assert "%d" not in str(exc)
+        assert "%r" not in str(exc)
+
+    def test_update_failed_with_from_exception_chaining(self):
+        """Test UpdateFailed works with 'from' exception chaining."""
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        original_error = ValueError("Original error")
+        try:
+            raise UpdateFailed("Wrapped error") from original_error
+        except UpdateFailed as e:
+            assert str(e) == "Wrapped error"
+            assert e.__cause__ is original_error

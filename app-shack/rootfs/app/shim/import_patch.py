@@ -1146,7 +1146,33 @@ class ImportPatcher:
                 return self._last_update_success
 
         update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
-        update_coordinator.UpdateFailed = type("UpdateFailed", (Exception,), {})
+
+        # UpdateFailed - Enhanced to handle malformed messages gracefully
+        class UpdateFailed(Exception):
+            """Exception to indicate an update failure.
+
+            Handles malformed messages that integrations might pass,
+            such as printf-style format strings without proper formatting.
+            """
+
+            def __init__(self, message, *args, **kwargs):
+                # Handle the case where message is a printf-style format string
+                # but args weren't properly passed (common integration bug)
+                if isinstance(message, str) and "%" in message and not args:
+                    # Convert to a safe string without formatting
+                    message = (
+                        message.replace("%s", "?").replace("%d", "?").replace("%r", "?")
+                    )
+                # Handle the normal case with proper formatting
+                elif args:
+                    try:
+                        message = message % args
+                    except (TypeError, ValueError):
+                        # If formatting fails, use the raw message
+                        pass
+                super().__init__(message)
+
+        update_coordinator.UpdateFailed = UpdateFailed
 
         # CoordinatorEntity base class - make it generic like DataUpdateCoordinator
         from typing import TypeVar, Generic

@@ -172,9 +172,11 @@ class IntegrationLoader:
 
             if result:
                 _LOGGER.debug(f"Successfully setup {domain}")
+                entry.state = "loaded"
                 return True
             else:
                 _LOGGER.error(f"Integration {domain} setup returned False")
+                entry.state = "setup_error"
                 return False
 
         except Exception as e:
@@ -233,6 +235,7 @@ class IntegrationLoader:
             # Remove from loaded
             del self._loaded_integrations[domain]
 
+            entry.state = "not_loaded"
             _LOGGER.info(f"Successfully unloaded {domain}")
             return True
 

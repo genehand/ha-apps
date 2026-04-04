@@ -153,6 +153,7 @@ class WebUI:
                     "entry_id": e.entry_id,
                     "title": e.title,
                     "data": e.data,
+                    "state": e.state,
                 }
                 for e in entries
             ]
@@ -200,7 +201,7 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"integrations/{domain}"
+                response.headers["HX-Redirect"] = f"../integrations/{domain}"
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to enable {domain}</div>',
@@ -230,7 +231,7 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"integrations/{domain}"
+                response.headers["HX-Redirect"] = f"../integrations/{domain}"
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to disable {domain}</div>',
@@ -415,13 +416,67 @@ class WebUI:
                     f"successfully!</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"integrations/{domain}"
+                response.headers["HX-Redirect"] = f"../integrations/{domain}"
                 return response
             else:
                 return HTMLResponse(
                     '<div class="alert alert-error">Failed to remove configuration entry</div>',
                     status_code=400,
                 )
+
+        @self._app.post("/config/{entry_id}/disable")
+        async def disable_config_entry(entry_id: str):
+            """Disable a config entry (unload it)."""
+            entry = self._shim_manager.get_hass().config_entries.async_get_entry(
+                entry_id
+            )
+            if not entry:
+                raise HTTPException(status_code=404, detail="Config entry not found")
+
+            domain = entry.domain
+
+            # Unload the entry
+            await self._shim_manager.get_integration_loader().unload_integration(entry)
+            entry.state = "not_loaded"
+
+            html = (
+                f'<div class="alert alert-success">'
+                f"Configuration entry disabled successfully!"
+                f"</div>"
+            )
+            response = HTMLResponse(content=html)
+            response.headers["HX-Redirect"] = f"../integrations/{domain}"
+            return response
+
+        @self._app.post("/config/{entry_id}/enable")
+        async def enable_config_entry(entry_id: str):
+            """Enable a config entry (reload it)."""
+            entry = self._shim_manager.get_hass().config_entries.async_get_entry(
+                entry_id
+            )
+            if not entry:
+                raise HTTPException(status_code=404, detail="Config entry not found")
+
+            domain = entry.domain
+
+            # Auto-enable the integration if it's disabled
+            info = self._shim_manager.get_integration_manager().get_integration(domain)
+            if info and not info.enabled:
+                await self._shim_manager.get_integration_manager().enable_integration(
+                    domain
+                )
+
+            # Setup the entry
+            await self._shim_manager.get_integration_loader().setup_integration(entry)
+
+            html = (
+                f'<div class="alert alert-success">'
+                f"Configuration entry enabled successfully!"
+                f"</div>"
+            )
+            response = HTMLResponse(content=html)
+            response.headers["HX-Redirect"] = f"../integrations/{domain}"
+            return response
 
         @self._app.get("/config/{domain}", response_class=HTMLResponse)
         async def config_flow_start(request: Request, domain: str):
@@ -544,7 +599,7 @@ class WebUI:
                     response = HTMLResponse(
                         f'<div class="alert alert-success">Configuration successful! Please enable the integration to use it.</div>'
                     )
-                    response.headers["HX-Redirect"] = f"integrations/{domain}"
+                    response.headers["HX-Redirect"] = f"../integrations/{domain}"
                     return response
                 else:
                     return HTMLResponse(

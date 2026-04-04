@@ -267,7 +267,7 @@ class FrozenEntityDescription(EntityDescription):
 # 1. Edit config.yaml and update version: X.Y.Z
 
 # 2. Sync to pyproject.toml (for uv)
-./sync-version.sh
+./sync-versions.py
 ```
 
 **Version locations:**

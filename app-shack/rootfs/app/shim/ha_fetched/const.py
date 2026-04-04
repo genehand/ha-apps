@@ -13,9 +13,9 @@ try:
     from homeassistant.util.signal_type import SignalType as _SignalType
     SignalType = _SignalType
 except ImportError:
-    # Define minimal stubs when homeassistant is not available (e.g., during testing)
+    # Shim: fallback stubs for standalone use outside HA core
     class EntityPlatforms(StrEnum):
-        """Stub for EntityPlatforms enum."""
+        """Shim: EntityPlatforms for standalone use outside HA core."""
 
         BINARY_SENSOR = "binary_sensor"
         BUTTON = "button"
@@ -48,7 +48,7 @@ except ImportError:
         WEATHER = "weather"
 
     class _StubType:
-        """Stub type for generic homeassistant types."""
+        """Shim: generic type wrapper for standalone use outside HA core."""
 
         def __init__(self, name: str):
             self._name = name
@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 APPLICATION_NAME: Final = "HomeAssistant"
 MAJOR_VERSION: Final = 2026
 MINOR_VERSION: Final = 4
-PATCH_VERSION: Final = "0"
+PATCH_VERSION: Final = "1"
 __short_version__: Final = f"{MAJOR_VERSION}.{MINOR_VERSION}"
 __version__: Final = f"{__short_version__}.{PATCH_VERSION}"
 REQUIRED_PYTHON_VER: Final[tuple[int, int, int]] = (3, 14, 2)

@@ -102,6 +102,7 @@ class ConfigEntry(Generic[T]):
     pref_disable_new_entities: bool = False
     source: str = "user"
     runtime_data: Any = None
+    state: str = field(default="not_loaded", repr=False)
     # Additional fields for compatibility with newer HA integrations
     minor_version: int = 1
     discovery_keys: Any = field(default_factory=dict)
