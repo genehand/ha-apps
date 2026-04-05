@@ -64,6 +64,7 @@ ATTR_RGBW_COLOR = "rgbw_color"
 ATTR_RGBWW_COLOR = "rgbww_color"
 ATTR_XY_COLOR = "xy_color"
 ATTR_WHITE_VALUE = "white_value"
+ATTR_WHITE = "white"
 ATTR_TRANSITION = "transition"
 ATTR_FLASH = "flash"
 

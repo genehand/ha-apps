@@ -325,6 +325,17 @@ class QRCodeSelector(Selector):
             self.config["data"] = data
 
 
+class ObjectSelector(Selector):
+    """Selector for objects (JSON/YAML data)."""
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+    ):
+        """Initialize object selector."""
+        super().__init__(config)
+
+
 class FloorSelector(Selector):
     """Selector for floors (new HA organizational feature)."""
 

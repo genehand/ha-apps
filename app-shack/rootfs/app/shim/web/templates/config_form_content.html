@@ -1,0 +1,150 @@
+{# Partial template for config form content (no base wrapper) - used for HTMX requests #}
+
+<style>
+    :root {
+        --pico-font-size: 1rem;
+    }
+</style>
+
+{% if description %}
+<article>
+    {% for key, value in description.items() %}
+    <p>{{ value }}</p>
+    {% endfor %}
+</article>
+{% endif %}
+
+{% if errors.get('base') %}
+<div role="alert" style="margin-bottom: 20px;">
+    <strong>Error:</strong> {{ errors.get('base') }}
+</div>
+{% endif %}
+
+{% if is_options_flow %}
+<form hx-post="reconfigure" hx-target="#config-result" hx-swap="innerHTML" hx-indicator="#submit-spinner" hx-disabled-elt="button[type=submit]">
+{% else %}
+<form hx-post="{{ domain }}" hx-target="body" hx-swap="outerHTML" hx-indicator="#submit-spinner" hx-disabled-elt="button[type=submit]">
+{% endif %}
+    <!-- Loading spinner (hidden by default) -->
+    <div id="submit-spinner" class="htmx-indicator" style="text-align: center; padding: 20px;">
+        <span class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></span>
+        <p style="margin-top: 10px; color: var(--pico-muted-color);">Processing...</p>
+    </div>
+
+    {% if flow_id %}
+    <input type="hidden" name="flow_id" value="{{ flow_id }}">
+    {% endif %}
+    {% if fields %}
+        {% for field in fields %}
+        <label for="{{ field.name }}">
+            {{ field.label }}
+            {% if field.required %}
+            <span class="pico-color-red-500">*</span>
+            {% endif %}
+        </label>
+
+        {% if field.type == 'select' %}
+        {% if field.multiple %}
+        {# Multi-select: use dropdown #}
+        <select
+            id="{{ field.name }}"
+            name="{{ field.name }}"
+            {% if field.required %}required{% endif %}
+            multiple
+        >
+            {% for option in field.options %}
+            <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>
+                {{ option.label }}
+            </option>
+            {% endfor %}
+        </select>
+        {% elif field.mode == 'dropdown' %}
+        {# Dropdown mode: use select element #}
+        <select
+            id="{{ field.name }}"
+            name="{{ field.name }}"
+            {% if field.required %}required{% endif %}
+        >
+            {% for option in field.options %}
+            <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>
+                {{ option.label }}
+            </option>
+            {% endfor %}
+        </select>
+        {% else %}
+        {# Single-select list mode: use radio buttons #}
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+            {% for option in field.options %}
+            <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; gap: 8px;">
+                <input
+                    type="radio"
+                    name="{{ field.name }}"
+                    value="{{ option.value }}"
+                    {% if option.selected %}checked{% endif %}
+                    {% if field.required and loop.first %}required{% endif %}
+                >
+                <span>{{ option.label }}</span>
+            </label>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% elif field.type == 'textarea' %}
+        <textarea
+            id="{{ field.name }}"
+            name="{{ field.name }}"
+            rows="4"
+            {% if field.required %}required{% endif %}
+        >{{ field.default or '' }}</textarea>
+        {% elif field.type == 'checkbox' %}
+        <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+            <input
+                type="checkbox"
+                id="{{ field.name }}"
+                name="{{ field.name }}"
+                value="true"
+                {% if field.default %}checked{% endif %}
+            >
+            <span>Enable</span>
+        </label>
+        {% else %}
+        <input
+            type="{{ field.type or 'text' }}"
+            id="{{ field.name }}"
+            name="{{ field.name }}"
+            value="{{ field.default or '' }}"
+            {% if field.required %}required{% endif %}
+            {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}
+        >
+        {% endif %}
+
+        {% if field.description %}
+        <small style="color: var(--pico-muted-color); display: block; margin-left: 1rem; line-height: 1.3;">{{ field.description }}</small>
+        {% endif %}
+
+        {% if errors.get(field.name) %}
+        <small class="pico-color-red-500">{{ errors[field.name] }}</small>
+        {% endif %}
+        {% endfor %}
+    {% else %}
+        <label for="name">
+            Name
+            <span class="pico-color-red-500">*</span>
+        </label>
+        <input type="text" id="name" name="name" required>
+        {% if errors.get('name') %}
+        <small class="pico-color-red-500">{{ errors['name'] }}</small>
+        {% endif %}
+    {% endif %}
+
+    <div class="grid" style="margin-top: var(--pico-spacing); align-items: stretch;">
+        <button type="submit" style="margin-bottom: 0;">
+            <span class="htmx-indicator-text">Submit</span>
+            <span class="htmx-indicator" style="display: none;">Processing...</span>
+        </button>
+        {% if is_options_flow %}
+        <a href="../../integrations/{{ domain }}" role="button" class="secondary" style="margin-bottom: 0; display: flex; align-items: center; justify-content: center;">Cancel</a>
+        {% else %}
+        <a href="../integrations/{{ domain }}" role="button" class="secondary" style="margin-bottom: 0; display: flex; align-items: center; justify-content: center;">Cancel</a>
+        {% endif %}
+    </div>
+</form>

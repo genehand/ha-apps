@@ -3,6 +3,7 @@
 Bridges ClimateEntity to MQTT climate discovery.
 """
 
+from enum import Enum
 from typing import Any, List, Optional
 
 from ..entity import (
@@ -21,6 +22,28 @@ _LOGGER = get_logger(__name__)
 
 DOMAIN = "climate"
 
+# Default temperature constants
+DEFAULT_MAX_TEMP = 35
+DEFAULT_MIN_TEMP = 7
+
+# Attribute constants
+ATTR_HVAC_MODE = "hvac_mode"
+ATTR_HVAC_MODES = "hvac_modes"
+ATTR_HVAC_ACTION = "hvac_action"
+ATTR_CURRENT_TEMPERATURE = "current_temperature"
+ATTR_TARGET_TEMP_HIGH = "target_temp_high"
+ATTR_TARGET_TEMP_LOW = "target_temp_low"
+ATTR_TARGET_TEMP_STEP = "target_temp_step"
+ATTR_MAX_TEMP = "max_temp"
+ATTR_MIN_TEMP = "min_temp"
+ATTR_FAN_MODE = "fan_mode"
+ATTR_FAN_MODES = "fan_modes"
+ATTR_PRESET_MODE = "preset_mode"
+ATTR_PRESET_MODES = "preset_modes"
+ATTR_SWING_MODE = "swing_mode"
+ATTR_SWING_MODES = "swing_modes"
+ATTR_TEMPERATURE = "temperature"
+
 # HVAC modes (string constants for compatibility)
 HVAC_MODE_OFF = "off"
 HVAC_MODE_HEAT = "heat"
@@ -37,8 +60,8 @@ FAN_MEDIUM = "medium"
 FAN_HIGH = "high"
 
 
-# HVACMode enum class for modern integrations
-class HVACMode:
+# HVACMode enum class for modern integrations (using Enum for .value support)
+class HVACMode(str, Enum):
     """HVAC mode enum for Home Assistant compatibility."""
 
     OFF = HVAC_MODE_OFF
@@ -48,6 +71,10 @@ class HVACMode:
     AUTO = HVAC_MODE_AUTO
     DRY = HVAC_MODE_DRY
     FAN_ONLY = HVAC_MODE_FAN_ONLY
+
+    def __str__(self):
+        """Return the value as a string."""
+        return self.value
 
 
 # HVAC actions
@@ -59,8 +86,8 @@ CURRENT_HVAC_IDLE = "idle"
 CURRENT_HVAC_FAN = "fan"
 
 
-# HVACAction enum class for modern integrations
-class HVACAction:
+# HVACAction enum class for modern integrations (using Enum for .value support)
+class HVACAction(str, Enum):
     """HVAC action enum for Home Assistant compatibility."""
 
     OFF = CURRENT_HVAC_OFF
@@ -69,6 +96,10 @@ class HVACAction:
     DRYING = CURRENT_HVAC_DRY
     IDLE = CURRENT_HVAC_IDLE
     FAN = CURRENT_HVAC_FAN
+
+    def __str__(self):
+        """Return the value as a string."""
+        return self.value
 
 
 # Swing modes

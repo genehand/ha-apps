@@ -861,3 +861,43 @@ class TestUpdateFailed:
         except UpdateFailed as e:
             assert str(e) == "Wrapped error"
             assert e.__cause__ is original_error
+
+
+class TestEvent:
+    """Test cases for Event class."""
+
+    def test_event_creation(self):
+        """Test creating an Event object."""
+        from shim.core import Event, Context
+
+        event = Event(
+            event_type="state_changed",
+            data={"entity_id": "light.test", "new_state": "on"},
+        )
+
+        assert event.event_type == "state_changed"
+        assert event.data == {"entity_id": "light.test", "new_state": "on"}
+        assert event.origin == "LOCAL"
+        assert event.time_fired is not None
+        assert event.context is not None
+
+    def test_event_defaults(self):
+        """Test Event creation with default values."""
+        from shim.core import Event
+
+        event = Event(event_type="test_event")
+
+        assert event.event_type == "test_event"
+        assert event.data == {}
+        assert event.origin == "LOCAL"
+        assert event.time_fired is not None
+        assert event.context is not None
+
+    def test_event_with_custom_origin(self):
+        """Test Event with custom origin."""
+        from shim.core import Event
+
+        event = Event(event_type="remote_event", origin="REMOTE")
+
+        assert event.event_type == "remote_event"
+        assert event.origin == "REMOTE"

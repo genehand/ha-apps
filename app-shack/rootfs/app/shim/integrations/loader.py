@@ -160,13 +160,32 @@ class IntegrationLoader:
                 _LOGGER.error(f"Integration {domain} missing async_setup_entry")
                 return False
 
+            # Check for entry migration
+            if hasattr(module, "async_migrate_entry"):
+                try:
+                    # Get the expected version from the integration
+                    migrate_result = await module.async_migrate_entry(self._hass, entry)
+                    _LOGGER.debug(f"Migration result for {domain}: {migrate_result}")
+                except Exception as e:
+                    _LOGGER.warning(f"Migration check for {domain} raised: {e}")
+
             # Call setup with config entry context variable set
             # This allows DataUpdateCoordinator to auto-detect the config entry
             from homeassistant.config_entries import current_entry
 
             token = current_entry.set(entry)
             try:
+                _LOGGER.debug(
+                    f"Calling async_setup_entry for {domain} with entry {entry.entry_id}"
+                )
                 result = await module.async_setup_entry(self._hass, entry)
+                _LOGGER.debug(f"async_setup_entry for {domain} returned: {result}")
+            except Exception as e:
+                import traceback
+
+                _LOGGER.error(f"Error during async_setup_entry for {domain}: {e}")
+                _LOGGER.debug(f"async_setup_entry traceback:\n{traceback.format_exc()}")
+                result = False
             finally:
                 current_entry.reset(token)
 
@@ -180,7 +199,11 @@ class IntegrationLoader:
                 return False
 
         except Exception as e:
+            import traceback
+
             _LOGGER.error(f"Failed to setup integration {domain}: {e}")
+            _LOGGER.debug(f"Setup error traceback:\n{traceback.format_exc()}")
+            entry.state = "setup_error"
             return False
         finally:
             set_current_integration(None)
@@ -233,14 +256,22 @@ class IntegrationLoader:
                 await module.async_unload(self._hass)
 
             # Remove from loaded
-            del self._loaded_integrations[domain]
+            if domain in self._loaded_integrations:
+                del self._loaded_integrations[domain]
+            else:
+                _LOGGER.warning(
+                    f"Domain {domain} not found in _loaded_integrations during unload"
+                )
 
             entry.state = "not_loaded"
             _LOGGER.info(f"Successfully unloaded {domain}")
             return True
 
         except Exception as e:
+            import traceback
+
             _LOGGER.error(f"Failed to unload integration {domain}: {e}")
+            _LOGGER.debug(f"Unload error traceback:\n{traceback.format_exc()}")
             return False
         finally:
             set_current_integration(None)
@@ -400,6 +431,237 @@ class IntegrationLoader:
         """Get list of loaded integration domains."""
         return list(self._loaded_integrations.keys())
 
+    async def start_options_flow(self, entry: ConfigEntry) -> Optional[dict]:
+        """Start an options flow for an existing config entry.
+
+        Args:
+            entry: The config entry to reconfigure
+
+        Returns:
+            The options flow result dict with flow_id, or None on error
+        """
+        domain = entry.domain
+
+        # Load the integration first
+        if not await self.load_integration(domain):
+            return None
+
+        try:
+            set_current_integration(domain)
+
+            module = self._loaded_integrations[domain]
+
+            # Check for config flow module
+            try:
+                config_flow_module = importlib.import_module(
+                    f"custom_components.{domain}.config_flow"
+                )
+            except ImportError as e:
+                _LOGGER.error(f"Failed to import config_flow for {domain}: {e}")
+                return None
+
+            # Get the ConfigFlow class to access async_get_options_flow
+            from ..config_entries import ConfigFlow
+
+            config_flow_class = None
+            for attr_name in dir(config_flow_module):
+                attr = getattr(config_flow_module, attr_name)
+                if (
+                    isinstance(attr, type)
+                    and issubclass(attr, ConfigFlow)
+                    and attr is not ConfigFlow
+                ):
+                    config_flow_class = attr
+                    break
+
+            if not config_flow_class:
+                _LOGGER.error(f"Could not find ConfigFlow class for {domain}")
+                return None
+
+            # Check if integration has options flow support
+            if not hasattr(config_flow_class, "async_get_options_flow"):
+                _LOGGER.warning(f"Integration {domain} has no options flow support")
+                return None
+
+            # Create options flow instance
+            options_flow = config_flow_class.async_get_options_flow(entry)
+            if not options_flow:
+                _LOGGER.error(f"Failed to create options flow for {domain}")
+                return None
+
+            options_flow.hass = self._hass
+            options_flow.config_entry = entry
+
+            # Generate flow ID
+            flow_id = self._hass.config_entries.async_create_flow(
+                f"{domain}_options_{entry.entry_id}"
+            )
+            options_flow.flow_id = flow_id
+
+            # Store the flow object
+            self._hass.config_entries._flow_progress[flow_id] = options_flow
+
+            # Start the flow at init step
+            result = await options_flow.async_step_init(None)
+            result["flow_id"] = flow_id
+
+            _LOGGER.info(f"Started options flow for {domain} entry {entry.entry_id}")
+            return result
+
+        except Exception as e:
+            _LOGGER.error(f"Failed to start options flow for {domain}: {e}")
+            import traceback
+
+            _LOGGER.debug(f"Options flow start traceback:\n{traceback.format_exc()}")
+            return None
+        finally:
+            set_current_integration(None)
+
+    async def continue_options_flow(
+        self, entry: ConfigEntry, flow_id: str, user_input: dict
+    ) -> Optional[dict]:
+        """Continue an options flow with user input.
+
+        Args:
+            entry: The config entry being reconfigured
+            flow_id: The flow ID from start_options_flow
+            user_input: User-provided form data
+
+        Returns:
+            The flow result dict, or None on error
+        """
+        domain = entry.domain
+
+        try:
+            set_current_integration(domain)
+
+            # Get the flow from hass
+            flow = self._hass.config_entries._flow_progress.get(flow_id)
+            if not flow:
+                _LOGGER.error(f"Options flow {flow_id} not found")
+                return None
+
+            # Get the current step_id (defaults to 'init' for options flow)
+            step_id = getattr(flow, "cur_step_id", "init")
+            _LOGGER.debug(
+                f"Continuing options flow for {domain}: step_id={step_id}, user_input={user_input}"
+            )
+
+            # Handle menu selection
+            if user_input and "next_step" in user_input:
+                step_id = user_input["next_step"]
+                flow.cur_step_id = step_id
+                step_method_name = f"async_step_{step_id}"
+                step_method = getattr(flow, step_method_name, None)
+
+                if step_method is None:
+                    _LOGGER.error(
+                        f"Step method {step_method_name} not found for {domain}"
+                    )
+                    return None
+
+                result = await step_method(None)
+            else:
+                # Get the step method dynamically
+                step_method_name = f"async_step_{step_id}"
+                step_method = getattr(flow, step_method_name, None)
+
+                if step_method is None:
+                    _LOGGER.error(
+                        f"Step method {step_method_name} not found for {domain}"
+                    )
+                    return None
+
+                # Call with user input
+                if not user_input:
+                    result = await step_method(None)
+                else:
+                    result = await step_method(user_input)
+
+            result["flow_id"] = flow_id
+
+            # Update cur_step_id based on result type
+            # If the step returns a form, update cur_step_id to match the returned step_id
+            if result.get("type") == "form":
+                returned_step_id = result.get("step_id")
+                if returned_step_id and returned_step_id != step_id:
+                    _LOGGER.debug(
+                        f"Options flow step changed from {step_id} to {returned_step_id}"
+                    )
+                    flow.cur_step_id = returned_step_id
+
+            # Handle create_entry - save updated config
+            if result.get("type") == "create_entry":
+                _LOGGER.info(
+                    f"Options flow completed for {domain} entry {entry.entry_id}"
+                )
+                # Note: The options flow should have already updated the entry data
+                # via config_entry.data updates. We just need to save it.
+                await self._save_updated_config_entry(entry)
+
+            return result
+
+        except Exception as e:
+            _LOGGER.error(f"Failed to continue options flow for {domain}: {e}")
+            import traceback
+
+            _LOGGER.error(f"Options flow continue traceback:\n{traceback.format_exc()}")
+            return None
+        finally:
+            set_current_integration(None)
+
+    async def _save_updated_config_entry(self, entry: ConfigEntry) -> bool:
+        """Save updated config entry data to storage.
+
+        Args:
+            entry: The config entry to save
+
+        Returns:
+            True if saved successfully
+        """
+        try:
+            # Update the entry in hass config_entries
+            self._hass.config_entries.async_update_entry(entry, data=entry.data)
+            _LOGGER.debug(f"Saved updated config entry {entry.entry_id}")
+            return True
+        except Exception as e:
+            _LOGGER.error(f"Failed to save config entry {entry.entry_id}: {e}")
+            return False
+
+    async def reload_config_entry(self, entry: ConfigEntry) -> bool:
+        """Reload an integration after config changes.
+
+        Args:
+            entry: The config entry to reload
+
+        Returns:
+            True if reloaded successfully
+        """
+        domain = entry.domain
+
+        try:
+            set_current_integration(domain)
+            _LOGGER.info(f"Reloading {domain} entry {entry.entry_id}")
+
+            # Unload first
+            await self.unload_integration(entry, cleanup_mqtt=False)
+
+            # Reload the entry
+            success = await self.setup_integration(entry)
+
+            if success:
+                _LOGGER.info(f"Successfully reloaded {domain} entry {entry.entry_id}")
+            else:
+                _LOGGER.error(f"Failed to reload {domain} entry {entry.entry_id}")
+
+            return success
+
+        except Exception as e:
+            _LOGGER.error(f"Error reloading {domain} entry {entry.entry_id}: {e}")
+            return False
+        finally:
+            set_current_integration(None)
+
     async def reload_all(self) -> None:
         """Reload all enabled integrations."""
         _LOGGER.info("Reloading all integrations")
@@ -543,6 +805,17 @@ class IntegrationLoader:
                     result = await step_method(user_input)
 
             result["flow_id"] = flow_id
+
+            # Update cur_step_id based on result type
+            # If the step returns a form, update cur_step_id to match the returned step_id
+            if result.get("type") == "form":
+                returned_step_id = result.get("step_id")
+                if returned_step_id and returned_step_id != step_id:
+                    _LOGGER.debug(
+                        f"Config flow step changed from {step_id} to {returned_step_id}"
+                    )
+                    flow.cur_step_id = returned_step_id
+
             return result
 
         except Exception as e:

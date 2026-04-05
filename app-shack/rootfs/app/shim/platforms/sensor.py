@@ -9,6 +9,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Dict, Final, Optional
 
+import voluptuous as vol
+
 from shim.entity import (
     Entity,
     EntityDescription,
@@ -102,6 +104,10 @@ class SensorDeviceClass(StrEnum):
     WIND_SPEED = "wind_speed"
 
 
+# Schema for device classes (used by integrations for validation)
+DEVICE_CLASSES_SCHEMA = vol.In([cls.value for cls in SensorDeviceClass])
+
+
 class SensorStateClass(StrEnum):
     """State class for sensors."""
 
@@ -109,6 +115,10 @@ class SensorStateClass(StrEnum):
     MEASUREMENT_ANGLE = "measurement_angle"
     TOTAL = "total"
     TOTAL_INCREASING = "total_increasing"
+
+
+# Schema for state classes (used by integrations for validation)
+STATE_CLASSES_SCHEMA = vol.In([cls.value for cls in SensorStateClass])
 
 
 # Backwards compatibility

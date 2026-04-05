@@ -20,6 +20,8 @@ from . import number
 from . import lock
 from . import water_heater
 from . import camera
+from . import siren
+from . import remote
 
 __all__ = [
     "fan",
@@ -39,4 +41,6 @@ __all__ = [
     "lock",
     "water_heater",
     "camera",
+    "siren",
+    "remote",
 ]

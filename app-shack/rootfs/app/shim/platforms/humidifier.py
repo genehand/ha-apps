@@ -7,6 +7,8 @@ from dataclasses import field
 from enum import Enum
 from typing import Any, List, Optional
 
+import voluptuous as vol
+
 from ..entity import (
     Entity,
     EntityDescription,
@@ -18,12 +20,27 @@ _LOGGER = get_logger(__name__)
 
 DOMAIN = "humidifier"
 
+# Attribute constants
+ATTR_MAX_HUMIDITY = "max_humidity"
+ATTR_MIN_HUMIDITY = "min_humidity"
+ATTR_HUMIDITY = "humidity"
+ATTR_MODE = "mode"
+ATTR_AVAILABLE_MODES = "available_modes"
+
+# Default humidity constants
+DEFAULT_MAX_HUMIDITY = 100
+DEFAULT_MIN_HUMIDITY = 0
+
 
 class HumidifierDeviceClass(Enum):
     """Device class for humidifiers."""
 
     DEHUMIDIFIER = "dehumidifier"
     HUMIDIFIER = "humidifier"
+
+
+# Schema for device classes (used by integrations for validation)
+DEVICE_CLASSES_SCHEMA = vol.In([cls.value for cls in HumidifierDeviceClass])
 
 
 class HumidifierEntityFeature:
@@ -107,7 +124,9 @@ class HumidifierEntity(Entity):
         raise NotImplementedError()
 
 
-class HumidifierEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
+class HumidifierEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """Describe a humidifier entity."""
 
     device_class: Optional[HumidifierDeviceClass] = None

@@ -21,6 +21,10 @@ _LOGGER = get_logger(__name__)
 
 DOMAIN = "water_heater"
 
+# Default temperature constants
+DEFAULT_MAX_TEMP = 60
+DEFAULT_MIN_TEMP = 30
+
 # State constants for operation modes
 STATE_ECO = "eco"
 STATE_ELECTRIC = "electric"

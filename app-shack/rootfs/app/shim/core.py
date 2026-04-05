@@ -11,7 +11,7 @@ import importlib
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Generic
+from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Generic, Union
 from datetime import datetime
 import json
 from pathlib import Path
@@ -23,6 +23,9 @@ from .logging import get_logger
 _LOGGER = get_logger(__name__)
 
 T = TypeVar("T")
+
+# Type alias for callback functions (used by integrations)
+CALLBACK_TYPE = Callable[[], None]
 
 
 def _slugify_name(name: str) -> str:
@@ -94,9 +97,9 @@ class ConfigEntry(Generic[T]):
     """Configuration entry for an integration."""
 
     entry_id: str
-    version: int
     domain: str
     title: str
+    version: int = 1
     data: dict = field(default_factory=dict)
     options: dict = field(default_factory=dict)
     pref_disable_new_entities: bool = False
@@ -148,6 +151,17 @@ class ConfigEntry(Generic[T]):
 
         return remove_listener
 
+    def async_create_task(self, hass, target, name=None):
+        """Create a task to track for this config entry.
+
+        The task is stored on the entry and will be cancelled when the entry is unloaded.
+        """
+        task = hass.async_create_background_task(target, name)
+        self._on_unload_callbacks.append(
+            lambda: task.cancel() if not task.done() else None
+        )
+        return task
+
     async def _run_unload_callbacks(self) -> None:
         """Run all registered unload callbacks."""
         for callback in self._on_unload_callbacks:
@@ -185,6 +199,23 @@ class Context:
     id: str = field(default_factory=lambda: str(id(object())))
     user_id: Optional[str] = None
     parent_id: Optional[str] = None
+
+
+@dataclass
+class Event:
+    """Represents an event within Home Assistant."""
+
+    event_type: str
+    data: dict = field(default_factory=dict)
+    origin: str = "LOCAL"  # EventOrigin: LOCAL or REMOTE
+    time_fired: Optional[datetime] = None
+    context: Optional[Context] = None
+
+    def __post_init__(self):
+        if not self.time_fired:
+            self.time_fired = datetime.now()
+        if not self.context:
+            self.context = Context()
 
 
 @dataclass
@@ -330,6 +361,7 @@ class ServiceRegistry:
         service: str,
         service_func: Callable,
         supports_response: Optional[Any] = None,
+        schema: Optional[Any] = None,
     ) -> None:
         """Register a service."""
         if domain not in self._services:
@@ -963,6 +995,15 @@ class HomeAssistant:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, target, *args)
 
+    async def async_add_import_executor_job(self, target: Callable, *args) -> Any:
+        """Run import-related function in executor.
+
+        This is used by integrations to run import statements in a separate
+        thread to avoid blocking the event loop during module imports.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, target, *args)
+
     def async_run_job(self, target: Callable[..., Any], *args: Any) -> Any:
         """Run a job (coroutine or function) in the event loop.
 
@@ -1014,6 +1055,25 @@ class HomeAssistant:
             except AttributeError:
                 pass
         return task
+
+    def async_create_background_task(
+        self,
+        target: asyncio.coroutine,
+        name: Optional[str] = None,
+    ) -> asyncio.Task:
+        """Create a background task.
+
+        This is similar to async_create_task but for tasks that run in the background
+        and should not block shutdown.
+
+        Args:
+            target: The coroutine to run
+            name: Optional task name (for debugging)
+
+        Returns:
+            The created asyncio.Task
+        """
+        return self.async_create_task(target, name)
 
     def async_add_job(self, target: Callable, *args) -> asyncio.Future:
         """Add a job."""
@@ -1082,16 +1142,40 @@ class MockEventBus:
     def __init__(self, hass: HomeAssistant):
         self._hass = hass
 
-    def async_listen(self, event_type: str, listener: Callable) -> Callable:
-        """Listen for events."""
+    def async_listen(
+        self,
+        event_type: str,
+        listener: Callable,
+        event_filter: Optional[Callable] = None,
+    ) -> Callable:
+        """Listen for events.
+
+        Args:
+            event_type: The type of event to listen for
+            listener: The callback function to call when the event is fired
+            event_filter: Optional filter function that returns True if the event should be handled
+        """
         if event_type not in self._hass._event_listeners:
             self._hass._event_listeners[event_type] = []
 
-        self._hass._event_listeners[event_type].append(listener)
+        # Wrap listener with filter if provided
+        if event_filter is not None:
+            original_listener = listener
+
+            def filtered_listener(event_data):
+                if event_filter(event_data):
+                    return original_listener(event_data)
+                return None
+
+            listener_to_add = filtered_listener
+        else:
+            listener_to_add = listener
+
+        self._hass._event_listeners[event_type].append(listener_to_add)
 
         def remove():
-            if listener in self._hass._event_listeners.get(event_type, []):
-                self._hass._event_listeners[event_type].remove(listener)
+            if listener_to_add in self._hass._event_listeners.get(event_type, []):
+                self._hass._event_listeners[event_type].remove(listener_to_add)
 
         return remove
 
@@ -1102,6 +1186,13 @@ class MockEventBus:
     def fire(self, event_type: str, event_data: Optional[dict] = None) -> None:
         """Fire an event (synchronous version)."""
         self._hass.async_fire(event_type, event_data)
+
+    def async_listeners(self) -> dict:
+        """Return all registered event listeners.
+
+        Returns a dict mapping event types to lists of listener functions.
+        """
+        return self._hass._event_listeners.copy()
 
     def async_listen_once(self, event_type: str, listener: Callable) -> Callable:
         """Listen for an event once."""

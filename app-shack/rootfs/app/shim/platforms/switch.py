@@ -6,6 +6,8 @@ Bridges SwitchEntity to MQTT switch discovery.
 from enum import StrEnum
 from typing import Any, Optional
 
+import voluptuous as vol
+
 from ..entity import (
     ToggleEntity,
     EntityDescription,
@@ -25,6 +27,10 @@ class SwitchDeviceClass(StrEnum):
 
     OUTLET = "outlet"
     SWITCH = "switch"
+
+
+# Schema for device classes (used by integrations for validation)
+DEVICE_CLASSES_SCHEMA = vol.In([cls.value for cls in SwitchDeviceClass])
 
 
 class SwitchEntityDescription(

@@ -6,6 +6,8 @@ Bridges BinarySensorEntity to MQTT binary sensor discovery.
 from enum import StrEnum
 from typing import Optional
 
+import voluptuous as vol
+
 from ..entity import (
     ToggleEntity,
     EntityDescription,
@@ -54,6 +56,10 @@ class BinarySensorDeviceClass(StrEnum):
     UPDATE = "update"
     VIBRATION = "vibration"
     WINDOW = "window"
+
+
+# Schema for device classes (used by integrations for validation)
+DEVICE_CLASSES_SCHEMA = vol.In([cls.value for cls in BinarySensorDeviceClass])
 
 
 class BinarySensorEntityDescription(

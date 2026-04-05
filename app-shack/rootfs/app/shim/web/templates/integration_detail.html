@@ -153,6 +153,10 @@
             </details>
             {% endif %}
         <div class="entry-actions" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            {# Reconfigure button - available for all states #}
+            <a href="../config/{{ entry.entry_id }}/reconfigure" role="button" class="secondary">
+                Reconfigure
+            </a>
             {% if entry.state == 'loaded' %}
             <button type="button" class="secondary"
                     hx-post="../config/{{ entry.entry_id }}/disable"

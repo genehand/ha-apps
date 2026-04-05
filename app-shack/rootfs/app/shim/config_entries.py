@@ -326,6 +326,20 @@ class OptionsFlow:
             result["options"] = options
         return result
 
+    def async_show_menu(
+        self,
+        step_id: str,
+        menu_options: list,
+        description_placeholders: Optional[Dict[str, str]] = None,
+    ):
+        """Return a menu selection step definition."""
+        return {
+            "type": "menu",
+            "step_id": step_id,
+            "menu_options": menu_options,
+            "description_placeholders": description_placeholders or {},
+        }
+
 
 class OptionsFlowWithConfigEntry(OptionsFlow):
     """Options flow with config entry access.

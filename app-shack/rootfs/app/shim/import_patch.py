@@ -3,6 +3,7 @@
 Patches sys.modules to redirect homeassistant imports to the shim.
 """
 
+import asyncio
 import sys
 import types
 from dataclasses import dataclass, field, make_dataclass
@@ -383,6 +384,9 @@ class ImportPatcher:
         device_registry.CONNECTION_UPNP = "upnp"
         device_registry.CONNECTION_ASSUMED = "assumed"
 
+        # Add event constant for device registry updates
+        device_registry.EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
+
         homeassistant.helpers.device_registry = device_registry
         sys.modules["homeassistant.helpers.device_registry"] = device_registry
 
@@ -531,7 +535,7 @@ class ImportPatcher:
         entity_registry.async_get = async_get
         entity_registry.RegistryEntry = type("RegistryEntry", (), {"entity_id": None})
 
-        async def async_entries_for_config_entry(hass, config_entry_id):
+        def async_entries_for_config_entry(hass, config_entry_id):
             """Return all entity registry entries for a config entry."""
             return []
 
@@ -718,15 +722,91 @@ class ImportPatcher:
             """Track state change events."""
             return lambda: None
 
+        def async_track_time_interval(hass, action, interval):
+            """Track time intervals.
+
+            Calls action every interval seconds.
+            Returns a callable that cancels the tracking when called.
+            """
+            import asyncio
+
+            # Create task to call action periodically
+            async def _interval_loop():
+                while True:
+                    await asyncio.sleep(interval.total_seconds())
+                    try:
+                        result = action()
+                        if asyncio.iscoroutine(result) or asyncio.iscoroutinefunction(
+                            action
+                        ):
+                            await result
+                    except Exception:
+                        pass
+
+            task = hass.async_create_task(_interval_loop())
+
+            def cancel():
+                """Cancel the interval tracking."""
+                task.cancel()
+
+            return cancel
+
+        def async_call_later(hass, delay, action):
+            """Call an action after a delay.
+
+            Args:
+                hass: The Home Assistant instance.
+                delay: Delay in seconds (float or timedelta).
+                action: The callback function to call.
+
+            Returns:
+                A callable that cancels the scheduled call.
+            """
+            import asyncio
+            from datetime import timedelta
+
+            # Convert delay to seconds
+            if isinstance(delay, timedelta):
+                delay = delay.total_seconds()
+
+            async def _delayed_call():
+                await asyncio.sleep(delay)
+                try:
+                    result = action()
+                    if asyncio.iscoroutine(result) or asyncio.iscoroutinefunction(
+                        action
+                    ):
+                        await result
+                except Exception:
+                    pass
+
+            task = hass.async_create_task(_delayed_call())
+
+            def cancel():
+                """Cancel the delayed call."""
+                task.cancel()
+
+            return cancel
+
         event.async_track_point_in_time = async_track_point_in_time
         event.async_track_state_change_event = async_track_state_change_event
+        event.async_track_time_interval = async_track_time_interval
+        event.async_call_later = async_call_later
         event.EventStateChangedData = type("EventStateChangedData", (), {})
         homeassistant.helpers.event = event
         sys.modules["homeassistant.helpers.event"] = event
 
         # Create restore_state stub module
         restore_state = types.ModuleType("homeassistant.helpers.restore_state")
-        restore_state.RestoreEntity = type("RestoreEntity", (), {})
+
+        class RestoreEntity:
+            """Stub for RestoreEntity that supports async_get_last_state."""
+
+            async def async_get_last_state(self):
+                """Return the last state for this entity."""
+                return None
+
+        restore_state.RestoreEntity = RestoreEntity
         restore_state.ExtraStoredData = type("ExtraStoredData", (), {})
         restore_state.RestoredExtraData = type("RestoredExtraData", (), {})
         restore_state.async_get = lambda hass: None
@@ -736,17 +816,50 @@ class ImportPatcher:
         # Create dispatcher stub module for signal/slot pattern
         dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
 
-        async def async_dispatcher_connect(hass, signal, target):
+        # Store for signal callbacks: {signal: [callbacks]}
+        _dispatcher_signals = {}
+
+        def async_dispatcher_connect(hass, signal, target):
             """Connect a receiver to a signal."""
             _LOGGER.debug(f"Dispatcher connect: {signal}")
-            return lambda: None
+            if signal not in _dispatcher_signals:
+                _dispatcher_signals[signal] = []
+            _dispatcher_signals[signal].append(target)
 
-        async def async_dispatcher_send(hass, signal, *args):
-            """Send a signal to all receivers."""
+            def remove():
+                if (
+                    signal in _dispatcher_signals
+                    and target in _dispatcher_signals[signal]
+                ):
+                    _dispatcher_signals[signal].remove(target)
+
+            return remove
+
+        def async_dispatcher_send(hass, signal, *args):
+            """Send a signal to all receivers (async version).
+
+            Note: In the real HA, this is async, but for our stub we make it
+            synchronous to avoid 'never awaited' warnings.
+            """
+            _LOGGER.debug(f"Dispatcher send: {signal} with args: {args}")
+            if signal in _dispatcher_signals:
+                for callback in _dispatcher_signals[signal]:
+                    try:
+                        result = callback(*args)
+                        if asyncio.iscoroutine(result):
+                            # Schedule coroutine in event loop
+                            asyncio.create_task(result)
+                    except Exception as e:
+                        _LOGGER.error(f"Error in dispatcher callback for {signal}: {e}")
+
+        def dispatcher_send(hass, signal, *args):
+            """Send a signal to all receivers (sync version)."""
             _LOGGER.debug(f"Dispatcher send: {signal}")
+            async_dispatcher_send(hass, signal, *args)
 
         dispatcher.async_dispatcher_connect = async_dispatcher_connect
         dispatcher.async_dispatcher_send = async_dispatcher_send
+        dispatcher.dispatcher_send = dispatcher_send
         homeassistant.helpers.dispatcher = dispatcher
         sys.modules["homeassistant.helpers.dispatcher"] = dispatcher
 
@@ -825,7 +938,9 @@ class ImportPatcher:
         sys.modules["homeassistant.helpers.storage"] = storage
 
         # Create homeassistant.util package and submodules
-        homeassistant.util = types.ModuleType("homeassistant.util")
+        # Note: homeassistant.util may already exist from earlier setup, so we use it if available
+        if not hasattr(homeassistant, "util") or homeassistant.util is None:
+            homeassistant.util = types.ModuleType("homeassistant.util")
 
         # Create util.dt module
         dt_util = types.ModuleType("homeassistant.util.dt")
@@ -839,6 +954,32 @@ class ImportPatcher:
         ).replace(hour=0, minute=0, second=0, microsecond=0)
         homeassistant.util.dt = dt_util
         sys.modules["homeassistant.util.dt"] = dt_util
+
+        # Create util.yaml module
+        yaml_util = types.ModuleType("homeassistant.util.yaml")
+        import yaml as _yaml
+
+        def load_yaml(fname):
+            """Load a YAML file."""
+            from pathlib import Path
+
+            return _yaml.safe_load(Path(fname).read_text())
+
+        def save_yaml(fname, data):
+            """Save data to a YAML file."""
+            from pathlib import Path
+
+            Path(fname).write_text(_yaml.safe_dump(data, default_flow_style=False))
+
+        def dump(data):
+            """Dump data to YAML string."""
+            return _yaml.safe_dump(data, default_flow_style=False)
+
+        yaml_util.load_yaml = load_yaml
+        yaml_util.save_yaml = save_yaml
+        yaml_util.dump = dump
+        homeassistant.util.yaml = yaml_util
+        sys.modules["homeassistant.util.yaml"] = yaml_util
 
         # Create util.color module
         color_util = types.ModuleType("homeassistant.util.color")
@@ -942,6 +1083,14 @@ class ImportPatcher:
             return text
 
         homeassistant.util.slugify = slugify
+
+        # Create util.unit_system module
+        unit_system = types.ModuleType("homeassistant.util.unit_system")
+        unit_system.US_CUSTOMARY_SYSTEM = type("US_CUSTOMARY_SYSTEM", (), {})()
+        unit_system.METRIC_SYSTEM = type("METRIC_SYSTEM", (), {})()
+        unit_system.get_unit_system = lambda name: unit_system.METRIC_SYSTEM
+        homeassistant.util.unit_system = unit_system
+        sys.modules["homeassistant.util.unit_system"] = unit_system
 
         sys.modules["homeassistant.util"] = homeassistant.util
 
@@ -1297,6 +1446,32 @@ class ImportPatcher:
         percentage_stub.percentage_to_ranged_value = percentage_to_ranged_value
         percentage_stub.ranged_value_to_percentage = ranged_value_to_percentage
 
+        def ordered_list_item_to_percentage(ordered_list, item):
+            """Determine the percentage of an item in an ordered list.
+
+            When the item is not found, returns None.
+            """
+            try:
+                return (ordered_list.index(item) * 100) // (len(ordered_list) - 1)
+            except ValueError:
+                return None
+
+        def percentage_to_ordered_list_item(ordered_list, percentage):
+            """Return the item that matches the percentage in an ordered list."""
+            if not ordered_list:
+                return None
+            list_len = len(ordered_list)
+            if list_len == 1:
+                return ordered_list[0]
+            return ordered_list[min((percentage * (list_len - 1)) // 100, list_len - 1)]
+
+        percentage_stub.ordered_list_item_to_percentage = (
+            ordered_list_item_to_percentage
+        )
+        percentage_stub.percentage_to_ordered_list_item = (
+            percentage_to_ordered_list_item
+        )
+
         homeassistant.util.percentage = percentage_stub
         sys.modules["homeassistant.util.percentage"] = percentage_stub
 
@@ -1305,6 +1480,9 @@ class ImportPatcher:
 
         # Create stub modules
         self._create_stubs(homeassistant)
+
+        # Patch asyncio socket options for macOS compatibility
+        self._patch_asyncio_socket_options()
 
         self._patched = True
         _LOGGER.debug("Import patching complete")
@@ -1331,6 +1509,125 @@ class ImportPatcher:
         homeassistant.components.lock = platforms.lock
         homeassistant.components.water_heater = platforms.water_heater
         homeassistant.components.camera = platforms.camera
+        homeassistant.components.siren = platforms.siren
+        homeassistant.components.remote = platforms.remote
+
+        # Create alarm_control_panel stub (localtuya needs this)
+        alarm_control_panel = types.ModuleType(
+            "homeassistant.components.alarm_control_panel"
+        )
+
+        # AlarmControlPanelState enum-like class with state constants
+        class AlarmControlPanelState:
+            """Alarm control panel state constants."""
+
+            DISARMED = "disarmed"
+            ARMED_HOME = "armed_home"
+            ARMED_AWAY = "armed_away"
+            ARMED_NIGHT = "armed_night"
+            ARMED_VACATION = "armed_vacation"
+            ARMED_CUSTOM_BYPASS = "armed_custom_bypass"
+            PENDING = "pending"
+            ARMING = "arming"
+            DISARMING = "disarming"
+            TRIGGERED = "triggered"
+
+        alarm_control_panel.AlarmControlPanelState = AlarmControlPanelState
+
+        alarm_control_panel.AlarmControlPanelEntity = type(
+            "AlarmControlPanelEntity", (), {}
+        )
+        alarm_control_panel.AlarmControlPanelEntityDescription = type(
+            "AlarmControlPanelEntityDescription", (), {}
+        )
+
+        # AlarmControlPanelEntityFeature
+        alarm_control_panel.AlarmControlPanelEntityFeature = type(
+            "AlarmControlPanelEntityFeature", (), {}
+        )
+        alarm_control_panel.AlarmControlPanelEntityFeature.ARM_HOME = 1
+        alarm_control_panel.AlarmControlPanelEntityFeature.ARM_AWAY = 2
+        alarm_control_panel.AlarmControlPanelEntityFeature.ARM_NIGHT = 4
+        alarm_control_panel.AlarmControlPanelEntityFeature.TRIGGER = 8
+
+        # CodeFormat enum-like class
+        class CodeFormat:
+            """Code format constants."""
+
+            TEXT = "text"
+            NUMBER = "number"
+
+        alarm_control_panel.CodeFormat = CodeFormat
+        alarm_control_panel.CodeFormat.TEXT = "text"
+        alarm_control_panel.CodeFormat.NUMBER = "number"
+
+        # Domain constant
+        alarm_control_panel.DOMAIN = "alarm_control_panel"
+
+        homeassistant.components.alarm_control_panel = alarm_control_panel
+        sys.modules["homeassistant.components.alarm_control_panel"] = (
+            alarm_control_panel
+        )
+
+        # Create cover stub (localtuya needs this)
+        cover = types.ModuleType("homeassistant.components.cover")
+
+        # CoverDeviceClass enum-like class
+        class CoverDeviceClass:
+            """Cover device class constants."""
+
+            AWNING = "awning"
+            BLIND = "blind"
+            CURTAIN = "curtain"
+            DAMPER = "damper"
+            DOOR = "door"
+            GARAGE = "garage"
+            GATE = "gate"
+            SHADE = "shade"
+            SHUTTER = "shutter"
+            WINDOW = "window"
+
+        cover.CoverDeviceClass = CoverDeviceClass
+
+        # DEVICE_CLASSES_SCHEMA for validation
+        import voluptuous as vol
+
+        cover.DEVICE_CLASSES_SCHEMA = vol.In(
+            [
+                "awning",
+                "blind",
+                "curtain",
+                "damper",
+                "door",
+                "garage",
+                "gate",
+                "shade",
+                "shutter",
+                "window",
+            ]
+        )
+
+        cover.CoverEntity = type("CoverEntity", (), {})
+        cover.CoverEntityDescription = type("CoverEntityDescription", (), {})
+        cover.CoverEntityFeature = type("CoverEntityFeature", (), {})
+        cover.CoverEntityFeature.OPEN = 1
+        cover.CoverEntityFeature.CLOSE = 2
+        cover.CoverEntityFeature.SET_POSITION = 4
+        cover.CoverEntityFeature.STOP = 8
+        cover.CoverEntityFeature.OPEN_TILT = 16
+        cover.CoverEntityFeature.CLOSE_TILT = 32
+        cover.CoverEntityFeature.STOP_TILT = 64
+        cover.CoverEntityFeature.SET_TILT_POSITION = 128
+        cover.DOMAIN = "cover"
+
+        # Cover attributes
+        cover.ATTR_POSITION = "position"
+        cover.ATTR_TILT_POSITION = "tilt_position"
+        cover.ATTR_CURRENT_POSITION = "current_position"
+        cover.ATTR_CURRENT_TILT_POSITION = "current_tilt_position"
+
+        homeassistant.components.cover = cover
+        sys.modules["homeassistant.components.cover"] = cover
 
         # Create mjpeg.camera stub (submodule of camera)
         mjpeg_camera = types.ModuleType("homeassistant.components.mjpeg.camera")
@@ -1363,6 +1660,64 @@ class ImportPatcher:
         )
         homeassistant.components.sensor.const = sensor_const
         sys.modules["homeassistant.components.sensor.const"] = sensor_const
+
+        # Create climate.const stub module for integrations that import from there
+        climate_const = types.ModuleType("homeassistant.components.climate.const")
+        climate_const.DOMAIN = platforms.climate.DOMAIN
+        climate_const.DEFAULT_MAX_TEMP = platforms.climate.DEFAULT_MAX_TEMP
+        climate_const.DEFAULT_MIN_TEMP = platforms.climate.DEFAULT_MIN_TEMP
+        climate_const.HVACMode = platforms.climate.HVACMode
+        climate_const.HVACAction = platforms.climate.HVACAction
+        climate_const.ClimateEntityFeature = platforms.climate.ClimateEntityFeature
+        # Preset constants
+        climate_const.PRESET_AWAY = "away"
+        climate_const.PRESET_ECO = "eco"
+        climate_const.PRESET_HOME = "home"
+        climate_const.PRESET_NONE = "none"
+        climate_const.PRESET_BOOST = "boost"
+        climate_const.PRESET_COMFORT = "comfort"
+        climate_const.PRESET_SLEEP = "sleep"
+        climate_const.PRESET_ACTIVITY = "activity"
+        homeassistant.components.climate.const = climate_const
+        sys.modules["homeassistant.components.climate.const"] = climate_const
+
+        # Create water_heater.const stub module for integrations that import from there
+        water_heater_const = types.ModuleType(
+            "homeassistant.components.water_heater.const"
+        )
+        water_heater_const.DOMAIN = platforms.water_heater.DOMAIN
+        water_heater_const.DEFAULT_MAX_TEMP = platforms.water_heater.DEFAULT_MAX_TEMP
+        water_heater_const.DEFAULT_MIN_TEMP = platforms.water_heater.DEFAULT_MIN_TEMP
+        water_heater_const.STATE_ECO = platforms.water_heater.STATE_ECO
+        water_heater_const.STATE_ELECTRIC = platforms.water_heater.STATE_ELECTRIC
+        water_heater_const.STATE_PERFORMANCE = platforms.water_heater.STATE_PERFORMANCE
+        water_heater_const.STATE_HIGH_DEMAND = platforms.water_heater.STATE_HIGH_DEMAND
+        water_heater_const.STATE_HEAT_PUMP = platforms.water_heater.STATE_HEAT_PUMP
+        water_heater_const.STATE_GAS = platforms.water_heater.STATE_GAS
+        water_heater_const.STATE_OFF = platforms.water_heater.STATE_OFF
+        water_heater_const.STATE_ON = platforms.water_heater.STATE_ON
+        homeassistant.components.water_heater.const = water_heater_const
+        sys.modules["homeassistant.components.water_heater.const"] = water_heater_const
+
+        # Create humidifier.const stub module for integrations that import from there
+        humidifier_const = types.ModuleType("homeassistant.components.humidifier.const")
+        humidifier_const.DOMAIN = platforms.humidifier.DOMAIN
+        humidifier_const.DEFAULT_MAX_HUMIDITY = (
+            platforms.humidifier.DEFAULT_MAX_HUMIDITY
+        )
+        humidifier_const.DEFAULT_MIN_HUMIDITY = (
+            platforms.humidifier.DEFAULT_MIN_HUMIDITY
+        )
+        humidifier_const.ATTR_MAX_HUMIDITY = platforms.humidifier.ATTR_MAX_HUMIDITY
+        humidifier_const.ATTR_MIN_HUMIDITY = platforms.humidifier.ATTR_MIN_HUMIDITY
+        humidifier_const.HumidifierDeviceClass = (
+            platforms.humidifier.HumidifierDeviceClass
+        )
+        humidifier_const.DEVICE_CLASSES_SCHEMA = (
+            platforms.humidifier.DEVICE_CLASSES_SCHEMA
+        )
+        homeassistant.components.humidifier.const = humidifier_const
+        sys.modules["homeassistant.components.humidifier.const"] = humidifier_const
 
         # Create light.const stub module for integrations that import from there
         light_const = types.ModuleType("homeassistant.components.light.const")
@@ -1436,6 +1791,8 @@ class ImportPatcher:
         sys.modules["homeassistant.components.lock"] = platforms.lock
         sys.modules["homeassistant.components.water_heater"] = platforms.water_heater
         sys.modules["homeassistant.components.camera"] = platforms.camera
+        sys.modules["homeassistant.components.siren"] = platforms.siren
+        sys.modules["homeassistant.components.remote"] = platforms.remote
 
         _LOGGER.debug("Platform modules patched")
 
@@ -1513,6 +1870,7 @@ class ImportPatcher:
 
         # Create missing component stubs
         from dataclasses import make_dataclass, field
+        import voluptuous as vol
 
         from shim.frozen_dataclass_compat import FrozenOrThawed
 
@@ -1633,6 +1991,11 @@ class ImportPatcher:
             ],
         )
         number_stub.NumberMode = number_mode_enum
+        number_stub.DOMAIN = "number"
+        # DEVICE_CLASSES_SCHEMA for validation
+        number_stub.DEVICE_CLASSES_SCHEMA = vol.In(
+            [cls.value for cls in number_device_class_enum]
+        )
         homeassistant.components.number = number_stub
         sys.modules["homeassistant.components.number"] = number_stub
 
@@ -1660,6 +2023,41 @@ class ImportPatcher:
         sys.modules["homeassistant.helpers.typing"] = typing_stub
 
         _LOGGER.debug("Stub modules created")
+
+    def _patch_asyncio_socket_options(self) -> None:
+        """Patch asyncio socket options for macOS compatibility.
+
+        On macOS, setting TCP_NODELAY on certain socket types can fail with
+        [Errno 22] Invalid argument. This patch makes the error non-fatal.
+        """
+        import sys
+        import platform
+
+        # Only patch on macOS
+        if platform.system() != "Darwin":
+            return
+
+        import asyncio.base_events
+        import socket
+
+        _original_set_nodelay = asyncio.base_events._set_nodelay
+
+        def _patched_set_nodelay(sock):
+            """Set TCP_NODELAY with error handling for macOS."""
+            try:
+                _original_set_nodelay(sock)
+            except OSError as e:
+                # On macOS, EINVAL (22) can occur for certain socket types
+                # This is not fatal - we just skip the optimization
+                if e.errno == 22:  # EINVAL
+                    _LOGGER.debug(
+                        f"TCP_NODELAY not supported for this socket type, skipping: {e}"
+                    )
+                else:
+                    raise
+
+        asyncio.base_events._set_nodelay = _patched_set_nodelay
+        _LOGGER.debug("Patched asyncio _set_nodelay for macOS compatibility")
 
     def unpatch(self) -> None:
         """Restore original modules."""

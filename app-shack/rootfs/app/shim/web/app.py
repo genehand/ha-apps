@@ -583,13 +583,23 @@ class WebUI:
 
             # Convert form values based on schema field types
             if schema and hasattr(schema, "schema"):
+                import voluptuous as vol
+
+                # Log all incoming form values for debugging
+                for key, value in user_input.items():
+                    _LOGGER.debug(
+                        f"Form input '{key}': {repr(value)} (type: {type(value).__name__}, "
+                        f"is_undefined: {self._is_undefined(value)})"
+                    )
+
                 schema_dict = schema.schema
                 _LOGGER.debug(f"Schema dict: {schema_dict}")
                 if isinstance(schema_dict, dict):
                     converted_input = {}
                     for key, value in user_input.items():
-                        # Find the validator for this field
+                        # Find the validator and schema key for this field
                         validator = None
+                        field_schema_key = None
                         for schema_key, schema_val in schema_dict.items():
                             field_name = (
                                 schema_key.schema
@@ -598,19 +608,70 @@ class WebUI:
                             )
                             if field_name == key:
                                 validator = schema_val
+                                field_schema_key = schema_key
                                 break
 
                         if validator:
+                            # Check if the raw value is UNDEFINED (skip it)
+                            if self._is_undefined(value):
+                                _LOGGER.debug(
+                                    f"Field '{key}': value is UNDEFINED, skipping"
+                                )
+                                continue
+
                             # Convert based on validator type
                             converted_value = self._convert_form_value(
                                 value, validator, key
                             )
-                            _LOGGER.debug(
-                                f"Field '{key}': original='{value}' ({type(value).__name__}), "
-                                f"validator={validator.__class__.__name__}, "
-                                f"converted='{converted_value}' ({type(converted_value).__name__})"
+
+                            # Check if converted value is UNDEFINED
+                            if self._is_undefined(converted_value):
+                                _LOGGER.debug(
+                                    f"Field '{key}': converted value is UNDEFINED, skipping"
+                                )
+                                continue
+
+                            # Handle empty strings on Optional fields
+                            is_optional = (
+                                field_schema_key
+                                and hasattr(field_schema_key, "__class__")
+                                and field_schema_key.__class__.__name__ == "Optional"
                             )
-                            converted_input[key] = converted_value
+                            has_explicit_default = (
+                                field_schema_key
+                                and hasattr(field_schema_key, "default")
+                                and field_schema_key.default is not vol.UNDEFINED
+                            )
+
+                            if converted_value == "" and is_optional:
+                                if has_explicit_default:
+                                    # Use the explicit default value
+                                    default_value = field_schema_key.default
+                                    if callable(default_value):
+                                        try:
+                                            default_value = default_value()
+                                        except Exception:
+                                            default_value = None
+                                    _LOGGER.debug(
+                                        f"Field '{key}': empty string on Optional field "
+                                        f"with default, using default={repr(default_value)}"
+                                    )
+                                    converted_input[key] = default_value
+                                else:
+                                    # No explicit default - skip this key entirely
+                                    # This makes "if KEY in data" checks in integrations return False
+                                    _LOGGER.debug(
+                                        f"Field '{key}': empty string on Optional field "
+                                        f"without default, skipping key"
+                                    )
+                                    # Don't add to converted_input - skip it
+                            else:
+                                _LOGGER.debug(
+                                    f"Field '{key}': original='{value}' ({type(value).__name__}), "
+                                    f"validator={validator.__class__.__name__}, "
+                                    f"converted='{converted_value}' ({type(converted_value).__name__})"
+                                )
+                                converted_input[key] = converted_value
                         else:
                             _LOGGER.debug(
                                 f"Field '{key}': no validator found, keeping as-is"
@@ -640,6 +701,14 @@ class WebUI:
                                     f"Field '{field_name}': missing from form, using default={repr(default_value)}"
                                 )
                                 converted_input[field_name] = default_value
+
+                    # Final pass: remove any UNDEFINED values that might have slipped through
+                    for key in list(converted_input.keys()):
+                        if self._is_undefined(converted_input[key]):
+                            _LOGGER.debug(
+                                f"Final cleanup: removing UNDEFINED value for '{key}'"
+                            )
+                            del converted_input[key]
 
                     user_input = converted_input
                     _LOGGER.debug(f"Final user_input: {user_input}")
@@ -699,6 +768,304 @@ class WebUI:
             else:
                 return HTMLResponse(
                     f'<div class="alert alert-error">Unknown result: {result.get("type")}</div>'
+                )
+
+        @self._app.get("/config/{entry_id}/reconfigure", response_class=HTMLResponse)
+        async def options_flow_start(request: Request, entry_id: str):
+            """Start an options flow (reconfiguration) for an existing config entry."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
+            # Find the entry
+            entry = self._shim_manager.get_hass().config_entries.async_get_entry(
+                entry_id
+            )
+            if not entry:
+                raise HTTPException(status_code=404, detail="Config entry not found")
+
+            domain = entry.domain
+
+            # Start options flow
+            result = (
+                await self._shim_manager.get_integration_loader().start_options_flow(
+                    entry
+                )
+            )
+
+            if not result:
+                # Fallback message if no options flow available
+                return HTMLResponse(
+                    '<div class="alert alert-warning">'
+                    "This integration does not support reconfiguration."
+                    "</div>",
+                    status_code=400,
+                )
+
+            # Handle different result types (form vs menu)
+            if result.get("type") == "menu":
+                return self._render_menu_step(
+                    request, domain, result, is_options_flow=True, entry_id=entry_id
+                )
+            else:
+                # Default to form rendering for "form" type and any other types
+                return self._render_config_step(
+                    request, domain, result, is_options_flow=True, entry_id=entry_id
+                )
+
+        @self._app.post("/config/{entry_id}/reconfigure")
+        async def options_flow_submit(request: Request, entry_id: str):
+            """Submit an options flow step."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
+            # Find the entry
+            entry = self._shim_manager.get_hass().config_entries.async_get_entry(
+                entry_id
+            )
+            if not entry:
+                raise HTTPException(status_code=404, detail="Config entry not found")
+
+            domain = entry.domain
+
+            # Parse form data
+            form_data = await request.form()
+            user_input = dict(form_data)
+            _LOGGER.debug(f"Options flow raw form data for {domain}: {user_input}")
+
+            # Extract flow_id from form data
+            flow_id = user_input.pop("flow_id", None)
+
+            # Get the stored schema from the flow object for type conversion
+            hass = self._shim_manager.get_hass()
+            flow = hass.config_entries._flow_progress.get(flow_id)
+            schema = getattr(flow, "_last_form_schema", None) if flow else None
+
+            # Handle menu selection
+            if "next_step" in user_input:
+                user_input = {"next_step": user_input["next_step"]}
+                _LOGGER.debug(
+                    f"Options flow menu selection for {domain}: flow_id={flow_id}, "
+                    f"selected_option={user_input['next_step']}"
+                )
+            else:
+                _LOGGER.debug(
+                    f"Options flow submit for {domain}: flow_id={flow_id}, "
+                    f"schema={schema}, user_input={user_input}"
+                )
+
+            # Convert form values based on schema field types (same as config flow)
+            if schema and hasattr(schema, "schema"):
+                import voluptuous as vol
+
+                # Log all incoming form values for debugging
+                for key, value in user_input.items():
+                    _LOGGER.debug(
+                        f"Options form input '{key}': {repr(value)} (type: {type(value).__name__}, "
+                        f"is_undefined: {self._is_undefined(value)})"
+                    )
+
+                schema_dict = schema.schema
+                _LOGGER.debug(f"Options flow schema dict: {schema_dict}")
+                if isinstance(schema_dict, dict):
+                    converted_input = {}
+                    for key, value in user_input.items():
+                        # Find the validator and schema key for this field
+                        validator = None
+                        field_schema_key = None
+                        for schema_key, schema_val in schema_dict.items():
+                            field_name = (
+                                schema_key.schema
+                                if hasattr(schema_key, "schema")
+                                else schema_key
+                            )
+                            if field_name == key:
+                                validator = schema_val
+                                field_schema_key = schema_key
+                                break
+
+                        if validator:
+                            # Check if the raw value is UNDEFINED (skip it)
+                            if self._is_undefined(value):
+                                _LOGGER.debug(
+                                    f"Field '{key}': value is UNDEFINED, skipping"
+                                )
+                                continue
+
+                            converted_value = self._convert_form_value(
+                                value, validator, key
+                            )
+
+                            # Check if converted value is UNDEFINED
+                            if self._is_undefined(converted_value):
+                                _LOGGER.debug(
+                                    f"Field '{key}': converted value is UNDEFINED, skipping"
+                                )
+                                continue
+
+                            # Handle empty strings on Optional fields
+                            is_optional = (
+                                field_schema_key
+                                and hasattr(field_schema_key, "__class__")
+                                and field_schema_key.__class__.__name__ == "Optional"
+                            )
+                            has_explicit_default = (
+                                field_schema_key
+                                and hasattr(field_schema_key, "default")
+                                and field_schema_key.default is not vol.UNDEFINED
+                            )
+
+                            if converted_value == "" and is_optional:
+                                if has_explicit_default:
+                                    # Use the explicit default value
+                                    default_value = field_schema_key.default
+                                    if callable(default_value):
+                                        try:
+                                            default_value = default_value()
+                                        except Exception:
+                                            default_value = None
+                                    _LOGGER.debug(
+                                        f"Field '{key}': empty string on Optional field "
+                                        f"with default, using default={repr(default_value)}"
+                                    )
+                                    converted_input[key] = default_value
+                                else:
+                                    # No explicit default - skip this key entirely
+                                    # This makes "if KEY in data" checks in integrations return False
+                                    _LOGGER.debug(
+                                        f"Field '{key}': empty string on Optional field "
+                                        f"without default, skipping key"
+                                    )
+                                    # Don't add to converted_input - skip it
+                            else:
+                                _LOGGER.debug(
+                                    f"Field '{key}': original='{value}' ({type(value).__name__}), "
+                                    f"validator={validator.__class__.__name__}, "
+                                    f"converted='{converted_value}' ({type(converted_value).__name__})"
+                                )
+                                converted_input[key] = converted_value
+                        else:
+                            converted_input[key] = value
+
+                    # Add missing schema fields with their default values
+                    for schema_key, schema_val in schema_dict.items():
+                        field_name = (
+                            schema_key.schema
+                            if hasattr(schema_key, "schema")
+                            else schema_key
+                        )
+                        if field_name not in converted_input:
+                            if hasattr(schema_key, "default"):
+                                default_value = schema_key.default
+                                if callable(default_value):
+                                    try:
+                                        default_value = default_value()
+                                    except Exception:
+                                        continue
+                                converted_input[field_name] = default_value
+
+                    # Final pass: remove any UNDEFINED values that might have slipped through
+                    for key in list(converted_input.keys()):
+                        if self._is_undefined(converted_input[key]):
+                            _LOGGER.debug(
+                                f"Final cleanup: removing UNDEFINED value for '{key}'"
+                            )
+                            del converted_input[key]
+
+                    user_input = converted_input
+                    _LOGGER.debug(f"Options flow final user_input: {user_input}")
+
+            # Continue options flow
+            result = (
+                await self._shim_manager.get_integration_loader().continue_options_flow(
+                    entry, flow_id, user_input
+                )
+            )
+
+            if not result:
+                raise HTTPException(
+                    status_code=400, detail="Failed to process options flow"
+                )
+
+            # Handle result
+            if result.get("type") == "create_entry":
+                # Options flow completed - reload the integration if it was loaded
+                if entry.state == "loaded":
+                    await (
+                        self._shim_manager.get_integration_loader().reload_config_entry(
+                            entry
+                        )
+                    )
+
+                # Return success with HTMX redirect
+                response = HTMLResponse(
+                    '<div class="alert alert-success">Configuration updated successfully!</div>'
+                )
+                response.headers["HX-Redirect"] = f"../../integrations/{domain}"
+                return response
+
+            elif result.get("type") == "form":
+                # Show next form step
+                return self._render_config_step(
+                    request, domain, result, is_options_flow=True, entry_id=entry_id
+                )
+
+            elif result.get("type") == "menu":
+                # Show menu selection step
+                return self._render_menu_step(
+                    request, domain, result, is_options_flow=True, entry_id=entry_id
+                )
+
+            elif result.get("type") == "abort":
+                return HTMLResponse(
+                    f'<div class="alert alert-error">Aborted: {result.get("reason")}</div>'
+                )
+
+            else:
+                return HTMLResponse(
+                    f'<div class="alert alert-error">Unknown result: {result.get("type")}</div>'
+                )
+
+        @self._app.post("/config/{entry_id}/reload")
+        async def reload_config_entry(entry_id: str):
+            """Reload a config entry to apply configuration changes."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
+            # Find the entry
+            entry = self._shim_manager.get_hass().config_entries.async_get_entry(
+                entry_id
+            )
+            if not entry:
+                raise HTTPException(status_code=404, detail="Config entry not found")
+
+            domain = entry.domain
+
+            # Reload the entry
+            success = (
+                await self._shim_manager.get_integration_loader().reload_config_entry(
+                    entry
+                )
+            )
+
+            if success:
+                html = (
+                    f'<div class="alert alert-success">'
+                    f"Configuration reloaded successfully!"
+                    f"</div>"
+                )
+                response = HTMLResponse(content=html)
+                response.headers["HX-Redirect"] = f"../../integrations/{domain}"
+                return response
+            else:
+                return HTMLResponse(
+                    '<div class="alert alert-error">Failed to reload configuration</div>',
+                    status_code=400,
                 )
 
         @self._app.get("/api/integrations", response_class=JSONResponse)
@@ -963,7 +1330,12 @@ class WebUI:
     }
 
     def _render_config_step(
-        self, request: Request, domain: str, result: dict
+        self,
+        request: Request,
+        domain: str,
+        result: dict,
+        is_options_flow: bool = False,
+        entry_id: str = None,
     ) -> HTMLResponse:
         """Render a config flow form step."""
         schema = result.get("data_schema")
@@ -995,33 +1367,66 @@ class WebUI:
                 translated_errors[key] = str(error_key)
 
         # Convert voluptuous schema to form fields
-        # This is a simplified version - real implementation would need full schema parsing
         fields = self._parse_schema(schema)
 
         # Apply field translations
         if translations:
             self._apply_field_translations(fields, translations, step_id)
 
-        html = self._render_template(
-            "config_form.html",
-            request=request,
-            domain=domain,
-            fields=fields,
-            errors=translated_errors,
-            description=description,
-            step_id=step_id,
-            flow_id=result.get("flow_id"),
-        )
+        # Check if this is an HTMX request for partial rendering
+        is_htmx = request.headers.get("HX-Request") == "true"
+
+        if is_htmx and is_options_flow:
+            # Render only the form content without full page wrapper for HTMX
+            html = self._render_template(
+                "config_form_content.html",
+                request=request,
+                domain=domain,
+                fields=fields,
+                errors=translated_errors,
+                description=description,
+                step_id=step_id,
+                flow_id=result.get("flow_id"),
+                is_options_flow=is_options_flow,
+                entry_id=entry_id,
+            )
+        else:
+            # Render full page with base template
+            html = self._render_template(
+                "config_form.html",
+                request=request,
+                domain=domain,
+                fields=fields,
+                errors=translated_errors,
+                description=description,
+                step_id=step_id,
+                flow_id=result.get("flow_id"),
+                is_options_flow=is_options_flow,
+                entry_id=entry_id,
+            )
         return HTMLResponse(content=html)
 
     def _render_menu_step(
-        self, request: Request, domain: str, result: dict
+        self,
+        request: Request,
+        domain: str,
+        result: dict,
+        is_options_flow: bool = False,
+        entry_id: str = None,
     ) -> HTMLResponse:
         """Render a config flow menu step with options."""
         menu_options = result.get("menu_options", [])
         description = result.get("description_placeholders", {})
         flow_id = result.get("flow_id")
         step_id = result.get("step_id", "user")
+
+        # Determine form action URL
+        if is_options_flow and entry_id:
+            form_action = "reconfigure"
+            title_prefix = "Reconfigure"
+        else:
+            form_action = domain
+            title_prefix = "Configure"
 
         # Build HTML for menu options
         options_html = ""
@@ -1033,21 +1438,35 @@ class WebUI:
             </button>
             """
 
+        # Load translations for menu step
+        translations = self._load_integration_translations(domain)
+        step_translations = (
+            translations.get("config", {}).get("step", {}).get(step_id, {})
+        )
+        menu_title = step_translations.get("title", f"{title_prefix} {domain.title()}")
+        menu_description = step_translations.get("description", "")
+
         html = f"""
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Configure {domain}</title>
+            <title>{menu_title}</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <link rel="stylesheet" href="{PICO_CSS_URL}">
             <link rel="stylesheet" href="{PICO_COLORS_URL}">
             <script src="{HTMX_URL}" integrity="{HTMX_SRI}" crossorigin="anonymous"></script>
+            <style>
+                :root {{
+                    --pico-font-size: 1rem;
+                }}
+            </style>
         </head>
         <body>
             <div class="container">
-                <h2>Configure {domain.title()}</h2>
+                <h2>{menu_title}</h2>
+                {"<p>" + menu_description + "</p>" if menu_description else ""}
                 {"<p>" + str(description) + "</p>" if description else ""}
-                <form hx-post="{domain}" hx-target="#config-result" hx-swap="innerHTML">
+                <form hx-post="{form_action}" hx-target="#config-result" hx-swap="innerHTML">
                     <input type="hidden" name="flow_id" value="{flow_id}">
                     <input type="hidden" name="step_id" value="{step_id}">
                     <div style="margin: 20px 0;">
@@ -1124,7 +1543,10 @@ class WebUI:
                 description = key.description
                 if isinstance(description, dict):
                     if "suggested_value" in description:
-                        field["default"] = description["suggested_value"]
+                        suggested = description["suggested_value"]
+                        # Skip UNDEFINED suggested values
+                        if not self._is_undefined(suggested):
+                            field["default"] = suggested
                     # Extract help text description if present
                     if "description" in description:
                         field["description"] = description["description"]
@@ -1457,6 +1879,24 @@ class WebUI:
 
         # Handle empty strings for non-str types
         if value == "":
+            # For numeric types, return 0 instead of None to avoid comparison issues
+            if (
+                validator is int
+                or validator_class == "Coerce"
+                and hasattr(validator, "type")
+                and validator.type == int
+            ):
+                return 0
+            if (
+                validator is float
+                or validator_class == "Coerce"
+                and hasattr(validator, "type")
+                and validator.type == float
+            ):
+                return 0.0
+            # For string validators (cv.string), keep empty string
+            if validator_class == "function":
+                return ""
             return None
 
         if validator is int or validator_class == "type" and validator == int:
@@ -1604,6 +2044,30 @@ class WebUI:
         # Default: return as-is
         return value
 
+    def _is_undefined(self, value: Any) -> bool:
+        """Check if a value is UNDEFINED (either HA's or voluptuous's).
+
+        Args:
+            value: The value to check
+
+        Returns:
+            True if the value is UNDEFINED, False otherwise
+        """
+        import voluptuous as vol
+
+        if value is None:
+            return False
+
+        # Check for HA's UNDEFINED class (defined in import_patch.py)
+        if hasattr(value, "__class__") and value.__class__.__name__ == "UNDEFINED":
+            return True
+
+        # Check for voluptuous's UNDEFINED (which is ... Ellipsis)
+        if value is vol.UNDEFINED:
+            return True
+
+        return False
+
     def get_app(self) -> FastAPI:
         """Get the FastAPI application."""
         return self._app
@@ -1677,6 +2141,7 @@ class WebUI:
             port=self._port,
             log_level="info",
             log_config=log_config,
+            loop="asyncio",  # Use standard asyncio loop explicitly
         )
         server = uvicorn.Server(config)
         try:
