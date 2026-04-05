@@ -103,9 +103,24 @@ class SwitchEntity(ToggleEntity):
         entity_name = get_entity_name_for_discovery(
             self.name, self.device_info, self.has_entity_name
         )
+
+        # Generate enhanced unique_id for localtuya integration
+        # Change "local_" prefix to "localtuya_" and include device name
+        original_unique_id = self.unique_id
+        if original_unique_id.startswith("local_") and self.device_info:
+            device_name = getattr(self.device_info, "name", "")
+            if device_name:
+                # Replace "local_" with "localtuya_" and prepend device name
+                clean_name = device_name.replace(" ", "_").replace("-", "_")
+                enhanced_unique_id = f"localtuya_{clean_name}_{original_unique_id[6:]}"
+            else:
+                enhanced_unique_id = f"localtuya_{original_unique_id[6:]}"
+        else:
+            enhanced_unique_id = original_unique_id
+
         config = {
             "name": entity_name,
-            "unique_id": get_mqtt_safe_unique_id(self.unique_id),
+            "unique_id": get_mqtt_safe_unique_id(enhanced_unique_id),
             "state_topic": f"{base_topic}/state",
             "command_topic": f"{base_topic}/set",
         }

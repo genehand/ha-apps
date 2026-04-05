@@ -579,6 +579,15 @@ class ConfigEntries:
                         """Add entities to the platform."""
                         _entities_to_add.extend(entities)
 
+                        # Log sub-entity creation for debugging
+                        if len(entities) > 0:
+                            first_entity = entities[0]
+                            entity_class_name = type(first_entity).__name__
+                            _LOGGER.debug(
+                                f"async_add_entities called for {len(entities)} entities "
+                                f"(first: {entity_class_name}) on {platform_name} platform"
+                            )
+
                         # Schedule async work in background
                         async def _do_add():
                             for entity in entities:
@@ -615,7 +624,7 @@ class ConfigEntries:
                                             f"{platform}.unknown_{id(entity)}"
                                         )
 
-                                _LOGGER.debug(
+                                _LOGGER.info(
                                     f"Adding entity {entity.entity_id} to {platform} platform"
                                 )
 
@@ -700,12 +709,24 @@ class ConfigEntries:
                                             f"Publishing generic MQTT discovery for {entity.entity_id}"
                                         )
                                         await entity._publish_generic_mqtt_discovery()
-                                    _LOGGER.debug(
+                                    _LOGGER.info(
                                         f"MQTT discovery published for {entity.entity_id}"
                                     )
 
-                        # Create task to run async work
+                        # Create task to run async work and store it so it doesn't get garbage collected
                         task = asyncio.create_task(_do_add())
+                        # Store reference to ensure task completes even if caller doesn't await
+                        _pending_tasks = getattr(
+                            self._hass, "_pending_entity_tasks", []
+                        )
+                        _pending_tasks.append(task)
+                        self._hass._pending_entity_tasks = _pending_tasks
+                        # Clean up task when done
+                        task.add_done_callback(
+                            lambda t: self._hass._pending_entity_tasks.remove(t)
+                            if t in getattr(self._hass, "_pending_entity_tasks", [])
+                            else None
+                        )
                         return task
 
                     await platform_module.async_setup_entry(

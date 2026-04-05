@@ -421,6 +421,22 @@ class ImportPatcher:
 
         config_validation.ensure_list = ensure_list
 
+        # multi_select validator - validates a list of options
+        def multi_select(options):
+            """Validate that value is a list of valid options."""
+
+            def validator(value):
+                """Check if all values in list are valid options."""
+                if value is None:
+                    return []
+                if not isinstance(value, list):
+                    value = [value]
+                return [v for v in value if v in options]
+
+            return validator
+
+        config_validation.multi_select = multi_select
+
         # Latitude and longitude validators
         def latitude_validator(value):
             """Validate latitude is between -90 and 90."""

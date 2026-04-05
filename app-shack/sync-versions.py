@@ -56,9 +56,18 @@ def update_integration_versions() -> None:
     with open(REPO_STATUS_FILE) as f:
         repo_status = json.load(f)
 
-    # Build case-insensitive lookup for verified repos
+    # Build lookup for verified repos - normalize keys by extracting repo path
     verified = repo_status.get("verified", {})
-    repo_lookup = {key.lower(): key for key in verified}
+    repo_lookup = {}
+    for key in verified:
+        # Normalize key: extract just the user/repo part, handling full URLs
+        if key.startswith("http"):
+            match = re.search(r"github\.com/([^/]+/[^/]+)", key)
+            if match:
+                normalized = match.group(1).lower()
+                repo_lookup[normalized] = key
+        else:
+            repo_lookup[key.lower()] = key
 
     updated = False
 
@@ -74,7 +83,7 @@ def update_integration_versions() -> None:
             if not local_version or not github_repo:
                 continue
 
-            # Case-insensitive lookup
+            # Lookup using normalized repo path
             repo_key = repo_lookup.get(github_repo.lower())
             if not repo_key:
                 continue

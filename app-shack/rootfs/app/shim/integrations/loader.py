@@ -160,12 +160,35 @@ class IntegrationLoader:
                 _LOGGER.error(f"Integration {domain} missing async_setup_entry")
                 return False
 
-            # Check for entry migration
+            # Check for entry migration - only call if entry version is outdated
             if hasattr(module, "async_migrate_entry"):
                 try:
-                    # Get the expected version from the integration
-                    migrate_result = await module.async_migrate_entry(self._hass, entry)
-                    _LOGGER.debug(f"Migration result for {domain}: {migrate_result}")
+                    # Get the target version from the integration's config flow
+                    target_version = None
+                    try:
+                        config_flow_module = importlib.import_module(
+                            f"custom_components.{domain}.config_flow"
+                        )
+                        # Common attribute names for config entry version
+                        for attr_name in ("VERSION", "ENTRIES_VERSION"):
+                            if hasattr(config_flow_module, attr_name):
+                                target_version = getattr(config_flow_module, attr_name)
+                                break
+                    except ImportError:
+                        pass
+
+                    # Only migrate if entry version is less than target version
+                    if target_version is not None and entry.version >= target_version:
+                        _LOGGER.debug(
+                            f"Skipping migration for {domain}: entry version {entry.version} >= target {target_version}"
+                        )
+                    else:
+                        migrate_result = await module.async_migrate_entry(
+                            self._hass, entry
+                        )
+                        _LOGGER.debug(
+                            f"Migration result for {domain}: {migrate_result}"
+                        )
                 except Exception as e:
                     _LOGGER.warning(f"Migration check for {domain} raised: {e}")
 
