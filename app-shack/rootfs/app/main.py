@@ -117,11 +117,15 @@ async def main():
         loop.add_signal_handler(sig, signal_handler)
 
     try:
-        # Start shim (this loads enabled integrations)
+        # Start shim phase 1 (fast setup: MQTT, HACS fetch, basic state)
         await shim_manager.start()
 
-        # Start web UI in background
+        # Start web UI immediately (available during integration loading)
         web_task = asyncio.create_task(web_ui.start())
+
+        # Start shim phase 2 (integration loading in background)
+        # This allows the web UI to be accessible while integrations load
+        loading_task = asyncio.create_task(shim_manager.start_integration_loading())
 
         # Wait for shutdown signal
         await shutdown_event.wait()
@@ -133,6 +137,14 @@ async def main():
             await web_task
         except asyncio.CancelledError:
             pass
+
+        # Wait for loading task to complete (if still running)
+        if loading_task:
+            loading_task.cancel()
+            try:
+                await loading_task
+            except asyncio.CancelledError:
+                pass
 
     except asyncio.CancelledError:
         logger.info("Task cancelled")

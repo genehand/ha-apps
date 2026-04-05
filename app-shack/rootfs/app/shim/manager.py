@@ -63,20 +63,47 @@ class ShimManager:
         self._running = False
         self._update_check_task = None
 
+        # Semaphore to limit concurrent integration setups (max 5 parallel)
+        self._setup_semaphore = asyncio.Semaphore(5)
+
+        # Loading state tracking
+        self._loading_complete = False
+        self._loading_event = asyncio.Event()
+        self._loading_task = None
+
     async def start(self) -> None:
-        """Start the shim manager."""
-        _LOGGER.debug("Starting Shim Manager")
+        """Start the shim manager (phase 1 - fast setup).
+
+        This performs the fast initialization that must complete before
+        the web server starts:
+        - MQTT subscriptions
+        - HACS repository fetch
+        - Basic state setup
+
+        Integration loading happens separately via start_integration_loading().
+        """
+        _LOGGER.debug("Starting Shim Manager (phase 1 - fast setup)")
         self._running = True
 
         # Setup MQTT subscriptions
         self._setup_mqtt_subscriptions()
 
-        # Fetch HACS repositories
+        # Fetch HACS repositories (fast, cached)
         _LOGGER.debug("Checking HACS repository list")
         await self._integration_manager.fetch_hacs_repositories()
 
-        # Load and setup enabled integrations
-        await self._load_enabled_integrations()
+        # Start integration manager background tasks
+        await self._integration_manager.start_background_tasks()
+
+        _LOGGER.debug("Shim Manager phase 1 complete (ready for web server)")
+
+    async def start_integration_loading(self) -> None:
+        """Start loading integrations in the background (phase 2).
+
+        This runs after the web server is started, allowing the UI to be
+        accessible while integrations are being set up.
+        """
+        _LOGGER.info("Starting integration loading in background (phase 2)")
 
         # Show helpful message for meross_lan users about expected warnings
         enabled_domains = {
@@ -89,16 +116,36 @@ class ShimManager:
                 "in your Meross cloud account that are currently unreachable."
             )
 
+        # Load and setup enabled integrations in the background
+        self._loading_task = asyncio.create_task(self._load_integrations_background())
+
         # Initial update check and notify (in background, don't block startup)
         asyncio.create_task(self._initial_update_check())
 
         # Start periodic update checks
         self._update_check_task = asyncio.create_task(self._periodic_update_checks())
 
-        # Start integration manager background tasks
-        await self._integration_manager.start_background_tasks()
+    async def _load_integrations_background(self) -> None:
+        """Background task to load all enabled integrations."""
+        try:
+            await self._load_enabled_integrations()
+            self._loading_complete = True
+            self._loading_event.set()
+            _LOGGER.info("Integration loading complete")
+        except Exception as e:
+            _LOGGER.error(f"Error during integration loading: {e}")
+            # Still mark as complete so web UI isn't stuck
+            self._loading_complete = True
+            self._loading_event.set()
 
-        _LOGGER.debug("Shim Manager started successfully")
+    @property
+    def is_loading(self) -> bool:
+        """Check if integrations are still being loaded."""
+        return not self._loading_complete
+
+    async def wait_for_loading(self) -> None:
+        """Wait for integration loading to complete."""
+        await self._loading_event.wait()
 
     async def stop(self) -> None:
         """Stop the shim manager."""
@@ -478,7 +525,7 @@ class ShimManager:
             _LOGGER.error(f"Failed to update {domain} to {info.latest_version}")
 
     async def _load_enabled_integrations(self) -> None:
-        """Load all enabled integrations."""
+        """Load all enabled integrations in parallel with limited concurrency."""
         # Install requirements for ALL integrations first (even disabled)
         # This allows config flows to work for disabled integrations
         all_integrations = self._integration_manager.get_all_integrations()
@@ -493,12 +540,16 @@ class ShimManager:
             if not requirements_success:
                 _LOGGER.error(f"Failed to install requirements for {info.domain}")
 
-        # Now load only the enabled integrations
+        # Now load only the enabled integrations in parallel
         enabled = self._integration_manager.get_enabled_integrations()
-        _LOGGER.info(f"Loading {len(enabled)} enabled integrations")
+        _LOGGER.info(f"Loading {len(enabled)} enabled integrations in parallel")
+
+        # Collect all setup tasks
+        setup_tasks = []
+        task_info = []  # Track (domain, entry_id) for logging
 
         for info in enabled:
-            _LOGGER.debug(f"Loading enabled integration: {info.domain}")
+            _LOGGER.debug(f"Preparing to load enabled integration: {info.domain}")
 
             # Get config entries for this integration
             entries = self._hass.config_entries.async_entries(info.domain)
@@ -515,11 +566,48 @@ class ShimManager:
                 await self._hass.config_entries.async_add(entry)
                 entries = [entry]
 
-            # Setup each entry
+            # Create a setup task for each entry (will be run in parallel with limited concurrency)
             for entry in entries:
-                success = await self._integration_loader.setup_integration(entry)
-                if not success:
-                    _LOGGER.error(f"Failed to setup {info.domain}")
+                setup_tasks.append(self._setup_integration_with_semaphore(entry))
+                task_info.append((info.domain, entry.entry_id))
+
+        # Run all setups in parallel (semaphore limits concurrency to 5)
+        if setup_tasks:
+            _LOGGER.info(
+                f"Starting parallel setup of {len(setup_tasks)} config entries "
+                f"(max 5 concurrent)"
+            )
+            results = await asyncio.gather(*setup_tasks, return_exceptions=True)
+
+            # Log results
+            success_count = 0
+            for (domain, entry_id), result in zip(task_info, results):
+                if isinstance(result, Exception):
+                    _LOGGER.error(f"Failed to setup {domain} ({entry_id}): {result}")
+                elif result:
+                    success_count += 1
+                    _LOGGER.debug(f"Successfully setup {domain} ({entry_id})")
+                else:
+                    _LOGGER.error(
+                        f"Failed to setup {domain} ({entry_id}) - returned False"
+                    )
+
+            _LOGGER.info(
+                f"Integration loading complete: {success_count}/{len(setup_tasks)} "
+                f"config entries loaded successfully"
+            )
+
+    async def _setup_integration_with_semaphore(self, entry: ConfigEntry) -> bool:
+        """Setup an integration with semaphore-controlled concurrency.
+
+        Args:
+            entry: The config entry to setup.
+
+        Returns:
+            True if setup succeeded, False otherwise.
+        """
+        async with self._setup_semaphore:
+            return await self._integration_loader.setup_integration(entry)
 
     async def _initial_update_check(self) -> None:
         """Check for updates on startup and send notification if any found.

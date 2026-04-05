@@ -46,14 +46,30 @@ class WebUI:
         # Setup templates - store directory path and load manually
         self._template_dir = Path(__file__).parent / "templates"
 
+        # Register routes
+        self._register_routes()
+
         # Setup static files
         # static_dir = Path(__file__).parent / "static"
         # self._app.mount(
         #     "/static", StaticFiles(directory=str(static_dir)), name="static"
         # )
 
-        # Register routes
-        self._register_routes()
+    def _check_loading(self) -> Optional[HTMLResponse]:
+        """Check if integrations are still loading and return a 'please wait' response if so.
+
+        Returns:
+            HTMLResponse with 'please wait' message if loading, None otherwise.
+        """
+        if self._shim_manager.is_loading:
+            return HTMLResponse(
+                '<div class="alert alert-warning">'
+                '<span class="spinner" style="width: 14px; height: 14px; margin-right: 8px;"></span>'
+                "Integrations are still loading. Please wait a moment and try again."
+                "</div>",
+                status_code=503,
+            )
+        return None
 
     def _render_template(self, template_name: str, **context) -> str:
         """Render a template using Jinja2 environment with inheritance support."""
@@ -109,6 +125,7 @@ class WebUI:
                 integrations=integrations_dicts,
                 available=available_dicts,
                 custom_repos=custom_repos,
+                is_loading=self._shim_manager.is_loading,
             )
             return HTMLResponse(content=html)
 
@@ -180,6 +197,11 @@ class WebUI:
         @self._app.post("/integrations/{domain}/enable")
         async def enable_integration(request: Request, domain: str):
             """Enable an integration."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
             success = (
                 await self._shim_manager.get_integration_manager().enable_integration(
                     domain
@@ -211,6 +233,11 @@ class WebUI:
         @self._app.post("/integrations/{domain}/disable")
         async def disable_integration(request: Request, domain: str):
             """Disable an integration."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
             # Unload first
             entries = self._shim_manager.get_hass().config_entries.async_entries(domain)
             for entry in entries:
@@ -340,6 +367,11 @@ class WebUI:
         @self._app.post("/integrations/{domain}/remove")
         async def remove_integration(request: Request, domain: str):
             """Remove an integration."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
             # First remove all config entries (this unloads entities and cleans up MQTT)
             entries = self._shim_manager.get_hass().config_entries.async_entries(domain)
             for entry in entries:
@@ -371,6 +403,11 @@ class WebUI:
         @self._app.post("/integrations/{domain}/update")
         async def update_integration(request: Request, domain: str):
             """Update an integration."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
             info = self._shim_manager.get_integration_manager().get_integration(domain)
             if not info or not info.update_available:
                 return HTMLResponse(
@@ -393,6 +430,11 @@ class WebUI:
         @self._app.post("/config/{entry_id}/remove")
         async def remove_config_entry(entry_id: str):
             """Remove a config entry."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
             # Find the entry
             entry = self._shim_manager.get_hass().config_entries.async_get_entry(
                 entry_id
@@ -427,6 +469,11 @@ class WebUI:
         @self._app.post("/config/{entry_id}/disable")
         async def disable_config_entry(entry_id: str):
             """Disable a config entry (unload it)."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
             entry = self._shim_manager.get_hass().config_entries.async_get_entry(
                 entry_id
             )
@@ -451,6 +498,11 @@ class WebUI:
         @self._app.post("/config/{entry_id}/enable")
         async def enable_config_entry(entry_id: str):
             """Enable a config entry (reload it)."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
             entry = self._shim_manager.get_hass().config_entries.async_get_entry(
                 entry_id
             )
