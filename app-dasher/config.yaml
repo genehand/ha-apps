@@ -1,5 +1,5 @@
 name: Dasher
-version: 0.3.2
+version: 0.6.0
 slug: dasher
 description: Filter websocket events for dashboard entities
 url: https://github.com/genehand/ha-apps
@@ -10,9 +10,9 @@ init: false
 startup: services
 boot: auto
 ports:
-  8124/tcp: 8124
+  8125/tcp: 8125
 ports_description:
-  8124/tcp: Port for the proxy server
+  8125/tcp: Port for the proxy server
 options:
   ha_host: homeassistant:8123
   transparent: false

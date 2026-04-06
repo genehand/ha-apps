@@ -1,4 +1,0 @@
-aiohttp
-colorlog
-httpx
-PyYAML

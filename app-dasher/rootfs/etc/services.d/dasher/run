@@ -7,4 +7,4 @@
 
 bashio::log.info "Starting Dasher..."
 
-exec /app/dasher.py
+exec /usr/local/bin/dasher

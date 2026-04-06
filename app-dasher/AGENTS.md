@@ -1,50 +1,85 @@
-# AGENTS.md - Coding Guidelines for HA Dasher (Legacy Python)
+# AGENTS.md - Coding Guidelines for HA Dasher (Rust)
 
-Home Assistant WebSocket event proxy - legacy Python implementation.
+Home Assistant WebSocket event proxy - current Rust implementation.
 
 ## Overview
 
-This is the legacy Python implementation of HA Dasher. Consider using the Rust implementation (app-dasher-rust) for new work.
+This is the current implementation of HA Dasher, a proxy service that filters Home Assistant WebSocket events for dashboard entities.
 
 ## Working Directory
 
 **Always run commands from this directory.** Do not run from the repo root.
 
 ```bash
-cd app-dasher/rootfs/app/
+cd app-dasher-rust/
 ```
 
 ## Build Commands
 
 ```bash
-# Install dependencies locally (for IDE support)
-pip3 install -r requirements.txt
+# Build the project
+cargo build
 
-# Run the proxy locally for development
-python3 dasher.py
+# Build for release (optimized)
+cargo build --release
+
+# Run locally
+cargo run
+
+# Run with specific log level
+RUST_LOG=debug cargo run
+
+# Check for errors without building
+cargo check
+
+# Format code
+cargo fmt
+
+# Run linter
+cargo clippy
+
+# Run tests
+cargo test
 ```
 
 ## Testing
 
-**Note**: This legacy implementation has no test suite configured.
+### Requirements
+
+- **New code**: All new functionality must include unit tests
+- **Modified code**: When modifying existing code, add or update tests to cover the changes
+- **Goal**: Maintain test coverage for critical paths and edge cases
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run tests with output
+cargo test -- --nocapture
+
+# Run specific test
+cargo test test_name
+```
+
+### Coverage Requirements
+
+- **New functionality**: Must have comprehensive unit tests covering happy path and edge cases
+- **Bug fixes**: Must have a test that would have caught the bug
+- **Refactoring**: All existing tests must pass, add tests if coverage gaps exposed
 
 ## Linting
 
 ```bash
-# Install linting tools
-pip3 install flake8 black isort mypy
+# Format code
+cargo fmt
 
-# Run flake8
-flake8 dasher.py
+# Run clippy (linter)
+cargo clippy -- -D warnings
 
-# Format with black
-black dasher.py
-
-# Sort imports
-isort dasher.py
-
-# Type check
-mypy dasher.py
+# Check formatting without applying
+cargo fmt -- --check
 ```
 
 ## Code Style Guidelines
@@ -53,55 +88,73 @@ mypy dasher.py
 
 - **Indentation**: 4 spaces (no tabs)
 - **Line length**: 100 characters maximum
-- **Quotes**: Use single quotes for strings unless double quotes are needed
-- **Docstrings**: Use triple quotes for function/class documentation
-- **Type hints**: Not currently used but encouraged for new code
+- **Quotes**: Use double quotes for strings
+- **Documentation**: Use `///` for public items, `//` for internal comments
+- **Type hints**: Use Rust's strong type system; prefer explicit types in public APIs
+- **Error handling**: Use `anyhow` for application errors, `thiserror` for library errors
 
 ### Naming Conventions
 
 - **Variables**: `snake_case` (e.g., `client_entities`, `ha_host`)
-- **Constants**: `UPPER_SNAKE_CASE` (e.g., `HA_HOST`, `PROXY_PORT`)
+- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `MAX_CONNECTIONS`)
 - **Functions**: `snake_case` (e.g., `proxy_handler`, `get_client_ip`)
-- **Classes**: `PascalCase`
-- **Private functions**: `_leading_underscore` (e.g., `_check_attribute_match`)
+- **Structs/Enums**: `PascalCase` (e.g., `AppState`, `ClientInfo`)
+- **Traits**: `PascalCase` (e.g., `EntityFilter`)
+- **Private items**: No prefix, use `pub(crate)` or omit `pub`
 
 ## Error Handling
 
-Use try-except blocks for I/O operations:
+Use `anyhow` for error propagation and `thiserror` for custom error types:
 
-```python
-try:
-    with open(CONFIG_FILE_PATH, 'r') as f:
-        config = json.load(f)
-except FileNotFoundError:
-    logger.error("Configuration file not found: /data/options.json")
+```rust
+use anyhow::{Context, Result};
+
+async fn load_config() -> Result<Config> {
+    let config = fs::read_to_string("config.yaml")
+        .context("Failed to read config file")?;
+    serde_yaml::from_str(&config)
+        .context("Failed to parse config")
+}
 ```
 
 ## Logging
 
-Use the pre-configured colorlog logger:
+Use the `tracing` crate with appropriate levels:
 
-```python
-logger.debug("Detailed debugging info")
-logger.info("General information")
-logger.warning("Warning messages")
-logger.error("Error messages with exception info")
+```rust
+use tracing::{debug, info, warn, error};
+
+debug!("Detailed debugging info");
+info!("General information");
+warn!("Warning messages");
+error!("Error messages: {}", error_details);
 ```
 
 ## Async Patterns
 
-```python
-async def proxy_handler(request):
-    # Use await for async operations
-    return await proxy_websocket_filtered(request, client_ip)
+Use `tokio` for async runtime:
+
+```rust
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let listener = TcpListener::bind("0.0.0.0:8125").await?;
+    // ...
+}
 ```
 
 ## WebSocket Message Processing
 
-Messages are JSON-encoded. Handle both single messages and message arrays:
+Messages are JSON-encoded using `serde_json`. Handle with strongly-typed structures:
 
-```python
-messages_to_process = data if isinstance(data, list) else [data]
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WsMessage {
+    id: u64,
+    #[serde(rename = "type")]
+    msg_type: String,
+}
 ```
 
 ## Home Assistant Integration
@@ -113,15 +166,17 @@ messages_to_process = data if isinstance(data, list) else [data]
 
 ## Docker/Container Guidelines
 
-- Base image: `ghcr.io/hassio-addons/base-python:stable`
+- Base image: Multi-stage build with `rust:1.75` and `debian:bookworm-slim`
 - Supports architectures: `aarch64`, `amd64`
-- Service managed by S6 overlay
+- Binary built statically for minimal image size
 - Configuration mounted at `/data/options.json` in container
 
 ## Common Tasks
 
-**Add a New Dependency**: Add to `requirements.txt`, then rebuild Docker image.
+**Add a New Dependency**: Edit `Cargo.toml`, add to `[dependencies]`, then run `cargo build`.
 
 **Update App Version**: Edit `config.yaml`, increment `version`, commit and tag.
 
-**Local Testing**: Copy `proxy-config.yaml`, modify for environment, run `python3 dasher.py`, access at `http://localhost:8124`.
+**Local Testing**: Copy `proxy-config.yaml`, modify for environment, run `cargo run`, access at `http://localhost:8125`.
+
+**Build Docker Image**: Run `./build.sh` (requires Docker).
