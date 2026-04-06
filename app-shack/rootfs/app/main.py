@@ -106,10 +106,10 @@ async def main():
     await mqtt_bridge.connect()
 
     # Initialize HA Shim Manager
-    # The shim uses the raw MQTT client from the bridge
+    # The shim uses the MQTT bridge for subscriptions and publishing
     shim_manager = ShimManager(
         config_dir=CONFIG_DIR,
-        mqtt_client=mqtt_bridge.client,
+        mqtt_bridge=mqtt_bridge,
         mqtt_base_topic="shack",
     )
 

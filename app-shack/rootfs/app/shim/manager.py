@@ -6,7 +6,7 @@ Orchestrates the shim, MQTT bridge, and integrations.
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from paho.mqtt.client import Client, MQTTMessage
 
@@ -20,6 +20,9 @@ from .entity import EntityRegistry, get_mqtt_object_id
 from .integrations.manager import IntegrationManager
 from .integrations.loader import IntegrationLoader
 
+if TYPE_CHECKING:
+    from ..mqtt_bridge import MqttBridge
+
 _LOGGER = get_logger(__name__)
 
 
@@ -29,17 +32,18 @@ class ShimManager:
     def __init__(
         self,
         config_dir: Path,
-        mqtt_client: Client,
+        mqtt_bridge: "MqttBridge",
         mqtt_base_topic: str = "shim",
     ):
         self._config_dir = Path(config_dir)
-        self._mqtt_client = mqtt_client
+        self._mqtt_bridge = mqtt_bridge
+        self._mqtt_client = mqtt_bridge.client if mqtt_bridge else None
         self._mqtt_base_topic = mqtt_base_topic
 
         # Initialize core HA shim
         _LOGGER.debug("Initializing Home Assistant shim")
         self._hass = HomeAssistant(self._config_dir)
-        self._hass._mqtt_client = mqtt_client  # Give hass access to MQTT
+        self._hass._mqtt_client = self._mqtt_client  # Give hass access to MQTT
 
         # Initialize storage
         self._storage = self._hass._storage
@@ -203,7 +207,8 @@ class ShimManager:
                 f"MQTT message received: {msg.topic} = {msg.payload.decode()[:100]}"
             )
 
-        self._mqtt_client.on_message = on_message
+        if self._mqtt_client:
+            self._mqtt_client.on_message = on_message
 
         # Subscribe to command topics for all entity types
         # Use # wildcard to match all command topics (set, percentage_set, preset_mode_set, etc.)
@@ -231,8 +236,7 @@ class ShimManager:
         ]
 
         for topic, callback in topics:
-            self._mqtt_client.message_callback_add(topic, callback)
-            result, mid = self._mqtt_client.subscribe(topic)
+            result, mid = self._mqtt_bridge.subscribe(topic, callback)
             _LOGGER.debug(
                 f"Subscribed to MQTT topic: {topic} (result={result}, mid={mid})"
             )

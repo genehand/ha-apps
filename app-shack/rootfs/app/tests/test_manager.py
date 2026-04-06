@@ -17,9 +17,14 @@ class TestManagerCommandRouting:
     def _create_manager(self):
         """Helper to create a ShimManager with mocked dependencies."""
         from shim.manager import ShimManager
+        from mqtt_bridge import MqttBridge
 
         mock_config_dir = Path("/tmp/test_config")
         mock_mqtt_client = MagicMock()
+
+        # Create a mock MqttBridge that returns our mock client
+        mock_bridge = MagicMock(spec=MqttBridge)
+        mock_bridge.client = mock_mqtt_client
 
         with patch("shim.manager.HomeAssistant") as MockHass:
             mock_hass = MagicMock()
@@ -29,7 +34,7 @@ class TestManagerCommandRouting:
 
             with patch("shim.manager.IntegrationManager"):
                 with patch("shim.manager.IntegrationLoader"):
-                    manager = ShimManager(mock_config_dir, mock_mqtt_client)
+                    manager = ShimManager(mock_config_dir, mock_bridge)
                     return manager
 
     @pytest.mark.asyncio
@@ -812,9 +817,15 @@ class TestUpdateNotification:
     def _create_manager(self, mqtt_client=None):
         """Helper to create a ShimManager with mocked dependencies."""
         from shim.manager import ShimManager
+        from mqtt_bridge import MqttBridge
 
         mock_config_dir = Path("/tmp/test_config")
         mock_mqtt_client = mqtt_client or MagicMock()
+
+        # Create a mock MqttBridge that returns our mock client
+        mock_bridge = MagicMock(spec=MqttBridge)
+        mock_bridge.client = mock_mqtt_client
+        mock_bridge.subscribe = MagicMock(return_value=(0, 1))
 
         with patch("shim.manager.HomeAssistant") as MockHass:
             mock_hass = MagicMock()
@@ -824,7 +835,7 @@ class TestUpdateNotification:
 
             with patch("shim.manager.IntegrationManager") as MockIntegrationManager:
                 with patch("shim.manager.IntegrationLoader"):
-                    manager = ShimManager(mock_config_dir, mock_mqtt_client)
+                    manager = ShimManager(mock_config_dir, mock_bridge)
                     manager._mqtt_base_topic = "shack"
                     return manager, MockIntegrationManager
 
