@@ -474,6 +474,14 @@ class IntegrationLoader:
 
             module = self._loaded_integrations[domain]
 
+            # Call async_setup first (initializes hass.data[domain] and global state)
+            # This is needed because options flows may access hass.data[DOMAIN]
+            if hasattr(module, "async_setup"):
+                _LOGGER.debug(f"Calling async_setup for {domain} before options flow")
+                setup_result = await module.async_setup(self._hass, {})
+                if not setup_result:
+                    _LOGGER.warning(f"Integration {domain} async_setup returned False")
+
             # Check for config flow module
             try:
                 config_flow_module = importlib.import_module(

@@ -264,8 +264,8 @@
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
 
-            // Update URL hash to match the selected tab
-            window.location.hash = tabName;
+            // Update URL hash without triggering scroll behavior
+            history.replaceState(null, null, '#' + tabName);
         }
 
         // Handle URL hash for tab switching on page load
