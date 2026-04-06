@@ -40,7 +40,7 @@
       "version": "1.7.1",
       "notes": "Leviton Decora Smart WiFi switches (custom repo)"
     },
-    "https://github.com/xZetsubou/hass-localtuya": {
+    "xZetsubou/hass-localtuya": {
       "version": "2025.11.0"
     }
   }
