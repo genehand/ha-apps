@@ -482,6 +482,31 @@ class IntegrationLoader:
                 if not setup_result:
                     _LOGGER.warning(f"Integration {domain} async_setup returned False")
 
+            # Ensure entry data is initialized - some integrations (like localtuya)
+            # store entry-specific data in hass.data[DOMAIN][entry_id] during async_setup_entry
+            # If not already set up, we need to call async_setup_entry to populate this data
+            if entry.state != "loaded":
+                _LOGGER.debug(
+                    f"Entry {entry.entry_id} not loaded, calling async_setup_entry before options flow"
+                )
+                if hasattr(module, "async_setup_entry"):
+                    from homeassistant.config_entries import current_entry
+
+                    token = current_entry.set(entry)
+                    try:
+                        result = await module.async_setup_entry(self._hass, entry)
+                        _LOGGER.debug(
+                            f"async_setup_entry for {domain} returned: {result}"
+                        )
+                        if result:
+                            entry.state = "loaded"
+                    except Exception as e:
+                        _LOGGER.warning(
+                            f"Error during async_setup_entry for {domain} options flow prep: {e}"
+                        )
+                    finally:
+                        current_entry.reset(token)
+
             # Check for config flow module
             try:
                 config_flow_module = importlib.import_module(
