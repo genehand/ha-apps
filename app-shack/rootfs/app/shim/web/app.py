@@ -94,15 +94,35 @@ class WebUI:
         - From index page (e.g., / or /api/hassio_ingress/xxx/): use ./integrations/{domain}
         - From detail page (e.g., /integrations/{domain}): use ./{domain}
         """
-        referer = request.headers.get("referer", "")
-        _LOGGER.debug(f"_get_detail_redirect: domain={domain}, referer={referer}")
-        # Check if we're on the detail page already (URL contains /integrations/{domain})
-        # This handles both direct access and HA ingress paths
-        if f"/integrations/{domain}" in referer:
-            _LOGGER.debug(f"On detail page, redirecting to './{domain}'")
+        # Try multiple sources to determine the current page:
+        # 1. HX-Current-URL: HTMX sends the full browser URL
+        # 2. X-Ingress-Path + request URL: HA ingress path prefix + request path
+        # 3. Referer: Fallback for non-HTMX requests
+        current_url = request.headers.get("hx-current-url", "")
+
+        # Build full URL from ingress path if available
+        ingress_path = request.headers.get("x-ingress-path", "")
+        request_path = request.url.path
+        full_url = current_url
+        if not full_url and ingress_path:
+            # Reconstruct full URL from ingress path + request path
+            full_url = f"{ingress_path}{request_path}"
+
+        # Fallback to Referer if neither HX-Current-URL nor X-Ingress-Path available
+        source = full_url or request.headers.get("referer", "")
+
+        # Normalize URL: strip query string and fragment for cleaner detection
+        normalized = source.split("?")[0].split("#")[0]
+
+        # Check if we're on the detail page already
+        # The request path would be /integrations/{domain}/enable (or /disable, etc.)
+        # The detail page would be /integrations/{domain}
+        if f"/integrations/{domain}/" in normalized or normalized.rstrip("/").endswith(
+            f"/integrations/{domain}"
+        ):
+            # Already on detail page, use just the domain part
             return f"./{domain}"
         # Coming from index page, navigate to detail page
-        _LOGGER.debug(f"On index page, redirecting to './integrations/{domain}'")
         return f"./integrations/{domain}"
 
     def _register_routes(self) -> None:
