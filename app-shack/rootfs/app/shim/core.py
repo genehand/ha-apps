@@ -624,7 +624,7 @@ class ConfigEntries:
                                             f"{platform}.unknown_{id(entity)}"
                                         )
 
-                                _LOGGER.info(
+                                _LOGGER.debug(
                                     f"Adding entity {entity.entity_id} to {platform} platform"
                                 )
 
@@ -709,7 +709,7 @@ class ConfigEntries:
                                             f"Publishing generic MQTT discovery for {entity.entity_id}"
                                         )
                                         await entity._publish_generic_mqtt_discovery()
-                                    _LOGGER.info(
+                                    _LOGGER.debug(
                                         f"MQTT discovery published for {entity.entity_id}"
                                     )
 
