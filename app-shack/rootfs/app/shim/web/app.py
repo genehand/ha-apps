@@ -84,6 +84,27 @@ class WebUI:
         template = env.get_template(template_name)
         return template.render(**context)
 
+    def _get_detail_redirect(self, request: Request, domain: str) -> str:
+        """Get the correct redirect path to the integration detail page.
+
+        HTMX resolves HX-Redirect relative to the page URL where the request
+        originated, not the request URL. We need to detect if the request came
+        from the index page or the detail page and return the appropriate path.
+
+        - From index page (e.g., / or /api/hassio_ingress/xxx/): use ./integrations/{domain}
+        - From detail page (e.g., /integrations/{domain}): use ./{domain}
+        """
+        referer = request.headers.get("referer", "")
+        _LOGGER.debug(f"_get_detail_redirect: domain={domain}, referer={referer}")
+        # Check if we're on the detail page already (URL contains /integrations/{domain})
+        # This handles both direct access and HA ingress paths
+        if f"/integrations/{domain}" in referer:
+            _LOGGER.debug(f"On detail page, redirecting to './{domain}'")
+            return f"./{domain}"
+        # Coming from index page, navigate to detail page
+        _LOGGER.debug(f"On index page, redirecting to './integrations/{domain}'")
+        return f"./integrations/{domain}"
+
     def _register_routes(self) -> None:
         """Register all routes."""
 
@@ -224,7 +245,9 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"../integrations/{domain}"
+                response.headers["HX-Redirect"] = self._get_detail_redirect(
+                    request, domain
+                )
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to enable {domain}</div>',
@@ -259,7 +282,9 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"../integrations/{domain}"
+                response.headers["HX-Redirect"] = self._get_detail_redirect(
+                    request, domain
+                )
                 return response
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to disable {domain}</div>',
@@ -425,11 +450,11 @@ class WebUI:
                 f"</div>"
             )
             response = HTMLResponse(content=html)
-            response.headers["HX-Redirect"] = f"../integrations/{domain}"
+            response.headers["HX-Redirect"] = self._get_detail_redirect(request, domain)
             return response
 
         @self._app.post("/config/{entry_id}/remove")
-        async def remove_config_entry(entry_id: str):
+        async def remove_config_entry(request: Request, entry_id: str):
             """Remove a config entry."""
             # Check if still loading
             loading_response = self._check_loading()
@@ -459,7 +484,9 @@ class WebUI:
                     f"successfully!</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"../integrations/{domain}"
+                response.headers["HX-Redirect"] = self._get_detail_redirect(
+                    request, domain
+                )
                 return response
             else:
                 return HTMLResponse(
@@ -468,7 +495,7 @@ class WebUI:
                 )
 
         @self._app.post("/config/{entry_id}/disable")
-        async def disable_config_entry(entry_id: str):
+        async def disable_config_entry(request: Request, entry_id: str):
             """Disable a config entry (unload it)."""
             # Check if still loading
             loading_response = self._check_loading()
@@ -493,11 +520,11 @@ class WebUI:
                 f"</div>"
             )
             response = HTMLResponse(content=html)
-            response.headers["HX-Redirect"] = f"../integrations/{domain}"
+            response.headers["HX-Redirect"] = self._get_detail_redirect(request, domain)
             return response
 
         @self._app.post("/config/{entry_id}/enable")
-        async def enable_config_entry(entry_id: str):
+        async def enable_config_entry(request: Request, entry_id: str):
             """Enable a config entry (reload it)."""
             # Check if still loading
             loading_response = self._check_loading()
@@ -528,7 +555,7 @@ class WebUI:
                 f"</div>"
             )
             response = HTMLResponse(content=html)
-            response.headers["HX-Redirect"] = f"../integrations/{domain}"
+            response.headers["HX-Redirect"] = self._get_detail_redirect(request, domain)
             return response
 
         @self._app.get("/config/{domain}", response_class=HTMLResponse)
@@ -746,7 +773,9 @@ class WebUI:
                     response = HTMLResponse(
                         f'<div class="alert alert-success">Configuration successful! Please enable the integration to use it.</div>'
                     )
-                    response.headers["HX-Redirect"] = f"../integrations/{domain}"
+                    response.headers["HX-Redirect"] = self._get_detail_redirect(
+                        request, domain
+                    )
                     return response
                 else:
                     return HTMLResponse(
@@ -1005,7 +1034,9 @@ class WebUI:
                 response = HTMLResponse(
                     '<div class="alert alert-success">Configuration updated successfully!</div>'
                 )
-                response.headers["HX-Redirect"] = f"../../integrations/{domain}"
+                response.headers["HX-Redirect"] = self._get_detail_redirect(
+                    request, domain
+                )
                 return response
 
             elif result.get("type") == "form":
@@ -1031,7 +1062,7 @@ class WebUI:
                 )
 
         @self._app.post("/config/{entry_id}/reload")
-        async def reload_config_entry(entry_id: str):
+        async def reload_config_entry(request: Request, entry_id: str):
             """Reload a config entry to apply configuration changes."""
             # Check if still loading
             loading_response = self._check_loading()
@@ -1061,7 +1092,9 @@ class WebUI:
                     f"</div>"
                 )
                 response = HTMLResponse(content=html)
-                response.headers["HX-Redirect"] = f"../../integrations/{domain}"
+                response.headers["HX-Redirect"] = self._get_detail_redirect(
+                    request, domain
+                )
                 return response
             else:
                 return HTMLResponse(
@@ -1148,7 +1181,7 @@ class WebUI:
                 f"</div>"
             )
             response = HTMLResponse(content=html)
-            response.headers["HX-Redirect"] = f"../../integrations/{domain}"
+            response.headers["HX-Redirect"] = self._get_detail_redirect(request, domain)
             return response
 
         @self._app.get("/api/integrations", response_class=JSONResponse)
