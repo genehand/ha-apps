@@ -277,7 +277,7 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
 class OptionsFlow:
     """Base class for options flows."""
 
-    def __init__(self, config_entry):
+    def __init__(self, config_entry=None):
         """Initialize options flow."""
         self.config_entry = config_entry
         self.hass = None
@@ -348,7 +348,7 @@ class OptionsFlowWithConfigEntry(OptionsFlow):
     during initialization rather than accessing it as an instance variable.
     """
 
-    def __init__(self, config_entry):
+    def __init__(self, config_entry=None):
         """Initialize options flow with config entry."""
         super().__init__(config_entry)
         self._config_entry = config_entry

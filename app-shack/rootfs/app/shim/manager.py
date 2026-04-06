@@ -165,12 +165,22 @@ class ShimManager:
 
         # Unload all integrations without cleaning up MQTT topics
         # (preserve topics for reconnection on restart)
+        _LOGGER.info("Starting graceful shutdown of integrations...")
         for domain in self._integration_loader.get_loaded_integrations():
             entries = self._hass.config_entries.async_entries(domain)
             for entry in entries:
-                await self._integration_loader.unload_integration(
-                    entry, cleanup_mqtt=False
+                _LOGGER.info(
+                    f"Unloading {domain} entry {entry.entry_id} (cleanup_mqtt=False)"
                 )
+                try:
+                    await self._integration_loader.unload_integration(
+                        entry, cleanup_mqtt=False
+                    )
+                except Exception as e:
+                    # Log but don't fail shutdown for external integration errors
+                    _LOGGER.warning(
+                        f"Error unloading {domain} entry {entry.entry_id} during shutdown: {e}"
+                    )
 
         # Close all cached aiohttp client sessions to prevent
         # 'Unclosed client session' warnings
@@ -676,19 +686,19 @@ class ShimManager:
             return
 
         # Publish to single update entity
-        discovery_topic = "homeassistant/update/shim_updates/config"
-        state_topic = "homeassistant/update/shim_updates/state"
+        discovery_topic = "homeassistant/update/shack_updates/config"
+        state_topic = "homeassistant/update/shack_updates/state"
 
         # Discovery config
         config = {
-            "name": "Shim Updates",
-            "unique_id": "shim_updates",
+            "name": "Shack Updates",
+            "unique_id": "shack_updates",
             "state_topic": state_topic,
             "payload_on": "on",
             "payload_off": "off",
             "device": {
-                "identifiers": ["shim"],
-                "name": "HA Shim",
+                "identifiers": ["shack"],
+                "name": "Shack",
                 "manufacturer": "Custom",
                 "model": "Integration Bridge",
             },

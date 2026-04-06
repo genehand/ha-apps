@@ -1,6 +1,6 @@
 [project]
 name = "app-shack"
-version = "0.5.5"
+version = "0.5.6"
 description = "Home Assistant compatibility layer for running integrations outside of HA"
 requires-python = ">=3.14"
 dependencies = [

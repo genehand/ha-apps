@@ -2,6 +2,7 @@
 
 import pytest
 import asyncio
+import json
 from unittest.mock import Mock, patch, MagicMock, AsyncMock
 import sys
 from pathlib import Path
@@ -308,3 +309,689 @@ class TestConfig:
         assert config.mqtt_password is None
         assert config.log_level == "INFO"
         assert config.integration_log_levels == {}
+
+
+class TestEntityFilters:
+    """Tests for entity filter functionality."""
+
+    def test_config_entry_entity_filters_empty(self):
+        """Test that empty filters are returned as empty list."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={},
+        )
+
+        assert entry.entity_filters == []
+
+    def test_config_entry_entity_filters_from_options(self):
+        """Test that filters are read from options."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": ["sensor.*_temp", "binary_sensor.motion_*"]},
+        )
+
+        assert entry.entity_filters == ["sensor.*_temp", "binary_sensor.motion_*"]
+
+    def test_config_entry_entity_filters_string_legacy(self):
+        """Test that legacy string format is handled."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": "sensor.*_temp"},
+        )
+
+        assert entry.entity_filters == ["sensor.*_temp"]
+
+    def test_entity_matches_filter_simple(self):
+        """Test simple filter matching."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": ["sensor.living_room_temp"]},
+        )
+
+        assert entry.entity_matches_filter("sensor.living_room_temp") is True
+        assert entry.entity_matches_filter("sensor.kitchen_temp") is False
+
+    def test_entity_matches_filter_wildcard_star(self):
+        """Test wildcard * matching."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": ["sensor.*_temperature"]},
+        )
+
+        assert entry.entity_matches_filter("sensor.living_room_temperature") is True
+        assert entry.entity_matches_filter("sensor.kitchen_temperature") is True
+        assert entry.entity_matches_filter("sensor.outside_temperature") is True
+        assert entry.entity_matches_filter("sensor.temperature_living") is False
+        assert (
+            entry.entity_matches_filter("binary_sensor.living_room_temperature")
+            is False
+        )
+
+    def test_entity_matches_filter_wildcard_question(self):
+        """Test wildcard ? matching."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": ["sensor.device?_temp"]},
+        )
+
+        assert entry.entity_matches_filter("sensor.device1_temp") is True
+        assert entry.entity_matches_filter("sensor.deviceA_temp") is True
+        assert entry.entity_matches_filter("sensor.device12_temp") is False
+
+    def test_entity_matches_filter_multiple_patterns(self):
+        """Test that multiple patterns are checked."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={
+                "entity_filters": [
+                    "sensor.*_temp",
+                    "binary_sensor.motion_*",
+                    "light.kitchen_*",
+                ]
+            },
+        )
+
+        assert entry.entity_matches_filter("sensor.living_room_temp") is True
+        assert entry.entity_matches_filter("binary_sensor.motion_front") is True
+        assert entry.entity_matches_filter("light.kitchen_overhead") is True
+        assert entry.entity_matches_filter("sensor.living_room_humidity") is False
+
+    def test_validate_entity_filters_valid(self):
+        """Test validation of valid filter patterns."""
+        from shim.integrations.loader import IntegrationLoader
+
+        patterns = ["sensor.*_temp", "binary_sensor.motion_*", "light.kitchen_?"]
+        is_valid, error = IntegrationLoader.validate_entity_filters(patterns)
+
+        assert is_valid is True
+        assert error is None
+
+    def test_validate_entity_filters_empty(self):
+        """Test validation of empty filter list."""
+        from shim.integrations.loader import IntegrationLoader
+
+        patterns = []
+        is_valid, error = IntegrationLoader.validate_entity_filters(patterns)
+
+        assert is_valid is True
+        assert error is None
+
+    def test_validate_entity_filters_empty_pattern(self):
+        """Test validation rejects empty patterns."""
+        from shim.integrations.loader import IntegrationLoader
+
+        patterns = ["sensor.*_temp", "", "binary_sensor.motion_*"]
+        is_valid, error = IntegrationLoader.validate_entity_filters(patterns)
+
+        assert is_valid is False
+        assert "Empty pattern" in error
+
+    @pytest.mark.asyncio
+    async def test_apply_entity_filters_removes_matching(self):
+        """Test that apply_entity_filters removes matching entities."""
+        from shim.core import ConfigEntry
+        from shim.integrations.loader import IntegrationLoader
+
+        # Create mock hass and entry
+        mock_hass = MagicMock()
+        mock_entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": ["sensor.*_temp"]},
+        )
+
+        # Create mock entities
+        entity1 = MagicMock()
+        entity1.entity_id = "sensor.living_room_temp"
+        entity1.integration_domain = "test_domain"
+        entity1.async_remove = AsyncMock()
+
+        entity2 = MagicMock()
+        entity2.entity_id = "sensor.kitchen_temp"
+        entity2.integration_domain = "test_domain"
+        entity2.async_remove = AsyncMock()
+
+        entity3 = MagicMock()
+        entity3.entity_id = "sensor.outside_humidity"
+        entity3.integration_domain = "test_domain"
+        entity3.async_remove = AsyncMock()
+
+        # Create loader with mock entities
+        mock_integration_manager = MagicMock()
+        loader = IntegrationLoader(mock_hass, mock_integration_manager)
+        loader._entities = {
+            "sensor": [entity1, entity2, entity3],
+        }
+
+        # Apply filters
+        result = await loader.async_apply_entity_filters(mock_entry)
+
+        # Verify matching entities were removed
+        assert result["removed"] == 2
+        assert "sensor.living_room_temp" in result["filtered_entities"]
+        assert "sensor.kitchen_temp" in result["filtered_entities"]
+
+        # Verify async_remove was called for matching entities
+        entity1.async_remove.assert_called_once_with(cleanup_mqtt=True)
+        entity2.async_remove.assert_called_once_with(cleanup_mqtt=True)
+        entity3.async_remove.assert_not_called()
+
+        # Verify entities list was updated
+        assert len(loader._entities["sensor"]) == 1
+        assert loader._entities["sensor"][0] == entity3
+
+    @pytest.mark.asyncio
+    async def test_apply_entity_filters_no_matches(self):
+        """Test that apply_entity_filters handles no matches gracefully."""
+        from shim.core import ConfigEntry
+        from shim.integrations.loader import IntegrationLoader
+
+        mock_hass = MagicMock()
+        mock_entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": ["sensor.unknown_*"]},
+        )
+
+        entity1 = MagicMock()
+        entity1.entity_id = "sensor.living_room_temp"
+        entity1.integration_domain = "test_domain"
+        entity1.async_remove = AsyncMock()
+
+        mock_integration_manager = MagicMock()
+        loader = IntegrationLoader(mock_hass, mock_integration_manager)
+        loader._entities = {"sensor": [entity1]}
+
+        result = await loader.async_apply_entity_filters(mock_entry)
+
+        assert result["removed"] == 0
+        assert len(result["filtered_entities"]) == 0
+        entity1.async_remove.assert_not_called()
+        assert len(loader._entities["sensor"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_apply_entity_filters_different_domain(self):
+        """Test that entities from other domains are not affected."""
+        from shim.core import ConfigEntry
+        from shim.integrations.loader import IntegrationLoader
+
+        mock_hass = MagicMock()
+        mock_entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_filters": ["sensor.*_temp"]},
+        )
+
+        entity1 = MagicMock()
+        entity1.entity_id = "sensor.living_room_temp"
+        entity1.integration_domain = "other_domain"  # Different domain
+        entity1.async_remove = AsyncMock()
+
+        mock_integration_manager = MagicMock()
+        loader = IntegrationLoader(mock_hass, mock_integration_manager)
+        loader._entities = {"sensor": [entity1]}
+
+        result = await loader.async_apply_entity_filters(mock_entry)
+
+        # Should not remove entity from different domain
+        assert result["removed"] == 0
+        entity1.async_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_register_entity_with_filters(self):
+        """Test that register_entity respects filters."""
+        from shim.core import ConfigEntry
+        from shim.integrations.loader import IntegrationLoader
+
+        mock_hass = MagicMock()
+        mock_hass.config_entries.async_entries.return_value = [
+            ConfigEntry(
+                entry_id="test_123",
+                domain="test_domain",
+                title="Test",
+                options={"entity_filters": ["sensor.*_filtered"]},
+            )
+        ]
+
+        mock_integration_manager = MagicMock()
+        loader = IntegrationLoader(mock_hass, mock_integration_manager)
+
+        # Create entity that matches filter
+        entity_filtered = MagicMock()
+        entity_filtered.entity_id = "sensor.test_filtered"
+        entity_filtered.integration_domain = "test_domain"
+
+        # Create entity that doesn't match filter
+        entity_allowed = MagicMock()
+        entity_allowed.entity_id = "sensor.test_allowed"
+        entity_allowed.integration_domain = "test_domain"
+
+        # Register entities
+        result_filtered = loader.register_entity("sensor", entity_filtered)
+        result_allowed = loader.register_entity("sensor", entity_allowed)
+
+        # Verify filtered entity was not registered
+        assert result_filtered is False
+        assert "sensor.test_filtered" not in [
+            e.entity_id for e in loader._entities.get("sensor", [])
+        ]
+
+        # Verify allowed entity was registered
+        assert result_allowed is True
+        assert len(loader._entities.get("sensor", [])) == 1
+        assert loader._entities["sensor"][0].entity_id == "sensor.test_allowed"
+
+    def test_register_entity_duplicate_detection(self):
+        """Test that duplicate entities (same MQTT topic) are rejected."""
+        from shim.integrations.loader import IntegrationLoader
+
+        mock_hass = MagicMock()
+        mock_integration_manager = MagicMock()
+        loader = IntegrationLoader(mock_hass, mock_integration_manager)
+
+        # Create first entity with lowercase unique_id
+        entity1 = MagicMock()
+        entity1.entity_id = "button.moonraker_123_firmware_restart"
+        entity1.integration_domain = "moonraker"
+        entity1.unique_id = "123_firmware_restart"
+
+        # Register first entity
+        result1 = loader.register_entity("button", entity1)
+        assert result1 is True
+        assert len(loader._entities.get("button", [])) == 1
+
+        # Create second entity with uppercase unique_id (would map to same MQTT topic)
+        entity2 = MagicMock()
+        entity2.entity_id = "button.moonraker_123_FIRMWARE_RESTART"
+        entity2.integration_domain = "moonraker"
+        entity2.unique_id = "123_FIRMWARE_RESTART"
+
+        # Try to register second entity - should be rejected as duplicate
+        result2 = loader.register_entity("button", entity2)
+        assert result2 is False
+        assert len(loader._entities.get("button", [])) == 1  # Still only 1 entity
+
+    def test_config_entry_entity_name_filters_empty(self):
+        """Test that empty name filters are returned as empty list."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={},
+        )
+
+        assert entry.entity_name_filters == []
+
+    def test_config_entry_entity_name_filters_from_options(self):
+        """Test that name filters are read from options."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_name_filters": ["Macro *", "Temp*"]},
+        )
+
+        assert entry.entity_name_filters == ["Macro *", "Temp*"]
+
+    def test_entity_matches_filter_by_name(self):
+        """Test filtering by entity name."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_name_filters": ["Macro *"]},
+        )
+
+        # Should match by name pattern
+        assert (
+            entry.entity_matches_filter("button.moonraker_save", "Macro Save Config")
+            is True
+        )
+        # Should not match different name
+        assert (
+            entry.entity_matches_filter("button.moonraker_restart", "Restart Printer")
+            is False
+        )
+
+    def test_entity_matches_filter_by_id_or_name(self):
+        """Test that OR logic works - matches by entity_id OR name."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={
+                "entity_filters": ["sensor.*_temp"],
+                "entity_name_filters": ["Macro *"],
+            },
+        )
+
+        # Matches by entity_id
+        assert (
+            entry.entity_matches_filter("sensor.living_room_temp", "Living Room")
+            is True
+        )
+        # Matches by name
+        assert (
+            entry.entity_matches_filter("button.moonraker_save", "Macro Save Config")
+            is True
+        )
+        # Matches neither
+        assert entry.entity_matches_filter("switch.other", "Other Switch") is False
+
+    def test_entity_matches_filter_name_no_match_without_name(self):
+        """Test that name patterns don't match when no name provided."""
+        from shim.core import ConfigEntry
+
+        entry = ConfigEntry(
+            entry_id="test_123",
+            domain="test_domain",
+            title="Test",
+            options={"entity_name_filters": ["Macro *"]},
+        )
+
+        # Without name, should not match even if entity_id would conceptually match
+        assert entry.entity_matches_filter("button.moonraker_save", None) is False
+        assert entry.entity_matches_filter("button.moonraker_save", "") is False
+
+    @pytest.mark.asyncio
+    async def test_register_entity_with_name_filters(self):
+        """Test that register_entity respects name filters."""
+        from shim.core import ConfigEntry
+        from shim.integrations.loader import IntegrationLoader
+
+        mock_hass = MagicMock()
+        mock_hass.config_entries.async_entries.return_value = [
+            ConfigEntry(
+                entry_id="test_123",
+                domain="test_domain",
+                title="Test",
+                options={"entity_name_filters": ["Macro *"]},
+            )
+        ]
+
+        mock_integration_manager = MagicMock()
+        loader = IntegrationLoader(mock_hass, mock_integration_manager)
+
+        # Create entity with matching name
+        entity_filtered = MagicMock()
+        entity_filtered.entity_id = "button.moonraker_save"
+        entity_filtered.name = "Macro Save Config"
+        entity_filtered._attr_name = None
+        entity_filtered.integration_domain = "test_domain"
+
+        # Create entity with non-matching name
+        entity_allowed = MagicMock()
+        entity_allowed.entity_id = "button.moonraker_restart"
+        entity_allowed.name = "Restart Printer"
+        entity_allowed._attr_name = None
+        entity_allowed.integration_domain = "test_domain"
+
+        # Register entities
+        result_filtered = loader.register_entity("button", entity_filtered)
+        result_allowed = loader.register_entity("button", entity_allowed)
+
+        # Verify filtered entity was not registered
+        assert result_filtered is False
+        # Verify allowed entity was registered
+        assert result_allowed is True
+        assert len(loader._entities.get("button", [])) == 1
+
+    @pytest.mark.asyncio
+    async def test_register_entity_with_attr_name_filters(self):
+        """Test that register_entity respects name filters using _attr_name."""
+        from shim.core import ConfigEntry
+        from shim.integrations.loader import IntegrationLoader
+
+        mock_hass = MagicMock()
+        mock_hass.config_entries.async_entries.return_value = [
+            ConfigEntry(
+                entry_id="test_123",
+                domain="test_domain",
+                title="Test",
+                options={"entity_name_filters": ["Temp*"]},
+            )
+        ]
+
+        mock_integration_manager = MagicMock()
+        loader = IntegrationLoader(mock_hass, mock_integration_manager)
+
+        # Create entity with _attr_name matching
+        entity_filtered = MagicMock()
+        entity_filtered.entity_id = "sensor.living_room"
+        entity_filtered.name = None
+        entity_filtered._attr_name = "Temperature Living Room"
+        entity_filtered.integration_domain = "test_domain"
+
+        # Register entity
+        result = loader.register_entity("sensor", entity_filtered)
+        assert result is False
+
+
+class TestUpdateNotification:
+    """Test cases for update notification functionality."""
+
+    def _create_manager(self, mqtt_client=None):
+        """Helper to create a ShimManager with mocked dependencies."""
+        from shim.manager import ShimManager
+
+        mock_config_dir = Path("/tmp/test_config")
+        mock_mqtt_client = mqtt_client or MagicMock()
+
+        with patch("shim.manager.HomeAssistant") as MockHass:
+            mock_hass = MagicMock()
+            mock_hass.shim_dir = Path("/tmp/test_shim")
+            mock_hass._storage = MagicMock()
+            MockHass.return_value = mock_hass
+
+            with patch("shim.manager.IntegrationManager") as MockIntegrationManager:
+                with patch("shim.manager.IntegrationLoader"):
+                    manager = ShimManager(mock_config_dir, mock_mqtt_client)
+                    manager._mqtt_base_topic = "shack"
+                    return manager, MockIntegrationManager
+
+    @pytest.mark.asyncio
+    async def test_publish_update_notification_with_updates(self):
+        """Test that update notification publishes correct discovery config with updates available."""
+        mock_mqtt = MagicMock()
+        manager, _ = self._create_manager(mock_mqtt)
+
+        # Create mock update info
+        mock_update = MagicMock()
+        mock_update.domain = "test_integration"
+        mock_update.name = "Test Integration"
+        mock_update.version = "1.0.0"
+        mock_update.latest_version = "1.1.0"
+        updates = [mock_update]
+
+        await manager._publish_update_notification(updates)
+
+        # Verify discovery topic is correct
+        calls = mock_mqtt.publish.call_args_list
+        discovery_call = calls[0]
+        assert discovery_call[0][0] == "homeassistant/update/shack_updates/config"
+
+        # Verify discovery config has correct values
+        config = json.loads(discovery_call[0][1])
+        assert config["name"] == "Shack Updates"
+        assert config["unique_id"] == "shack_updates"
+        assert config["state_topic"] == "homeassistant/update/shack_updates/state"
+        assert config["payload_on"] == "on"
+        assert config["payload_off"] == "off"
+        assert config["device"]["identifiers"] == ["shack"]
+        assert config["device"]["name"] == "Shack"
+        assert config["device"]["manufacturer"] == "Custom"
+        assert config["device"]["model"] == "Integration Bridge"
+
+        # Verify state topic is published with "on" when updates exist
+        state_call = calls[1]
+        assert state_call[0][0] == "homeassistant/update/shack_updates/state"
+        assert state_call[0][1] == "on"
+
+        # Verify details topic is published
+        details_call = calls[2]
+        assert details_call[0][0] == "shack/updates/available"
+        details = json.loads(details_call[0][1])
+        assert len(details) == 1
+        assert details[0]["domain"] == "test_integration"
+        assert details[0]["name"] == "Test Integration"
+        assert details[0]["current_version"] == "1.0.0"
+        assert details[0]["latest_version"] == "1.1.0"
+
+    @pytest.mark.asyncio
+    async def test_publish_update_notification_no_updates(self):
+        """Test that update notification publishes 'off' state when no updates."""
+        mock_mqtt = MagicMock()
+        manager, _ = self._create_manager(mock_mqtt)
+
+        await manager._publish_update_notification([])
+
+        # Verify state topic is published with "off" when no updates
+        calls = mock_mqtt.publish.call_args_list
+        state_call = calls[1]
+        assert state_call[0][0] == "homeassistant/update/shack_updates/state"
+        assert state_call[0][1] == "off"
+
+        # Verify details topic is published with empty list
+        details_call = calls[2]
+        assert details_call[0][0] == "shack/updates/available"
+        details = json.loads(details_call[0][1])
+        assert details == []
+
+    @pytest.mark.asyncio
+    async def test_publish_update_notification_no_mqtt_client(self):
+        """Test that update notification returns early when no MQTT client."""
+        manager, _ = self._create_manager(None)
+        manager._mqtt_client = None
+
+        # Should not raise any errors
+        await manager._publish_update_notification([])
+
+    @pytest.mark.asyncio
+    async def test_publish_update_notification_multiple_updates(self):
+        """Test that update notification handles multiple updates."""
+        mock_mqtt = MagicMock()
+        manager, _ = self._create_manager(mock_mqtt)
+
+        # Create multiple mock updates
+        updates = []
+        for i in range(3):
+            mock_update = MagicMock()
+            mock_update.domain = f"integration_{i}"
+            mock_update.name = f"Integration {i}"
+            mock_update.version = f"1.0.{i}"
+            mock_update.latest_version = f"1.1.{i}"
+            updates.append(mock_update)
+
+        await manager._publish_update_notification(updates)
+
+        # Verify details topic contains all updates
+        calls = mock_mqtt.publish.call_args_list
+        details_call = calls[2]
+        details = json.loads(details_call[0][1])
+        assert len(details) == 3
+        for i, detail in enumerate(details):
+            assert detail["domain"] == f"integration_{i}"
+            assert detail["name"] == f"Integration {i}"
+
+    @pytest.mark.asyncio
+    async def test_initial_update_check_finds_updates(self):
+        """Test that initial update check publishes notification when updates found."""
+        mock_mqtt = MagicMock()
+        manager, MockIntegrationManager = self._create_manager(mock_mqtt)
+
+        # Mock integration manager to return updates
+        mock_update = MagicMock()
+        mock_update.domain = "test_integration"
+        mock_update.name = "Test Integration"
+        mock_update.version = "1.0.0"
+        mock_update.latest_version = "1.1.0"
+
+        mock_integration_manager = MagicMock()
+        mock_integration_manager.check_for_updates = AsyncMock(
+            return_value=[mock_update]
+        )
+        manager._integration_manager = mock_integration_manager
+        manager._running = True
+
+        with patch("shim.manager.create_persistent_notification", return_value=True):
+            with patch("asyncio.sleep"):  # Skip the delay
+                await manager._initial_update_check()
+
+        # Verify that update notification was published
+        calls = mock_mqtt.publish.call_args_list
+        assert len(calls) >= 2  # Discovery and state
+
+    @pytest.mark.asyncio
+    async def test_periodic_update_check_finds_updates(self):
+        """Test that periodic update check publishes notification when updates found."""
+        mock_mqtt = MagicMock()
+        manager, _ = self._create_manager(mock_mqtt)
+
+        # Mock integration manager to return updates
+        mock_update = MagicMock()
+        mock_update.domain = "test_integration"
+        mock_update.name = "Test Integration"
+        mock_update.version = "1.0.0"
+        mock_update.latest_version = "1.1.0"
+
+        mock_integration_manager = MagicMock()
+        mock_integration_manager.check_for_updates = AsyncMock(
+            return_value=[mock_update]
+        )
+        manager._integration_manager = mock_integration_manager
+        manager._running = True
+
+        # Cancel the periodic check after first iteration
+        async def cancel_after_first():
+            await asyncio.sleep(0.1)
+            manager._running = False
+
+        # Start cancellation and periodic check
+        with patch("asyncio.sleep", side_effect=[0, asyncio.CancelledError()]):
+            try:
+                await manager._periodic_update_checks()
+            except asyncio.CancelledError:
+                pass
+
+        # Verify that update notification was published
+        calls = mock_mqtt.publish.call_args_list
+        assert len(calls) >= 2  # Discovery and state

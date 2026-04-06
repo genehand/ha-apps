@@ -83,17 +83,19 @@ def get_mqtt_entity_id(entity_id: str) -> str:
 
     Returns:
         The entity ID without domain prefix, with dots/underscores/colons/spaces replaced by dashes,
-        and duplicate domain segments removed.
+        and duplicate domain segments removed. All lowercase for MQTT topic compatibility.
     """
     if "." in entity_id:
         entity_id = entity_id.split(".", 1)[1]
 
     # Replace dots, underscores, colons, and spaces with dashes for MQTT topic compatibility
+    # Lowercase to ensure consistency with Home Assistant's MQTT handling
     dashed = (
         entity_id.replace(".", "-")
         .replace("_", "-")
         .replace(":", "-")
         .replace(" ", "-")
+        .lower()
     )
 
     # Remove duplicate segments that appear later in the string

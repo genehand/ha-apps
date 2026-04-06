@@ -5,6 +5,7 @@ Mocks Home Assistant's core classes for running HACS integrations outside HA.
 
 from __future__ import annotations
 
+import fnmatch
 import asyncio
 import functools
 import importlib
@@ -161,6 +162,60 @@ class ConfigEntry(Generic[T]):
             lambda: task.cancel() if not task.done() else None
         )
         return task
+
+    @property
+    def entity_filters(self) -> list[str]:
+        """Return list of entity glob patterns to filter by entity_id.
+
+        Patterns are stored in options['entity_filters'] and used to exclude
+        matching entities from MQTT discovery.
+        """
+        filters = self.options.get("entity_filters", [])
+        if isinstance(filters, str):
+            # Handle legacy single string format
+            return [filters] if filters else []
+        return filters if filters else []
+
+    @property
+    def entity_name_filters(self) -> list[str]:
+        """Return list of entity glob patterns to filter by name.
+
+        Patterns are stored in options['entity_name_filters'] and used to exclude
+        matching entities from MQTT discovery based on their display name.
+        """
+        filters = self.options.get("entity_name_filters", [])
+        if isinstance(filters, str):
+            # Handle legacy single string format
+            return [filters] if filters else []
+        return filters if filters else []
+
+    def entity_matches_filter(
+        self, entity_id: str, entity_name: Optional[str] = None
+    ) -> bool:
+        """Check if an entity matches any of the configured filters.
+
+        Entity matches if either the entity_id matches entity_filters patterns
+        OR the entity_name matches entity_name_filters patterns (OR logic).
+
+        Args:
+            entity_id: The full entity ID (e.g., 'sensor.living_room_temp').
+            entity_name: The display name of the entity (e.g., 'Living Room Temp').
+
+        Returns:
+            True if the entity matches any filter pattern, False otherwise.
+        """
+        # Check entity_id patterns
+        for pattern in self.entity_filters:
+            if fnmatch.fnmatch(entity_id, pattern):
+                return True
+
+        # Check name patterns if name is provided
+        if entity_name:
+            for pattern in self.entity_name_filters:
+                if fnmatch.fnmatch(entity_name, pattern):
+                    return True
+
+        return False
 
     async def _run_unload_callbacks(self) -> None:
         """Run all registered unload callbacks."""
@@ -487,11 +542,24 @@ class ConfigEntries:
             True if successful, False otherwise.
         """
         try:
+            # Check if shutdown is in progress (set by unload_integration during server shutdown)
+            # If so, don't clean up MQTT topics to preserve them for reconnection
+            shutdown_in_progress = getattr(
+                self._hass, "_shim_shutdown_in_progress", False
+            )
+            cleanup_mqtt = not shutdown_in_progress
+            _LOGGER.debug(
+                f"async_forward_entry_unload: {platform} for {entry.entry_id}, "
+                f"shutdown_in_progress={shutdown_in_progress}, cleanup_mqtt={cleanup_mqtt}"
+            )
+
             # Get the loader from hass.data (set by ShimManager)
             loader = self._hass.data.get("integration_loader")
             if loader:
                 # Remove entities for this specific platform/domain combination
-                await loader._remove_platform_entities(entry.domain, platform)
+                await loader._remove_platform_entities(
+                    entry.domain, platform, cleanup_mqtt=cleanup_mqtt
+                )
                 _LOGGER.debug(f"Unloaded {platform} platform for {entry.entry_id}")
             return True
         except Exception as e:
@@ -657,6 +725,7 @@ class ConfigEntries:
                                 # Set integration domain for tracking
                                 entity._attr_integration_domain = entry.domain
                                 # Register entity with loader under platform domain
+                                entity_registered = True
                                 if (
                                     hasattr(self._hass, "data")
                                     and "integration_loader" in self._hass.data
@@ -667,7 +736,17 @@ class ConfigEntries:
                                         if hasattr(entity, "entity_id")
                                         else entry.domain
                                     )
-                                    loader.register_entity(entity_domain, entity)
+                                    entity_registered = loader.register_entity(
+                                        entity_domain, entity
+                                    )
+
+                                # Skip rest of setup if entity was filtered out
+                                if not entity_registered:
+                                    _LOGGER.debug(
+                                        f"Entity {entity.entity_id} was filtered out, skipping MQTT discovery"
+                                    )
+                                    return
+
                                 # Add to entity registry
                                 from .entity import EntityRegistry
 

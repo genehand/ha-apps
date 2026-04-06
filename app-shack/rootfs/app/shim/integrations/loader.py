@@ -3,6 +3,7 @@
 Dynamically loads and runs HACS integrations with import patching.
 """
 
+import fnmatch
 import sys
 import asyncio
 import importlib
@@ -248,7 +249,13 @@ class IntegrationLoader:
 
         try:
             set_current_integration(domain)
-            _LOGGER.info(f"Unloading {domain}")
+            _LOGGER.info(f"Unloading {domain} (cleanup_mqtt={cleanup_mqtt})")
+
+            # Set shutdown flag on hass so async_forward_entry_unload knows
+            # not to clean up MQTT topics during server shutdown
+            if not cleanup_mqtt:
+                self._hass._shim_shutdown_in_progress = True
+                _LOGGER.debug("Set _shim_shutdown_in_progress flag on hass")
 
             module = self._loaded_integrations[domain]
 
@@ -257,6 +264,11 @@ class IntegrationLoader:
                 result = await module.async_unload_entry(self._hass, entry)
                 if not result:
                     _LOGGER.warning(f"Integration {domain} unload returned False")
+
+            # Clear shutdown flag
+            if hasattr(self._hass, "_shim_shutdown_in_progress"):
+                delattr(self._hass, "_shim_shutdown_in_progress")
+                _LOGGER.debug("Cleared _shim_shutdown_in_progress flag from hass")
 
             # Force shutdown any remaining coordinators for this domain
             # This handles integrations that don't properly clean up coordinators
@@ -317,9 +329,6 @@ class IntegrationLoader:
         for platform_domain, entities in list(self._entities.items()):
             for entity in list(entities):
                 entity_domain = getattr(entity, "integration_domain", None)
-                _LOGGER.debug(
-                    f"  Checking entity {entity.entity_id}: integration_domain={entity_domain}"
-                )
                 if entity_domain == domain:
                     entities_to_remove.append((platform_domain, entity))
 
@@ -329,10 +338,8 @@ class IntegrationLoader:
 
         for platform_domain, entity in entities_to_remove:
             try:
-                _LOGGER.debug(f"Removing entity {entity.entity_id}")
                 await entity.async_remove(cleanup_mqtt=cleanup_mqtt)
                 self._entities[platform_domain].remove(entity)
-                _LOGGER.debug(f"Successfully removed entity {entity.entity_id}")
             except Exception as e:
                 _LOGGER.warning(f"Error removing entity {entity.entity_id}: {e}")
 
@@ -340,7 +347,6 @@ class IntegrationLoader:
         for platform_domain in list(self._entities.keys()):
             if not self._entities[platform_domain]:
                 del self._entities[platform_domain]
-                _LOGGER.debug(f"Cleaned up empty platform list: {platform_domain}")
 
     async def _remove_platform_entities(
         self, domain: str, platform: str, cleanup_mqtt: bool = True
@@ -375,10 +381,8 @@ class IntegrationLoader:
 
         for platform_domain, entity in entities_to_remove:
             try:
-                _LOGGER.debug(f"Removing entity {entity.entity_id}")
                 await entity.async_remove(cleanup_mqtt=cleanup_mqtt)
                 self._entities[platform_domain].remove(entity)
-                _LOGGER.debug(f"Successfully removed entity {entity.entity_id}")
             except Exception as e:
                 _LOGGER.warning(f"Error removing entity {entity.entity_id}: {e}")
 
@@ -386,7 +390,6 @@ class IntegrationLoader:
         for platform_domain in list(self._entities.keys()):
             if not self._entities[platform_domain]:
                 del self._entities[platform_domain]
-                _LOGGER.debug(f"Cleaned up empty platform list: {platform_domain}")
 
         return True
 
@@ -453,6 +456,159 @@ class IntegrationLoader:
     def get_loaded_integrations(self) -> List[str]:
         """Get list of loaded integration domains."""
         return list(self._loaded_integrations.keys())
+
+    @staticmethod
+    def validate_entity_filters(patterns: list[str]) -> tuple[bool, Optional[str]]:
+        """Validate a list of entity filter patterns.
+
+        Args:
+            patterns: List of glob patterns to validate.
+
+        Returns:
+            Tuple of (is_valid, error_message). is_valid is True if all patterns
+            are valid, False otherwise. error_message contains the first error.
+        """
+        for pattern in patterns:
+            # Check for invalid glob characters or patterns
+            try:
+                # Test compile the pattern
+                fnmatch.translate(pattern)
+            except Exception as e:
+                return False, f"Invalid pattern '{pattern}': {str(e)}"
+
+            # Check for common mistakes
+            if not pattern.strip():
+                return False, "Empty pattern not allowed"
+
+            # Check pattern doesn't have invalid characters that could cause issues
+            # Allow standard glob chars: * ? [] ! (escaping with \ is not standard fnmatch)
+            invalid_chars = set()
+            for char in pattern:
+                if ord(char) < 32:  # Control characters
+                    invalid_chars.add(repr(char))
+
+            if invalid_chars:
+                return (
+                    False,
+                    f"Pattern '{pattern}' contains invalid characters: {', '.join(invalid_chars)}",
+                )
+
+        return True, None
+
+    def register_entity(self, domain: str, entity) -> bool:
+        """Register an entity created by an integration.
+
+        Args:
+            domain: The platform domain (e.g., 'sensor', 'switch').
+            entity: The entity object to register.
+
+        Returns:
+            True if entity was registered, False if it was filtered out or duplicate.
+        """
+        # Check if entity should be filtered
+        integration_domain = getattr(entity, "integration_domain", None)
+        if integration_domain and entity.entity_id:
+            # Find the config entry for this entity
+            entries = self._hass.config_entries.async_entries(integration_domain)
+            for entry in entries:
+                # Get entity name for name-based filtering
+                entity_name = getattr(entity, "name", None) or getattr(
+                    entity, "_attr_name", None
+                )
+                if entry.entity_matches_filter(entity.entity_id, entity_name):
+                    _LOGGER.debug(
+                        f"Entity {entity.entity_id} matches filter for entry {entry.entry_id}, skipping registration"
+                    )
+                    return False
+
+        # Check for duplicates based on MQTT-safe entity ID
+        # Different entity_ids can map to the same MQTT topic (e.g., firmware_restart vs FIRMWARE_RESTART)
+        if entity.entity_id:
+            from ..entity import get_mqtt_entity_id
+
+            mqtt_entity_id = get_mqtt_entity_id(entity.entity_id)
+            for existing_domain, existing_entities in self._entities.items():
+                for existing in existing_entities:
+                    if existing.entity_id:
+                        existing_mqtt_id = get_mqtt_entity_id(existing.entity_id)
+                        if existing_mqtt_id == mqtt_entity_id:
+                            _LOGGER.debug(
+                                f"Duplicate entity detected: {entity.entity_id} "
+                                f"(unique_id: {getattr(entity, 'unique_id', 'N/A')}) "
+                                f"would conflict with {existing.entity_id} "
+                                f"(unique_id: {getattr(existing, 'unique_id', 'N/A')}). "
+                                f"Both map to MQTT topic: {existing_mqtt_id}. Skipping."
+                            )
+                            return False
+
+        if domain not in self._entities:
+            self._entities[domain] = []
+
+        self._entities[domain].append(entity)
+        _LOGGER.debug(
+            f"Registered entity {entity.entity_id} for {domain} "
+            f"(integration_domain={getattr(entity, '_attr_integration_domain', None)})"
+        )
+        return True
+
+    async def async_apply_entity_filters(self, entry: ConfigEntry) -> dict:
+        """Apply entity filters to a config entry, removing filtered entities.
+
+        Only removes entities that newly match filters - entities that were
+        already filtered are left as-is.
+
+        Args:
+            entry: The config entry to apply filters for.
+
+        Returns:
+            Dict with 'removed' (count) and 'filtered_entities' (list of IDs).
+        """
+        domain = entry.domain
+        removed_count = 0
+        filtered_ids = []
+
+        _LOGGER.info(f"Applying entity filters for {domain} entry {entry.entry_id}")
+        _LOGGER.debug(
+            f"Filter patterns: entity_id={entry.entity_filters}, name={entry.entity_name_filters}"
+        )
+
+        # Find all entities for this integration domain
+        entities_to_check = []
+        for platform_domain, entities in list(self._entities.items()):
+            for entity in list(entities):
+                entity_domain = getattr(entity, "integration_domain", None)
+                if entity_domain == domain and entity.entity_id:
+                    entities_to_check.append((platform_domain, entity))
+
+        # Check each entity against filters
+        for platform_domain, entity in entities_to_check:
+            # Get entity name for name-based filtering
+            entity_name = getattr(entity, "name", None) or getattr(
+                entity, "_attr_name", None
+            )
+            if entry.entity_matches_filter(entity.entity_id, entity_name):
+                _LOGGER.info(f"Removing filtered entity {entity.entity_id}")
+                try:
+                    await entity.async_remove(cleanup_mqtt=True)
+                    self._entities[platform_domain].remove(entity)
+                    removed_count += 1
+                    filtered_ids.append(entity.entity_id)
+                except Exception as e:
+                    _LOGGER.warning(
+                        f"Error removing filtered entity {entity.entity_id}: {e}"
+                    )
+
+        # Clean up empty platform lists
+        for platform_domain in list(self._entities.keys()):
+            if not self._entities[platform_domain]:
+                del self._entities[platform_domain]
+
+        _LOGGER.info(f"Applied filters for {domain}: removed {removed_count} entities")
+
+        return {
+            "removed": removed_count,
+            "filtered_entities": filtered_ids,
+        }
 
     async def start_options_flow(self, entry: ConfigEntry) -> Optional[dict]:
         """Start an options flow for an existing config entry.
@@ -540,13 +696,34 @@ class IntegrationLoader:
                 return None
 
             # Create options flow instance
-            options_flow = config_flow_class.async_get_options_flow(entry)
-            if not options_flow:
+            options_flow_result = config_flow_class.async_get_options_flow(entry)
+            if not options_flow_result:
                 _LOGGER.error(f"Failed to create options flow for {domain}")
                 return None
 
+            # Handle both class and instance returns from async_get_options_flow
+            # Some integrations return a class, others return an instance
+            if isinstance(options_flow_result, type):
+                # It's a class, instantiate it with config_entry
+                try:
+                    options_flow = options_flow_result(entry)
+                except TypeError as e:
+                    _LOGGER.error(
+                        f"Failed to instantiate OptionsFlow for {domain}: {e}"
+                    )
+                    return None
+            else:
+                # It's already an instance
+                options_flow = options_flow_result
+
             options_flow.hass = self._hass
-            options_flow.config_entry = entry
+            # Only set config_entry if not already set by constructor
+            # (some integrations don't pass it to __init__)
+            if (
+                not hasattr(options_flow, "config_entry")
+                or options_flow.config_entry is None
+            ):
+                options_flow.config_entry = entry
 
             # Generate flow ID
             flow_id = self._hass.config_entries.async_create_flow(

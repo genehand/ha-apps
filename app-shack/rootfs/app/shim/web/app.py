@@ -171,6 +171,7 @@ class WebUI:
                     "title": e.title,
                     "data": e.data,
                     "state": e.state,
+                    "options": e.options,
                 }
                 for e in entries
             ]
@@ -1067,6 +1068,88 @@ class WebUI:
                     '<div class="alert alert-error">Failed to reload configuration</div>',
                     status_code=400,
                 )
+
+        @self._app.post("/config/{entry_id}/filters")
+        async def update_entity_filters(request: Request, entry_id: str):
+            """Update entity filters for a config entry."""
+            # Check if still loading
+            loading_response = self._check_loading()
+            if loading_response:
+                return loading_response
+
+            # Find the entry
+            entry = self._shim_manager.get_hass().config_entries.async_get_entry(
+                entry_id
+            )
+            if not entry:
+                raise HTTPException(status_code=404, detail="Config entry not found")
+
+            domain = entry.domain
+
+            # Parse form data
+            form_data = await request.form()
+
+            # Parse entity ID patterns
+            entity_filters_text = form_data.get("entity_filters", "")
+            entity_patterns = []
+            for line in entity_filters_text.split("\n"):
+                pattern = line.strip()
+                if pattern:
+                    entity_patterns.append(pattern)
+
+            # Parse name patterns
+            name_filters_text = form_data.get("entity_name_filters", "")
+            name_patterns = []
+            for line in name_filters_text.split("\n"):
+                pattern = line.strip()
+                if pattern:
+                    name_patterns.append(pattern)
+
+            # Validate patterns
+            loader = self._shim_manager.get_integration_loader()
+
+            is_valid, error_msg = loader.validate_entity_filters(entity_patterns)
+            if not is_valid:
+                return HTMLResponse(
+                    f'<div class="alert alert-error">Invalid entity ID filter: {error_msg}</div>',
+                    status_code=400,
+                )
+
+            is_valid, error_msg = loader.validate_entity_filters(name_patterns)
+            if not is_valid:
+                return HTMLResponse(
+                    f'<div class="alert alert-error">Invalid name filter: {error_msg}</div>',
+                    status_code=400,
+                )
+
+            # Update entry options - create a new dict to ensure change detection
+            new_options = dict(entry.options)
+            new_options["entity_filters"] = entity_patterns
+            new_options["entity_name_filters"] = name_patterns
+            self._shim_manager.get_hass().config_entries.async_update_entry(
+                entry, options=new_options
+            )
+
+            # Apply filters (remove newly filtered entities)
+            result = await loader.async_apply_entity_filters(entry)
+
+            total_patterns = len(entity_patterns) + len(name_patterns)
+            _LOGGER.info(
+                f"Updated entity filters for {domain} entry {entry_id}: "
+                f"{total_patterns} patterns ({len(entity_patterns)} ID, {len(name_patterns)} name), "
+                f"removed {result['removed']} entities"
+            )
+
+            # Return success with HTMX redirect
+            html = (
+                f'<div class="alert alert-success">'
+                f"Entity filters updated successfully! "
+                f"Removed {result['removed']} filtered entities."
+                f"</div>"
+            )
+            response = HTMLResponse(content=html)
+            response.headers["HX-Redirect"] = f"../../integrations/{domain}"
+            return response
 
         @self._app.get("/api/integrations", response_class=JSONResponse)
         async def api_integrations():
