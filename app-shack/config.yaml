@@ -1,5 +1,5 @@
 name: Shack
-version: 0.5.13
+version: 0.5.14
 slug: shack
 description: HACS Shack - Run HACS integrations outside Home Assistant via MQTT
 url: https://github.com/genehand/ha-apps
@@ -11,6 +11,7 @@ startup: services
 boot: auto
 ingress: true
 ingress_port: 8080
+panel_icon: mdi:greenhouse
 services:
   - mqtt:need
 hassio_api: true

@@ -1,3 +1,6 @@
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::{
@@ -20,6 +23,28 @@ mod websocket;
 
 use config::Config;
 use state::{AppState, ClientStates};
+
+/// Notify S6-overlay that the service is ready (only when running as addon).
+fn notify_readiness() {
+    // Only signal readiness when running in addon environment
+    if !Path::new("/data/options.json").exists() {
+        return;
+    }
+
+    // Write a newline to file descriptor 3 to signal readiness to S6
+    match OpenOptions::new().write(true).open("/dev/fd/3") {
+        Ok(mut fd) => {
+            if let Err(e) = writeln!(fd) {
+                tracing::debug!("Could not write readiness notification: {}", e);
+            } else {
+                tracing::debug!("Readiness notification sent to S6");
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Could not open readiness notification fd: {}", e);
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,6 +72,9 @@ async fn main() -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", config.proxy_port);
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening on {}", addr);
+
+    // Signal readiness to S6-overlay (only in addon environment)
+    notify_readiness();
 
     // Graceful shutdown
     let shutdown = tokio::spawn(async move {

@@ -5,7 +5,7 @@ use axum::{
 };
 use futures::{Sink, Stream, sink::SinkExt, stream::StreamExt};
 use serde_json::Value;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use yawc::{CompressionLevel, IncomingUpgrade, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
 
 use crate::state::{AppState, ClientStates};
@@ -82,7 +82,7 @@ async fn forward_ha_to_client<S, D>(
                         if let Some(response) = processed {
                             let response_frame = Frame::text(response.to_string());
                             if let Err(e) = destination.send(response_frame).await {
-                                error!("Error sending to client: {}", e);
+                                warn!("Error sending to client: {}", e);
                                 break;
                             }
                         }
@@ -90,7 +90,7 @@ async fn forward_ha_to_client<S, D>(
                     Err(_) => {
                         // Pass through non-JSON messages
                         if let Err(e) = destination.send(frame).await {
-                            error!("Error sending to client: {}", e);
+                            warn!("Error sending to client: {}", e);
                             break;
                         }
                     }
@@ -98,7 +98,7 @@ async fn forward_ha_to_client<S, D>(
             }
             OpCode::Binary => {
                 if let Err(e) = destination.send(frame).await {
-                    error!("Error sending to client: {}", e);
+                    warn!("Error sending to client: {}", e);
                     break;
                 }
             }

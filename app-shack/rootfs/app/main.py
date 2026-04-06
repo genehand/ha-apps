@@ -69,6 +69,22 @@ def setup_logging(
     return shack_logger
 
 
+async def notify_readiness():
+    """Notify S6-overlay that the service is ready (addon environment only)."""
+    if not IS_ADDON:
+        return
+    try:
+        # Write a newline to file descriptor 3 to signal readiness to S6
+        with open(3, "w") as f:
+            f.write("\n")
+        logger = logging.getLogger("shack")
+        logger.debug("Readiness notification sent to S6")
+    except (OSError, IOError) as e:
+        # If fd 3 isn't available, log but don't fail
+        logger = logging.getLogger("shack")
+        logger.debug(f"Could not send readiness notification: {e}")
+
+
 async def main():
     """Main entry point."""
     # Load configuration
@@ -122,6 +138,9 @@ async def main():
 
         # Start web UI immediately (available during integration loading)
         web_task = asyncio.create_task(web_ui.start())
+
+        # Signal readiness to S6-overlay (only in addon environment)
+        await notify_readiness()
 
         # Start shim phase 2 (integration loading in background)
         # This allows the web UI to be accessible while integrations load
