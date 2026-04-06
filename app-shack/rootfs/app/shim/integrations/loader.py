@@ -591,6 +591,23 @@ class IntegrationLoader:
         try:
             set_current_integration(domain)
 
+            # Ensure entry data is initialized before continuing
+            # Some integrations (like localtuya) require hass.data[DOMAIN][entry_id]
+            if entry.state != "loaded":
+                _LOGGER.info(
+                    f"Entry {entry.entry_id} not loaded in continue_options_flow, setting up now"
+                )
+                await self.setup_integration(entry)
+            else:
+                # Even if state says loaded, verify the data actually exists
+                # (hass.data is in-memory only and may be missing after restart)
+                domain_data = self._hass.data.get(domain, {})
+                if isinstance(domain_data, dict) and entry.entry_id not in domain_data:
+                    _LOGGER.info(
+                        f"Entry {entry.entry_id} data missing from hass.data, re-setting up"
+                    )
+                    await self.setup_integration(entry)
+
             # Get the flow from hass
             flow = self._hass.config_entries._flow_progress.get(flow_id)
             if not flow:
