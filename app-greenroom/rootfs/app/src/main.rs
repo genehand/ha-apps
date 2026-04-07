@@ -56,6 +56,7 @@ pub struct PlaybackState {
     pub album: Option<String>,
     pub artwork_url: Option<String>,
     pub is_playing: bool,
+    pub is_idle: bool,  // true when Spotify is open but no active playback
     pub volume: f32,  // 0.0 to 1.0
     pub is_volume_muted: bool,
     pub duration_ms: u32,

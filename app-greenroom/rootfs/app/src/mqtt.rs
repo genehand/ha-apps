@@ -42,6 +42,11 @@ impl MqttBridge {
         let mut mqttoptions = MqttOptions::new(device_id, host.clone(), port);
         mqttoptions.set_keep_alive(Duration::from_secs(30));
         
+        // Set Last Will and Testament - broker will publish "offline" if we disconnect unexpectedly
+        let avail_topic = format!("greenroom/{}/availability", device_id);
+        let will = rumqttc::LastWill::new(&avail_topic, "offline", QoS::AtLeastOnce, true);
+        mqttoptions.set_last_will(will);
+
         if let (Some(user), Some(pass)) = (username, password) {
             mqttoptions.set_credentials(user, pass);
             info!("MQTT authentication enabled");
@@ -51,6 +56,10 @@ impl MqttBridge {
         
         // Flag to track if we've published discovery configs
         let mut discovery_published = false;
+
+        // Create shutdown signal handler
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
         // Handle state updates and MQTT events
         loop {
@@ -62,6 +71,24 @@ impl MqttBridge {
                             error!("Failed to publish state: {}", e);
                         }
                     }
+                }
+
+                // Handle graceful shutdown signals
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, shutting down gracefully...");
+                    if discovery_published {
+                        let _ = client.publish(&avail_topic, QoS::AtLeastOnce, true, "offline").await;
+                        client.disconnect().await?;
+                    }
+                    return Ok(());
+                }
+                _ = sigint.recv() => {
+                    info!("Received SIGINT, shutting down gracefully...");
+                    if discovery_published {
+                        let _ = client.publish(&avail_topic, QoS::AtLeastOnce, true, "offline").await;
+                        client.disconnect().await?;
+                    }
+                    return Ok(());
                 }
 
                 // Handle MQTT events
@@ -149,7 +176,13 @@ impl MqttBridge {
         let state = self.playback_state.read().await;
 
         // Main state is the playback status
-        let status = if state.is_playing { "playing" } else { "paused" };
+        let status = if state.is_idle {
+            "idle"
+        } else if state.is_playing {
+            "playing"
+        } else {
+            "paused"
+        };
         let state_topic = format!("greenroom/{}/state", device_id);
         client.publish(state_topic, QoS::AtLeastOnce, false, status).await?;
 

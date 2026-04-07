@@ -316,6 +316,7 @@ impl SpotifyClient {
             state.track = Some("Waiting for playback...".to_string());
             state.artist = Some("Monitor active".to_string());
             state.is_playing = false;
+            state.is_idle = true;  // No active playback yet
             state.volume = 0.0;
         }
 
@@ -336,7 +337,9 @@ impl SpotifyClient {
 
                         // Get player state from cluster (also a MessageField)
                         if let Some(player_state) = cluster.player_state.as_ref() {
-                            let is_playing = player_state.is_playing;
+                            // Spotify protocol has both is_playing AND is_paused - check both!
+                            let is_playing = player_state.is_playing && !player_state.is_paused;
+                            let is_paused = player_state.is_paused;
                             let track_uri = player_state.track.as_ref()
                                 .map(|t| t.uri.clone())
                                 .unwrap_or_default();
@@ -362,8 +365,11 @@ impl SpotifyClient {
                                 .unwrap_or("off")
                                 .to_string();
                             
+                            // Determine if we're idle (no active device)
+                            let is_idle = active_device_id.is_empty();
+
                             // Get volume and device name from active device's DeviceInfo
-                            let (volume, source, is_volume_muted) = if !active_device_id.is_empty() {
+                            let (volume, source, is_volume_muted) = if !is_idle {
                                 cluster.device.get(active_device_id)
                                     .map(|device_info| {
                                         let vol = device_info.volume as f32 / 65535.0;
@@ -377,8 +383,8 @@ impl SpotifyClient {
                             };
                             
                             debug!(
-                                "Player state: playing={}, track={}, position={}, volume={}, shuffle={}, repeat={}",
-                                is_playing, track_uri, position_ms, volume, shuffle, repeat
+                                "Player state: raw_playing={}, raw_paused={}, effective_playing={}, track={}, position={}, volume={}, shuffle={}, repeat={}",
+                                player_state.is_playing, is_paused, is_playing, track_uri, position_ms, volume, shuffle, repeat
                             );
 
                             // Parse track URI to get Spotify ID
@@ -437,6 +443,7 @@ impl SpotifyClient {
                                 state.album = album_name;
                                 state.artwork_url = artwork_url;
                                 state.is_playing = is_playing;
+                                state.is_idle = is_idle;
                                 state.volume = volume;
                                 state.is_volume_muted = is_volume_muted;
                                 state.position_ms = position_ms as u32;
@@ -460,11 +467,15 @@ impl SpotifyClient {
                         } else {
                             debug!("No player state in cluster update");
                             
-                            // No active playback
+                            // No active playback - we're idle
                             {
                                 let mut state = playback_state.write().await;
                                 state.is_playing = false;
+                                state.is_idle = true;
                                 state.track = Some("No active playback".to_string());
+                                state.artist = None;
+                                state.volume = 0.0;
+                                state.source = None;
                             }
                         }
                     }
@@ -486,7 +497,8 @@ impl SpotifyClient {
             state.artist = Some("Configure Spotify credentials in add-on settings".to_string());
             state.album = Some("-".to_string());
             state.is_playing = false;
-            state.volume = 0.5;
+            state.is_idle = true;
+            state.volume = 0.0;
         }
 
         loop {
