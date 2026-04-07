@@ -1343,6 +1343,73 @@ class TestAttributesRepublishDiscovery:
         assert len(jobs_added) == 1
 
 
+class TestSensorDateDeviceClass:
+    """Test cases for DATE and TIMESTAMP device class state formatting."""
+
+    def test_date_device_class_with_datetime_object(self):
+        """Test that DATE device_class formats datetime as YYYY-MM-DD."""
+        from datetime import datetime
+        from shim.platforms.sensor import SensorEntity, SensorDeviceClass
+
+        sensor = SensorEntity()
+        sensor._attr_device_class = SensorDeviceClass.DATE
+        sensor._attr_native_value = datetime(2032, 10, 12, 7, 0, 0)
+
+        assert sensor.state == "2032-10-12"
+
+    def test_date_device_class_with_date_object(self):
+        """Test that DATE device_class formats date object as YYYY-MM-DD."""
+        from datetime import date
+        from shim.platforms.sensor import SensorEntity, SensorDeviceClass
+
+        sensor = SensorEntity()
+        sensor._attr_device_class = SensorDeviceClass.DATE
+        sensor._attr_native_value = date(2032, 10, 12)
+
+        assert sensor.state == "2032-10-12"
+
+    def test_date_device_class_with_string(self):
+        """Test that DATE device_class passes through string values."""
+        from shim.platforms.sensor import SensorEntity, SensorDeviceClass
+
+        sensor = SensorEntity()
+        sensor._attr_device_class = SensorDeviceClass.DATE
+        sensor._attr_native_value = "2032-10-12"
+
+        assert sensor.state == "2032-10-12"
+
+    def test_timestamp_device_class_with_datetime(self):
+        """Test that TIMESTAMP device_class formats datetime as ISO 8601."""
+        from datetime import datetime
+        from shim.platforms.sensor import SensorEntity, SensorDeviceClass
+
+        sensor = SensorEntity()
+        sensor._attr_device_class = SensorDeviceClass.TIMESTAMP
+        sensor._attr_native_value = datetime(2032, 10, 12, 7, 0, 0)
+
+        assert sensor.state == "2032-10-12T07:00:00"
+
+    def test_timestamp_device_class_with_string(self):
+        """Test that TIMESTAMP device_class passes through string values."""
+        from shim.platforms.sensor import SensorEntity, SensorDeviceClass
+
+        sensor = SensorEntity()
+        sensor._attr_device_class = SensorDeviceClass.TIMESTAMP
+        sensor._attr_native_value = "2032-10-12T07:00:00+00:00"
+
+        assert sensor.state == "2032-10-12T07:00:00+00:00"
+
+    def test_regular_device_class_uses_str(self):
+        """Test that non-date device classes still use str()."""
+        from shim.platforms.sensor import SensorEntity, SensorDeviceClass
+
+        sensor = SensorEntity()
+        sensor._attr_device_class = SensorDeviceClass.TEMPERATURE
+        sensor._attr_native_value = 42.5
+
+        assert sensor.state == "42.5"
+
+
 class TestCoordinatorEntityMqttPublishing:
     """Test MQTT publishing for CoordinatorEntity-based entities."""
 

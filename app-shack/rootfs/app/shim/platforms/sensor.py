@@ -5,7 +5,7 @@ Bridges SensorEntity to MQTT sensor discovery.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Dict, Final, Optional
 
@@ -251,6 +251,19 @@ class SensorEntity(Entity):
         """Return the state of the sensor."""
         if self.native_value is None:
             return None
+
+        # Handle DATE device_class - format as YYYY-MM-DD
+        if self.device_class == SensorDeviceClass.DATE:
+            if isinstance(self.native_value, datetime):
+                return self.native_value.date().isoformat()
+            elif isinstance(self.native_value, date):
+                return self.native_value.isoformat()
+
+        # Handle TIMESTAMP device_class - format as ISO 8601
+        if self.device_class == SensorDeviceClass.TIMESTAMP:
+            if isinstance(self.native_value, datetime):
+                return self.native_value.isoformat()
+
         return str(self.native_value)
 
     @property
