@@ -200,6 +200,36 @@
             background: var(--pico-muted-border-color);
             color: var(--pico-muted-color);
         }
+        /* MQTT Status Styles */
+        .mqtt-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: var(--pico-card-background-color);
+        }
+        .mqtt-status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .mqtt-status-connected {
+            background: var(--pico-color-jade-350);
+        }
+        .mqtt-status-disconnected {
+            background: var(--pico-color-red-500);
+        }
+        .mqtt-status-connecting {
+            background: var(--pico-color-amber-500);
+            animation: pulse 1.5s infinite;
+        }
+        .mqtt-status-error {
+            color: var(--pico-color-red-500);
+            cursor: help;
+        }
         .htmx-request .htmx-indicator-text,
         .htmx-indicator-text.htmx-request {
             display: none;
@@ -213,9 +243,12 @@
         <div class="container">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <h1 style="margin: 0; color: white;">{% block header_title %}HACS Shack{% endblock %}</h1>
-                <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
-                    <span id="theme-icon">🌙</span>
-                </button>
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    {% block header_extra %}{% endblock %}
+                    <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                        <span id="theme-icon">🌙</span>
+                    </button>
+                </div>
             </div>
         </div>
     </header>

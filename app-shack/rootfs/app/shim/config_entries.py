@@ -143,6 +143,7 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         data_schema=None,
         errors: Optional[Dict[str, str]] = None,
         description_placeholders: Optional[Dict[str, str]] = None,
+        last_step: bool = False,
     ):
         """Return the form definition."""
         # Track current step for multi-step flows
@@ -153,6 +154,7 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
             "data_schema": data_schema,
             "errors": errors or {},
             "description_placeholders": description_placeholders or {},
+            "last_step": last_step,
         }
 
     def async_show_menu(
@@ -303,6 +305,7 @@ class OptionsFlow:
         data_schema=None,
         errors: Optional[Dict[str, str]] = None,
         description_placeholders: Optional[Dict[str, str]] = None,
+        last_step: bool = False,
     ):
         """Return the form definition."""
         return {
@@ -311,6 +314,7 @@ class OptionsFlow:
             "data_schema": data_schema,
             "errors": errors or {},
             "description_placeholders": description_placeholders or {},
+            "last_step": last_step,
         }
 
     def async_create_entry(

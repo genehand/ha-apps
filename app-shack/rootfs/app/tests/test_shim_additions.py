@@ -1217,6 +1217,44 @@ class TestAiohttpClientCleanup:
         assert session1.closed
         assert session2.closed
 
+    @pytest.mark.asyncio
+    async def test_async_create_clientsession(self):
+        """Test that async_create_clientsession creates new sessions."""
+        from pathlib import Path
+        from shim.import_patch import setup_import_patching
+        from shim.core import HomeAssistant
+
+        # Create a mock hass instance and set up import patching
+        hass = HomeAssistant(Path("./data"))
+        patcher = setup_import_patching(hass)
+        patcher.patch()
+
+        # Now we can import from homeassistant
+        from homeassistant.helpers.aiohttp_client import (
+            async_create_clientsession,
+            async_get_clientsession,
+        )
+
+        # async_create_clientsession should create a new session (not cached)
+        # NOTE: async_create_clientsession is NOT an async function, just returns a session
+        session1 = async_create_clientsession(hass)
+        session2 = async_create_clientsession(hass)
+        cached_session = async_get_clientsession(hass)
+
+        assert session1 is not None
+        assert session2 is not None
+        assert session1 is not session2  # Each call creates a new session
+        assert session1 is not cached_session  # Not from cache
+        assert not session1.closed
+        assert not session2.closed
+
+        # Clean up
+        await session1.close()
+        await session2.close()
+
+        assert session1.closed
+        assert session2.closed
+
 
 class TestSelectOptionDict:
     """Tests for SelectOptionDict TypedDict."""

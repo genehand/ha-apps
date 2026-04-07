@@ -1,7 +1,7 @@
 name: Shack
-version: 0.5.16
+version: 0.5.18
 slug: shack
-description: HACS Shack - Run HACS integrations outside Home Assistant via MQTT
+description: HACS Shack - Run HACS integrations outside HA core
 url: https://github.com/genehand/ha-apps
 arch:
   - aarch64

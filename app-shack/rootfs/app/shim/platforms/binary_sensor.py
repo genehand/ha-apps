@@ -30,7 +30,7 @@ class BinarySensorDeviceClass(StrEnum):
 
     BATTERY = "battery"
     BATTERY_CHARGING = "battery_charging"
-    CARBON_MONOXIDE = "carbon_monoxide"
+    CO = "carbon_monoxide"
     COLD = "cold"
     CONNECTIVITY = "connectivity"
     DOOR = "door"

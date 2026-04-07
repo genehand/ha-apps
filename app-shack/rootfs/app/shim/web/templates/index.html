@@ -3,6 +3,12 @@
 {% block title %}HACS Shack{% endblock %}
 {% block header_title %}🏚️ HACS Shack{% endblock %}
 
+{% block header_extra %}
+<div hx-get="mqtt-status-fragment" hx-trigger="load, every 5s" hx-swap="innerHTML">
+    <div class="spinner" style="width: 16px; height: 16px; border-color: rgba(255,255,255,0.3); border-top-color: white;"></div>
+</div>
+{% endblock %}
+
 {% block content %}
 <style>
     @media (max-width: 600px) {

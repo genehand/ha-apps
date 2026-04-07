@@ -148,3 +148,23 @@ class TestGetDetailRedirect:
         )
         result = web_ui._get_detail_redirect(request, "my_integration")
         assert result == "./my_integration"
+
+    def test_from_config_flow_page(self, web_ui):
+        """Test redirect when on config flow page (/config/{domain})."""
+        request = self._create_request(
+            url_path="/config/nest_protect",
+            hx_current_url="http://localhost:8080/config/nest_protect",
+        )
+        result = web_ui._get_detail_redirect(request, "nest_protect")
+        # From config flow page, should go up one level then to integrations
+        assert result == "../integrations/nest_protect"
+
+    def test_from_config_flow_reconfigure_page(self, web_ui):
+        """Test redirect when on options flow reconfigure page."""
+        request = self._create_request(
+            url_path="/config/nest_protect_123/reconfigure",
+            hx_current_url="http://localhost:8080/config/nest_protect_123/reconfigure",
+        )
+        result = web_ui._get_detail_redirect(request, "nest_protect")
+        # From config flow page, should go up one level then to integrations
+        assert result == "../integrations/nest_protect"

@@ -788,6 +788,46 @@ class TestDirectAttributeAssignment:
 
         assert entity.device_class == "temperature"
 
+    def test_entity_device_class_from_entity_description(self):
+        """Test that device_class comes from entity_description."""
+        from shim.entity import Entity, EntityDescription
+
+        entity = Entity()
+        entity.entity_description = EntityDescription(
+            key="test", name="Test", device_class="occupancy"
+        )
+
+        assert entity.device_class == "occupancy"
+
+    def test_entity_device_class_attr_fallback(self):
+        """Test that device_class falls back to _attr_device_class."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_device_class = "power"
+
+        assert entity.device_class == "power"
+
+    def test_entity_icon_from_entity_description(self):
+        """Test that icon comes from entity_description."""
+        from shim.entity import Entity, EntityDescription
+
+        entity = Entity()
+        entity.entity_description = EntityDescription(
+            key="test", name="Test", icon="mdi:account"
+        )
+
+        assert entity.icon == "mdi:account"
+
+    def test_entity_icon_attr_fallback(self):
+        """Test that icon falls back to _attr_icon."""
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity._attr_icon = "mdi:home"
+
+        assert entity.icon == "mdi:home"
+
     def test_sensor_state_class_direct_assignment(self):
         """Test that state_class property returns directly assigned state_class."""
         from shim.platforms.sensor import SensorEntity

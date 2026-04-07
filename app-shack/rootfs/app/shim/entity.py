@@ -421,6 +421,9 @@ class Entity:
         # Check for directly assigned device_class attribute first (integrations may set entity.device_class = "...")
         if "device_class" in self.__dict__:
             return self.__dict__["device_class"]
+        # Check entity_description (integrations may set via entity_description.device_class)
+        if hasattr(self, "entity_description") and self.entity_description is not None:
+            return getattr(self.entity_description, "device_class", None)
         return self._attr_device_class
 
     @property
@@ -429,6 +432,9 @@ class Entity:
         # Check for directly assigned icon attribute first (integrations may set entity.icon = "...")
         if "icon" in self.__dict__:
             return self.__dict__["icon"]
+        # Check entity_description (integrations may set via entity_description.icon)
+        if hasattr(self, "entity_description") and self.entity_description is not None:
+            return getattr(self.entity_description, "icon", None)
         return self._attr_icon
 
     @property

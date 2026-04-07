@@ -1,0 +1,9 @@
+{% if not mqtt_status.connected %}
+<div class="mqtt-status mqtt-status-{{ mqtt_status.status_class }}">
+    <span class="mqtt-status-indicator mqtt-status-{{ mqtt_status.status_class }}"></span>
+    <span class="mqtt-status-text">{{ mqtt_status.status_text }}</span>
+    {% if mqtt_status.error %}
+    <span class="mqtt-status-error" title="{{ mqtt_status.error }}">⚠️&nbsp;</span>
+    {% endif %}
+</div>
+{% endif %}

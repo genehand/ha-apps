@@ -493,6 +493,8 @@ class ImportPatcher:
         import aiohttp
 
         _client_session_cache = {}
+        # Track non-cached sessions created by async_create_clientsession
+        _created_sessions = []
 
         def async_get_clientsession(hass, verify_ssl=True):
             """Get aiohttp ClientSession with caching."""
@@ -503,17 +505,37 @@ class ImportPatcher:
                 _client_session_cache[key] = session
             return _client_session_cache[key]
 
+        def async_create_clientsession(hass, verify_ssl=True):
+            """Create a new aiohttp ClientSession.
+
+            Unlike async_get_clientsession, this always creates a new session
+            without caching. The caller is responsible for closing the session.
+            We track these for cleanup during shutdown.
+            """
+            connector = aiohttp.TCPConnector(verify_ssl=verify_ssl)
+            session = aiohttp.ClientSession(connector=connector)
+            _created_sessions.append(session)
+            return session
+
         async def _async_close_clientsessions():
-            """Close all cached aiohttp ClientSessions.
+            """Close all aiohttp ClientSessions.
 
             Called during shutdown to prevent 'Unclosed client session' warnings.
             """
+            # Close cached sessions
             for key, session in list(_client_session_cache.items()):
                 if not session.closed:
                     await session.close()
             _client_session_cache.clear()
 
+            # Close non-cached sessions created by async_create_clientsession
+            for session in list(_created_sessions):
+                if not session.closed:
+                    await session.close()
+            _created_sessions.clear()
+
         aiohttp_client.async_get_clientsession = async_get_clientsession
+        aiohttp_client.async_create_clientsession = async_create_clientsession
         aiohttp_client._async_close_clientsessions = _async_close_clientsessions
         homeassistant.helpers.aiohttp_client = aiohttp_client
         sys.modules["homeassistant.helpers.aiohttp_client"] = aiohttp_client

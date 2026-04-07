@@ -93,6 +93,7 @@ class WebUI:
 
         - From index page (e.g., / or /api/hassio_ingress/xxx/): use ./integrations/{domain}
         - From detail page (e.g., /integrations/{domain}): use ./{domain}
+        - From config flow page (e.g., /config/{domain}): use ../integrations/{domain}
         """
         # Try multiple sources to determine the current page:
         # 1. HX-Current-URL: HTMX sends the full browser URL
@@ -122,6 +123,12 @@ class WebUI:
         ):
             # Already on detail page, use just the domain part
             return f"./{domain}"
+
+        # Check if we're on a config flow page (/config/{domain} or /config/{entry_id}/reconfigure)
+        if "/config/" in normalized:
+            # From config flow page, go up one level then to integrations
+            return f"../integrations/{domain}"
+
         # Coming from index page, navigate to detail page
         return f"./integrations/{domain}"
 
@@ -1259,13 +1266,44 @@ class WebUI:
         @self._app.get("/api/status", response_class=JSONResponse)
         async def api_status():
             """API endpoint for shim status."""
+            mqtt_bridge = self._shim_manager.get_mqtt_bridge()
+            mqtt_status = (
+                mqtt_bridge.connection_status
+                if mqtt_bridge
+                else {"connected": False, "error": "MQTT bridge not available"}
+            )
+
             return {
                 "running": True,
                 "loaded_integrations": self._shim_manager.get_integration_loader().get_loaded_integrations(),
                 "total_entities": len(
                     self._shim_manager.get_integration_loader().get_entities()
                 ),
+                "mqtt": mqtt_status,
             }
+
+        @self._app.get("/api/mqtt-status", response_class=JSONResponse)
+        async def api_mqtt_status():
+            """API endpoint for MQTT connection status."""
+            mqtt_bridge = self._shim_manager.get_mqtt_bridge()
+            if mqtt_bridge:
+                return mqtt_bridge.connection_status
+            return {"connected": False, "error": "MQTT bridge not available"}
+
+        @self._app.get("/mqtt-status-fragment", response_class=HTMLResponse)
+        async def mqtt_status_fragment():
+            """HTML fragment for MQTT status display (used by HTMX)."""
+            mqtt_bridge = self._shim_manager.get_mqtt_bridge()
+            mqtt_status = (
+                mqtt_bridge.connection_status
+                if mqtt_bridge
+                else {"connected": False, "error": "MQTT bridge not available"}
+            )
+
+            return self._render_template(
+                "mqtt_status.html",
+                mqtt_status=mqtt_status,
+            )
 
         @self._app.get("/status-fragment", response_class=HTMLResponse)
         async def status_fragment():
@@ -1277,19 +1315,18 @@ class WebUI:
                 self._shim_manager.get_integration_loader().get_entities()
             )
 
-            return self._render_template(
-                "status.html",
-                loaded_integrations=loaded_integrations,
-                total_entities=total_entities,
-            )
-            total_entities = len(
-                self._shim_manager.get_integration_loader().get_entities()
+            mqtt_bridge = self._shim_manager.get_mqtt_bridge()
+            mqtt_status = (
+                mqtt_bridge.connection_status
+                if mqtt_bridge
+                else {"connected": False, "error": "MQTT bridge not available"}
             )
 
             return self._render_template(
                 "status.html",
                 loaded_integrations=loaded_integrations,
                 total_entities=total_entities,
+                mqtt_status=mqtt_status,
             )
 
         @self._app.get("/api/custom-repos", response_class=JSONResponse)

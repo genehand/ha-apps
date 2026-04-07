@@ -779,6 +779,10 @@ class ShimManager:
         """Get the HomeAssistant shim instance."""
         return self._hass
 
+    def get_mqtt_bridge(self) -> "MqttBridge":
+        """Get the MQTT bridge."""
+        return self._mqtt_bridge
+
     def get_integration_manager(self) -> IntegrationManager:
         """Get the integration manager."""
         return self._integration_manager

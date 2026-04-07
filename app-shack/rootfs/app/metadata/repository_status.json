@@ -24,6 +24,9 @@
     "heyajohnny/cryptoinfo": {
       "version": "1.0.10"
     },
+    "iMicknl/ha-nest-protect": {
+      "version": "0.4.2"
+    },
     "JeffSteinbok/hass-dreo": {
       "version": "1.7.7"
     },
