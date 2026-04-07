@@ -8,6 +8,9 @@
     },
     "Pirate-Weather/pirate-weather-ha": {
       "reason": "HA MQTT integration doesn't support the weather platform"
+    },
+    "Sennevds/media_player.template": {
+      "reason": "HA MQTT integration doesn't support the media_player platform"
     }
   },
   "verified": {

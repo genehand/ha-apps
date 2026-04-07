@@ -1,0 +1,32 @@
+slug: "app-greenroom"
+name: "Greenroom"
+version: "0.1.0"
+
+#image: "ghcr.io/genehand/greenroom-{arch}"
+
+init: false
+
+description: "Spotify Connect device for Home Assistant - exposes currently playing media via ESPHome Native API"
+
+arch:
+  - aarch64
+  - amd64
+
+startup: services
+
+boot: auto
+
+host_network: true
+
+options:
+  spotify_username: ""
+  device_name: "Greenroom"
+  encryption_key: ""
+
+schema:
+  spotify_username: str
+  device_name: str
+  encryption_key: str(32,32)?
+
+panel_icon: mdi:spotify
+panel_title: "Greenroom"
