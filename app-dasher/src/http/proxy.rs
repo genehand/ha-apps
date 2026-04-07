@@ -142,6 +142,38 @@ fn get_timeout_for_path(path: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::config::Config;
+    use crate::state::ClientStates;
+    use std::sync::Arc;
+
+    fn create_test_config(ha_host: String) -> Arc<Config> {
+        Arc::new(Config {
+            ha_host,
+            proxy_port: 8125,
+            transparent: false,
+            log_level: "INFO".to_string(),
+        })
+    }
+
+    fn create_test_state(config: Arc<Config>) -> AppState {
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        AppState {
+            config,
+            client_states: ClientStates::new(),
+            http_client,
+        }
+    }
 
     #[test]
     fn test_get_timeout_for_path_m3u8() {
@@ -177,5 +209,172 @@ mod tests {
 
         // Empty path
         assert_eq!(get_timeout_for_path(""), Some(5));
+    }
+
+    /// Test that Accept-Encoding header is forwarded to upstream
+    #[tokio::test]
+    async fn test_accept_encoding_header_forwarded() {
+        let mock_server = MockServer::start().await;
+
+        // Use header_exists to check that Accept-Encoding is forwarded
+        // (value may be normalized by reqwest, so we don't check exact value)
+        Mock::given(method("GET"))
+            .and(path("/api/test"))
+            .and(wiremock::matchers::header_exists("accept-encoding"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let state = create_test_state(config);
+
+        let mut req = Request::new(Body::empty());
+        *req.method_mut() = axum::http::Method::GET;
+        *req.uri_mut() = "/api/test".parse().unwrap();
+        req.headers_mut()
+            .insert("Accept-Encoding", "gzip, deflate".parse().unwrap());
+
+        let response = handle(req, state, "127.0.0.1".to_string()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Test that Content-Encoding header is passed through to client
+    #[tokio::test]
+    async fn test_content_encoding_header_passed_through() {
+        let mock_server = MockServer::start().await;
+
+        // Create gzip-compressed response body
+        let original_text = "Hello, World! This is a test message.";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original_text.as_bytes()).unwrap();
+        let gzipped_data = encoder.finish().unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/api/compressed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Encoding", "gzip")
+                    .insert_header("Content-Type", "text/plain")
+                    .set_body_bytes(gzipped_data.clone()),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let state = create_test_state(config);
+
+        let mut req = Request::new(Body::empty());
+        *req.uri_mut() = "/api/compressed".parse().unwrap();
+        let response = handle(req, state, "127.0.0.1".to_string()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify Content-Encoding header is present
+        let content_encoding = response
+            .headers()
+            .get("content-encoding")
+            .expect("Content-Encoding header should be present");
+        assert_eq!(content_encoding, "gzip");
+
+        // Verify the body is still gzip-compressed (not decompressed)
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        // The received body should be the gzipped data, not the original text
+        assert_eq!(body_bytes.to_vec(), gzipped_data);
+
+        // Verify it's valid gzip by decompressing
+        let mut decoder = flate2::read::GzDecoder::new(&body_bytes[..]);
+        let mut decompressed = String::new();
+        std::io::Read::read_to_string(&mut decoder, &mut decompressed).unwrap();
+        assert_eq!(decompressed, original_text);
+    }
+
+    /// Test that gzip-compressed JSON responses pass through correctly
+    #[tokio::test]
+    async fn test_gzip_json_pass_through() {
+        let mock_server = MockServer::start().await;
+
+        // Create a JSON response and gzip it
+        let json_data = r#"{"status":"ok","entities":["light.living_room","switch.kitchen"]}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json_data.as_bytes()).unwrap();
+        let gzipped_data = encoder.finish().unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/api/states"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Encoding", "gzip")
+                    .insert_header("Content-Type", "application/json")
+                    .set_body_bytes(gzipped_data.clone()),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let state = create_test_state(config);
+
+        let mut req = Request::new(Body::empty());
+        *req.method_mut() = axum::http::Method::GET;
+        *req.uri_mut() = "/api/states".parse().unwrap();
+        req.headers_mut()
+            .insert("Accept-Encoding", "gzip".parse().unwrap());
+
+        let response = handle(req, state, "127.0.0.1".to_string()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify Content-Type and Content-Encoding headers
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(response.headers().get("content-encoding").unwrap(), "gzip");
+
+        // Verify body is still compressed
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body_bytes.to_vec(), gzipped_data);
+
+        // Decompress and verify content
+        let mut decoder = flate2::read::GzDecoder::new(&body_bytes[..]);
+        let mut decompressed = String::new();
+        std::io::Read::read_to_string(&mut decoder, &mut decompressed).unwrap();
+        assert_eq!(decompressed, json_data);
+    }
+
+    /// Test that non-gzipped responses still work correctly
+    #[tokio::test]
+    async fn test_non_gzip_response_passes_through() {
+        let mock_server = MockServer::start().await;
+
+        let plain_text = "Plain text response";
+
+        Mock::given(method("GET"))
+            .and(path("/api/plain"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "text/plain")
+                    .set_body_string(plain_text),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let state = create_test_state(config);
+
+        let mut req = Request::new(Body::empty());
+        *req.uri_mut() = "/api/plain".parse().unwrap();
+        let response = handle(req, state, "127.0.0.1".to_string()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify no Content-Encoding header
+        assert!(response.headers().get("content-encoding").is_none());
+
+        // Verify body is the original plain text
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(String::from_utf8(body_bytes.to_vec()).unwrap(), plain_text);
     }
 }
