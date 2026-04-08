@@ -3,7 +3,7 @@ name = "greenroom"
 version = "0.1.0"
 edition = "2021"
 authors = ["Gene Hand"]
-description = "Spotify Connect device for Home Assistant via MQTT"
+description = "Spotify Connect monitor device for Home Assistant"
 
 [dependencies]
 # Async runtime
@@ -25,13 +25,16 @@ librespot-metadata = "0.8"
 librespot-protocol = { version = "0.8", default-features = false }
 librespot-playback = { version = "0.8", default-features = false }
 
-# Protobuf
-prost = "0.12"
+# Protobuf (used by librespot)
 protobuf = "3.7"
 bytes = "1"
 
 # MQTT
 rumqttc = "0.24"
+
+# HTTP client (for spclient)
+hyper = { version = "1", features = ["full"] }
+http = "1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -39,9 +42,6 @@ serde_json = "1"
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
-
-# Encryption (optional for ESPHome)
-# snow = "0.9"  # Noise protocol - commented out for now
 
 # Logging
 tracing = "0.1"
@@ -58,8 +58,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # Browser opener for OAuth
 open = "5"
 
-[build-dependencies]
-prost-build = "0.12"
+# No build dependencies needed
 
 [profile.release]
 opt-level = 3

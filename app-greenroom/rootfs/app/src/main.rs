@@ -3,7 +3,7 @@ mod mqtt;
 
 use std::sync::Arc;
 use clap::Parser;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{info, error};
 
 use crate::librespot::SpotifyClient;
@@ -65,6 +65,22 @@ pub struct PlaybackState {
     pub source: Option<String>,           // Current device name
     pub shuffle: bool,
     pub repeat: String, // "off", "context", "track"
+    pub active_device_id: Option<String>,   // Device ID of the active Spotify device
+}
+
+/// Player command types (kept for potential future use)
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum PlayerCommand {
+    Pause,
+    Resume,
+    SkipNext,
+    SkipPrev,
+    SeekTo(u32),
+    SetVolume(u16),
+    SetShuffle(bool),
+    SetRepeatContext(bool),
+    SetRepeatTrack(bool),
 }
 
 #[derive(Clone)]
@@ -129,12 +145,16 @@ async fn main() -> anyhow::Result<()> {
     
     // State change notification channel (for pushing updates to MQTT)
     let (state_tx, state_rx) = broadcast::channel(16);
+    
+    // Command channel (kept for potential future use, currently unused)
+    let (command_tx, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
 
     // Start MQTT bridge
     let mqtt_bridge = MqttBridge::new(
         config.clone(),
         playback_state.clone(),
         state_rx,
+        command_tx,
     );
 
     // Start Spotify client
@@ -142,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         playback_state.clone(),
         state_tx,
+        command_rx,
     );
 
     // Run both concurrently

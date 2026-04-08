@@ -6,7 +6,7 @@ version: "0.1.0"
 
 init: false
 
-description: "Spotify Connect device for Home Assistant - exposes currently playing media via ESPHome Native API"
+description: "Spotify Connect monitor"
 
 arch:
   - aarch64
@@ -21,12 +21,10 @@ host_network: true
 options:
   spotify_username: ""
   device_name: "Greenroom"
-  encryption_key: ""
 
 schema:
   spotify_username: str
   device_name: str
-  encryption_key: str(32,32)?
 
 panel_icon: mdi:spotify
 panel_title: "Greenroom"

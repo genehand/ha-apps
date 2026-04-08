@@ -40,8 +40,3 @@ RUN apk add --no-cache \
 # Copy binary from build stage
 COPY --from=builder /build/target/release/greenroom /usr/bin/
 COPY run.sh /run.sh
-
-# Create working directory
-WORKDIR /data
-
-CMD ["/run.sh"]

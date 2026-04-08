@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, RwLock, mpsc};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, ConnectReturnCode};
 use tracing::{info, debug, error};
 use serde_json::json;
@@ -8,12 +8,15 @@ use chrono::Utc;
 
 use crate::Config;
 use crate::PlaybackState;
+use crate::PlayerCommand;
 
 /// MQTT bridge for Home Assistant discovery
 pub struct MqttBridge {
     config: Config,
     playback_state: Arc<RwLock<PlaybackState>>,
     state_rx: broadcast::Receiver<()>,
+    #[allow(dead_code)]
+    command_tx: mpsc::UnboundedSender<PlayerCommand>,
 }
 
 impl MqttBridge {
@@ -21,11 +24,13 @@ impl MqttBridge {
         config: Config,
         playback_state: Arc<RwLock<PlaybackState>>,
         state_rx: broadcast::Receiver<()>,
+        command_tx: mpsc::UnboundedSender<PlayerCommand>,
     ) -> Self {
         Self {
             config,
             playback_state,
             state_rx,
+            command_tx,
         }
     }
 
@@ -49,7 +54,7 @@ impl MqttBridge {
 
         if let (Some(user), Some(pass)) = (username, password) {
             mqttoptions.set_credentials(user, pass);
-            info!("MQTT authentication enabled");
+            debug!("MQTT authentication enabled");
         }
 
         let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
@@ -96,7 +101,7 @@ impl MqttBridge {
                     match event {
                         Ok(Event::Incoming(Packet::ConnAck(connack))) => {
                             if connack.code == ConnectReturnCode::Success {
-                                info!("Connected to MQTT broker at {}:{}", self.config.mqtt_host, self.config.mqtt_port);
+                                debug!("Connected to MQTT broker at {}:{}", self.config.mqtt_host, self.config.mqtt_port);
                                 // Publish discovery configs on initial connect
                                 if !discovery_published {
                                     if let Err(e) = self.publish_discovery_configs(&client, device_id).await {
@@ -105,6 +110,7 @@ impl MqttBridge {
                                         discovery_published = true;
                                     }
                                 }
+                                // No command subscription - this is a monitor-only integration
                             } else {
                                 error!("MQTT connection failed: {:?}", connack.code);
                             }
@@ -132,7 +138,7 @@ impl MqttBridge {
         let device_name = &self.config.device_name;
         let unique_id = format!("{}", device_id);
 
-        // Single sensor with all playback info as attributes
+        // Sensor with all playback info as attributes
         let topic = format!("homeassistant/sensor/{}/config", device_id);
         
         let config = json!({
@@ -156,15 +162,14 @@ impl MqttBridge {
         });
 
         let payload = serde_json::to_string(&config)?;
-        client.publish(&topic, QoS::AtLeastOnce, true, payload.clone()).await?;
-        debug!("Published discovery config to topic: {}", topic);
-        info!("Discovery config: {}", payload);
+        client.publish(&topic, QoS::AtLeastOnce, true, payload).await?;
+        debug!("Published sensor discovery config to topic: {}", topic);
 
         // Publish online status
         let avail_topic = format!("greenroom/{}/availability", device_id);
         client.publish(avail_topic, QoS::AtLeastOnce, true, "online").await?;
         
-        info!("Published MQTT discovery config for single sensor");
+        debug!("Published MQTT discovery config for monitor sensor");
         Ok(())
     }
 
