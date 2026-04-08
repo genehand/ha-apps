@@ -2,6 +2,7 @@
 
 import pytest
 import asyncio
+import logging
 from unittest.mock import Mock, patch, MagicMock
 import sys
 from pathlib import Path
@@ -861,6 +862,129 @@ class TestUpdateFailed:
         except UpdateFailed as e:
             assert str(e) == "Wrapped error"
             assert e.__cause__ is original_error
+
+
+class TestDataUpdateCoordinator:
+    """Test cases for DataUpdateCoordinator."""
+
+    @pytest.mark.asyncio
+    async def test_coordinator_handles_unboundlocalerror_from_undefined_error_var(
+        self,
+        tmp_path,
+    ):
+        """Test DataUpdateCoordinator catches UnboundLocalError from buggy integrations.
+
+        Some integrations (like nws_alerts) have buggy code like:
+            raise UpdateFailed(msg) from error
+        where 'error' is not defined in that scope. This causes UnboundLocalError.
+        The coordinator should catch this and convert to UpdateFailed.
+        """
+        from homeassistant.helpers.update_coordinator import (
+            DataUpdateCoordinator,
+            UpdateFailed,
+        )
+        from shim.core import HomeAssistant
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class BuggyCoordinator(DataUpdateCoordinator):
+            """Coordinator that simulates the nws_alerts bug."""
+
+            async def _async_update_data(self):
+                # Simulate the buggy pattern: using undefined 'error' variable
+                try:
+                    # First except block defines 'error' in its own scope
+                    try:
+                        raise AttributeError("test")
+                    except AttributeError as error:
+                        # This 'error' is local to this block
+                        pass
+
+                    # Now in a different branch, try to use 'error' which doesn't exist
+                    # This simulates: raise UpdateFailed(msg) from error
+                    raise UnboundLocalError(
+                        "cannot access local variable 'error' where it is not associated with a value"
+                    )
+                except UnboundLocalError:
+                    # Re-raise to test the coordinator's handling
+                    raise
+
+        coordinator = BuggyCoordinator(
+            hass,
+            logger=logging.getLogger(__name__),
+            name="Test Buggy Coordinator",
+            update_interval=None,
+        )
+
+        # The coordinator should convert UnboundLocalError to UpdateFailed
+        with pytest.raises(UpdateFailed) as exc_info:
+            await coordinator.async_refresh()
+
+        assert "Integration bug" in str(exc_info.value)
+        assert "undefined error variable" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_coordinator_handles_nameerror_from_undefined_error_var(
+        self,
+        tmp_path,
+    ):
+        """Test DataUpdateCoordinator catches NameError from buggy integrations."""
+        from homeassistant.helpers.update_coordinator import (
+            DataUpdateCoordinator,
+            UpdateFailed,
+        )
+        from shim.core import HomeAssistant
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class NameErrorCoordinator(DataUpdateCoordinator):
+            """Coordinator that raises NameError for undefined 'error'."""
+
+            async def _async_update_data(self):
+                raise NameError("name 'error' is not defined")
+
+        coordinator = NameErrorCoordinator(
+            hass,
+            logger=logging.getLogger(__name__),
+            name="Test NameError Coordinator",
+            update_interval=None,
+        )
+
+        # The coordinator should convert NameError to UpdateFailed
+        with pytest.raises(UpdateFailed) as exc_info:
+            await coordinator.async_refresh()
+
+        assert "Integration bug" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_coordinator_re_raises_other_unboundlocalerrors(
+        self,
+        tmp_path,
+    ):
+        """Test DataUpdateCoordinator re-raises UnboundLocalError that doesn't match pattern."""
+        from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+        from shim.core import HomeAssistant
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class OtherUnboundErrorCoordinator(DataUpdateCoordinator):
+            """Coordinator that raises UnboundLocalError for other reasons."""
+
+            async def _async_update_data(self):
+                raise UnboundLocalError("some other unbound local issue")
+
+        coordinator = OtherUnboundErrorCoordinator(
+            hass,
+            logger=logging.getLogger(__name__),
+            name="Test Other Error Coordinator",
+            update_interval=None,
+        )
+
+        # Should re-raise as-is since it doesn't match the pattern
+        with pytest.raises(UnboundLocalError) as exc_info:
+            await coordinator.async_refresh()
+
+        assert "some other unbound local issue" in str(exc_info.value)
 
 
 class TestEvent:

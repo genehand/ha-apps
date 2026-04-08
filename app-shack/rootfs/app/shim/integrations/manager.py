@@ -111,7 +111,6 @@ class IntegrationManager:
         self,
         storage: Storage,
         shim_dir: Path,
-        notification_callback: Optional[callable] = None,
     ):
         self._storage = storage
         self._shim_dir = Path(shim_dir)
@@ -154,9 +153,6 @@ class IntegrationManager:
                 f"Venv packages dir will be created at: {self._persistent_packages_dir}"
             )
 
-        # Callback for sending notifications to HA
-        self._notification_callback = notification_callback
-
         # Create __init__.py to make custom_components a Python package
         init_file = self._integrations_dir / "__init__.py"
         if not init_file.exists():
@@ -181,7 +177,6 @@ class IntegrationManager:
 
         # Periodic update check task
         self._update_check_task: Optional[asyncio.Task] = None
-        self._last_notification_time: Optional[datetime] = None
 
         self._load_integrations()
         self._load_custom_repos()
@@ -994,45 +989,18 @@ class IntegrationManager:
         return self._install_tasks.get(full_name_or_domain)
 
     async def _periodic_update_check(self):
-        """Periodically check for updates and send aggregated notifications."""
+        """Periodically check for updates."""
         while True:
             try:
                 await asyncio.sleep(UPDATE_CHECK_INTERVAL_HOURS * 3600)
-                await self._check_updates_and_notify()
+                _LOGGER.info("Running periodic update check")
+                updates = await self.check_for_updates()
+                if updates:
+                    _LOGGER.info(f"Found {len(updates)} available updates")
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 _LOGGER.error(f"Periodic update check error: {e}")
-
-    async def _check_updates_and_notify(self):
-        """Check for updates and send a single aggregated notification."""
-        _LOGGER.info("Running periodic update check")
-
-        updates = await self.check_for_updates()
-
-        if not updates:
-            return
-
-        # Build aggregated message
-        update_count = len(updates)
-        integration_list = ", ".join(
-            [f"{u.name} ({u.version} → {u.latest_version})" for u in updates[:5]]
-        )
-
-        if update_count > 5:
-            integration_list += f" and {update_count - 5} more"
-
-        title = f"{update_count} integration update{'s' if update_count > 1 else ''} available"
-        message = f"Updates available for: {integration_list}"
-
-        _LOGGER.info(f"Update notification: {title} - {message}")
-
-        # Send notification to HA if callback is available
-        if self._notification_callback:
-            try:
-                await self._notification_callback(title, message)
-            except Exception as e:
-                _LOGGER.error(f"Failed to send update notification: {e}")
 
     async def _get_latest_version_from_github(self, repo_url: str) -> Optional[str]:
         """Get latest release version from GitHub (fallback for custom repos)."""

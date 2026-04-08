@@ -1314,6 +1314,21 @@ class ImportPatcher:
                         f"Coordinator '{self.name}' data fetched successfully: {self.data}"
                     )
                     self.async_update_listeners()
+                except (UnboundLocalError, NameError) as e:
+                    # Handle buggy integrations that use 'raise X from error' where
+                    # 'error' variable doesn't exist
+                    error_str = str(e)
+                    if "error" in error_str.lower() and (
+                        "not associated" in error_str or "not defined" in error_str
+                    ):
+                        msg = f"Integration bug: tried to chain from undefined error variable in {self.name}"
+                        self.logger.error(f"Error fetching {self.name} data: {msg}")
+                        self._last_update_success = False
+                        raise UpdateFailed(msg) from e
+                    # Re-raise if it's not the specific pattern we're handling
+                    self.logger.error(f"Error fetching {self.name} data: {e}")
+                    self._last_update_success = False
+                    raise
                 except Exception as e:
                     self.logger.error(f"Error fetching {self.name} data: {e}")
                     self._last_update_success = False

@@ -10,8 +10,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from paho.mqtt.client import Client, MQTTMessage
 
-from config import create_persistent_notification
-
+from config import get_addon_slug
 from .logging import get_logger
 from .core import HomeAssistant, ConfigEntry
 from .storage import Storage
@@ -48,11 +47,10 @@ class ShimManager:
         # Initialize storage
         self._storage = self._hass._storage
 
-        # Initialize integration management with notification callback
+        # Initialize integration management
         self._integration_manager = IntegrationManager(
             self._storage,
             self._hass.shim_dir,
-            notification_callback=self._send_ha_notification,
         )
 
         # Initialize integration loader
@@ -641,20 +639,7 @@ class ShimManager:
 
             if updates:
                 _LOGGER.info(f"Found {len(updates)} available updates on startup")
-                # Build and send notification (same format as periodic check)
-                update_count = len(updates)
-                integration_list = ", ".join(
-                    [
-                        f"{u.name} ({u.version} → {u.latest_version})"
-                        for u in updates[:5]
-                    ]
-                )
-                if update_count > 5:
-                    integration_list += f" and {update_count - 5} more"
-                title = f"{update_count} integration update{'s' if update_count > 1 else ''} available"
-                message = f"Updates available for: {integration_list}"
-                await self._send_ha_notification(title, message)
-                # Also publish update entity state
+                # Publish update entities to HA's Settings > Updates panel
                 await self._publish_update_notification(updates)
             else:
                 _LOGGER.debug("No updates available on startup")
@@ -685,21 +670,72 @@ class ShimManager:
                 _LOGGER.error(f"Error in update check: {e}")
 
     async def _publish_update_notification(self, updates: List) -> None:
-        """Publish update notification to MQTT."""
+        """Publish update notification to MQTT.
+
+        Creates a single consolidated MQTT update entity that shows in
+        HA's Settings > Updates panel with information about all available updates.
+        """
         if not self._mqtt_client:
             return
 
-        # Publish to single update entity
-        discovery_topic = "homeassistant/update/shack_updates/config"
-        state_topic = "homeassistant/update/shack_updates/state"
+        await self._publish_consolidated_update_entity(updates)
 
-        # Discovery config
+    async def _publish_consolidated_update_entity(self, updates: List) -> None:
+        """Publish a single consolidated MQTT update entity for all Shack updates.
+
+        This creates one native HA update entity that shows in Settings > Updates
+        with information about all available Shack integration updates combined.
+        """
+        if not self._mqtt_client:
+            return
+
+        # Get all installed integrations to count them
+        all_integrations = self._integration_manager.get_enabled_integrations()
+        total_integrations = len(all_integrations)
+
+        # Build update info
+        update_count = len(updates)
+        has_updates = update_count > 0
+
+        # Build release summary listing all updates
+        if has_updates:
+            integration_list = "\n\n".join(
+                [f"• {u.name}: {u.version} → {u.latest_version}" for u in updates[:10]]
+            )
+            if update_count > 10:
+                integration_list += f"\n\n... and {update_count - 10} more"
+            release_summary = integration_list
+            title = f"Shack: {update_count} update{'s' if update_count > 1 else ''} available"
+        else:
+            release_summary = "All Shack integrations are up to date"
+            title = "Shack"
+
+        entity_id = "shack_updates"
+        discovery_topic = f"homeassistant/update/{entity_id}/config"
+        state_topic = f"homeassistant/update/{entity_id}/state"
+        command_topic = f"{self._mqtt_base_topic}/updates/install"
+
+        # Get add-on slug for ingress URL (falls back to hardcoded if not available)
+        addon_slug = get_addon_slug()
+        ingress_path = f"/app/{addon_slug}" if addon_slug else "/app/df3bd192_shack"
+
+        # Discovery config for MQTT update platform
+        # Use single state_topic with JSON payload - HA auto-parses JSON
+        # Add origin to identify this as an MQTT Discovery entity
         config = {
-            "name": "Shack Updates",
-            "unique_id": "shack_updates",
+            "name": "Integration Updates",
+            "unique_id": entity_id,
             "state_topic": state_topic,
-            "payload_on": "on",
-            "payload_off": "off",
+            "command_topic": command_topic,
+            "payload_install": "install",
+            "release_url": ingress_path,
+            "force_update": True,
+            "enabled_by_default": True,
+            "origin": {
+                "name": "Shack",
+                "sw_version": "0.5.20",
+                "support_url": "https://github.com/genehand/ha-apps",
+            },
             "device": {
                 "identifiers": ["shack"],
                 "name": "Shack",
@@ -708,71 +744,43 @@ class ShimManager:
             },
         }
 
+        # Publish discovery config (retained)
         self._mqtt_client.publish(
             discovery_topic, json.dumps(config), qos=0, retain=True
         )
-        self._mqtt_client.publish(
-            state_topic, "on" if updates else "off", qos=0, retain=True
-        )
 
-        # Also publish details
-        details_topic = f"{self._mqtt_base_topic}/updates/available"
-        details = [
-            {
-                "domain": u.domain,
-                "name": u.name,
-                "current_version": u.version,
-                "latest_version": u.latest_version,
-            }
-            for u in updates
-        ]
-        self._mqtt_client.publish(
-            details_topic, json.dumps(details), qos=0, retain=True
-        )
-
-    async def _send_ha_notification(self, title: str, message: str) -> None:
-        """Send a notification to Home Assistant via persistent_notification.
-
-        This is used by the IntegrationManager to send aggregated update notifications.
-        Uses Supervisor API first, falls back to MQTT for automation handling.
-        """
-        # Create a notification ID based on the title
-        notification_id = (
-            f"shim_{title.lower().replace(' ', '_').replace('-', '_')[:30]}"
-        )
-
-        # Try Supervisor API first (for persistent notifications in HA)
-        success = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: create_persistent_notification(title, message, notification_id),
-        )
-
-        if success:
-            _LOGGER.info(f"Sent HA persistent notification: {title}")
+        # Publish state as JSON with all update info
+        # installed_version and latest_version must differ for badge to show
+        # Use actual version from first update, or placeholder if none
+        if has_updates:
+            first_update = updates[0]
+            installed_version = first_update.version
+            latest_ver = first_update.latest_version
         else:
-            _LOGGER.debug("Supervisor API notification failed, using MQTT fallback")
+            installed_version = "0.0.0"
+            latest_ver = "0.0.0"
 
-        # Always publish to MQTT as fallback / for automations
-        if self._mqtt_client:
-            try:
-                topic = f"{self._mqtt_base_topic}/notification"
-                self._mqtt_client.publish(
-                    topic,
-                    json.dumps(
-                        {
-                            "title": title,
-                            "message": message,
-                            "notification_id": notification_id,
-                        }
-                    ),
-                    qos=0,
-                    retain=False,
-                )
-                if not success:
-                    _LOGGER.info(f"Sent notification via MQTT: {title}")
-            except Exception as e:
-                if not success:
-                    _LOGGER.error(f"Failed to send HA notification: {e}")
+        state_payload = {
+            "installed_version": installed_version,
+            "latest_version": latest_ver,
+            "title": title,
+            "release_summary": release_summary,
+        }
+
+        self._mqtt_client.publish(
+            state_topic,
+            json.dumps(state_payload),
+            qos=0,
+            retain=True,
+        )
+
+        if has_updates:
+            _LOGGER.debug(
+                "Published consolidated update entity: %s Shack integration updates available",
+                update_count,
+            )
+        else:
+            _LOGGER.debug("Published consolidated update entity: all up to date")
 
     # Public API for web UI
     def get_hass(self) -> HomeAssistant:
@@ -796,9 +804,35 @@ class ShimManager:
 
         Returns InstallTask for async installs or bool for legacy blocking installs.
         """
-        return await self._integration_manager.install_integration(
+        result = await self._integration_manager.install_integration(
             full_name_or_domain, **kwargs
         )
+
+        # If it's a task (async install), add a callback to refresh updates when complete
+        if hasattr(result, "add_done_callback"):
+
+            async def refresh_on_complete(task):
+                try:
+                    await task
+                    _LOGGER.info("Install completed, refreshing update entity")
+                    await self._refresh_update_entity()
+                except Exception as e:
+                    _LOGGER.error(f"Error refreshing update entity after install: {e}")
+
+            # Wrap in try/except since we can't directly await here
+            asyncio.create_task(refresh_on_complete(result))
+        else:
+            # Synchronous/legacy result - refresh immediately
+            if result:
+                await self._refresh_update_entity()
+
+        return result
+
+    async def _refresh_update_entity(self) -> None:
+        """Re-check for updates and re-publish the update entity."""
+        _LOGGER.debug("Refreshing update entity after install")
+        updates = await self._integration_manager.check_for_updates()
+        await self._publish_update_notification(updates)
 
     async def create_config_entry(
         self, domain: str, data: dict, options: Optional[dict] = None

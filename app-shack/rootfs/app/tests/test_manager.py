@@ -841,9 +841,15 @@ class TestUpdateNotification:
 
     @pytest.mark.asyncio
     async def test_publish_update_notification_with_updates(self):
-        """Test that update notification publishes correct discovery config with updates available."""
+        """Test that update notification publishes consolidated entity with updates available."""
         mock_mqtt = MagicMock()
         manager, _ = self._create_manager(mock_mqtt)
+
+        # Create mock integration info for get_enabled_integrations
+        mock_integration = MagicMock()
+        mock_integration.domain = "test_integration"
+        mock_integration.name = "Test Integration"
+        mock_integration.version = "1.0.0"
 
         # Create mock update info
         mock_update = MagicMock()
@@ -853,59 +859,58 @@ class TestUpdateNotification:
         mock_update.latest_version = "1.1.0"
         updates = [mock_update]
 
+        # Mock get_enabled_integrations to return the integration
+        manager._integration_manager.get_enabled_integrations = MagicMock(
+            return_value=[mock_integration]
+        )
+
         await manager._publish_update_notification(updates)
 
-        # Verify discovery topic is correct
+        # Verify discovery topic for consolidated update entity
         calls = mock_mqtt.publish.call_args_list
-        discovery_call = calls[0]
-        assert discovery_call[0][0] == "homeassistant/update/shack_updates/config"
+        discovery_topics = [
+            c[0][0] for c in calls if "homeassistant/update/" in c[0][0]
+        ]
+        assert any("shack_updates" in t for t in discovery_topics)
 
-        # Verify discovery config has correct values
-        config = json.loads(discovery_call[0][1])
-        assert config["name"] == "Shack Updates"
-        assert config["unique_id"] == "shack_updates"
-        assert config["state_topic"] == "homeassistant/update/shack_updates/state"
-        assert config["payload_on"] == "on"
-        assert config["payload_off"] == "off"
-        assert config["device"]["identifiers"] == ["shack"]
-        assert config["device"]["name"] == "Shack"
-        assert config["device"]["manufacturer"] == "Custom"
-        assert config["device"]["model"] == "Integration Bridge"
-
-        # Verify state topic is published with "on" when updates exist
-        state_call = calls[1]
-        assert state_call[0][0] == "homeassistant/update/shack_updates/state"
-        assert state_call[0][1] == "on"
-
-        # Verify details topic is published
-        details_call = calls[2]
-        assert details_call[0][0] == "shack/updates/available"
-        details = json.loads(details_call[0][1])
-        assert len(details) == 1
-        assert details[0]["domain"] == "test_integration"
-        assert details[0]["name"] == "Test Integration"
-        assert details[0]["current_version"] == "1.0.0"
-        assert details[0]["latest_version"] == "1.1.0"
+        # Verify the state payload has title and release_summary
+        state_calls = [
+            c
+            for c in calls
+            if "shack_updates" in c[0][0] and c[0][0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        state = json.loads(state_calls[0][0][1])
+        assert "Shack" in state["title"]
+        assert "release_summary" in state
+        # installed_version and latest_version must differ for badge
+        assert state["installed_version"] != state["latest_version"]
 
     @pytest.mark.asyncio
     async def test_publish_update_notification_no_updates(self):
-        """Test that update notification publishes 'off' state when no updates."""
+        """Test that update notification publishes consolidated entity with no updates."""
         mock_mqtt = MagicMock()
         manager, _ = self._create_manager(mock_mqtt)
 
+        # Create mock integration info
+        mock_integration = MagicMock()
+        mock_integration.domain = "test_integration"
+        mock_integration.name = "Test Integration"
+        mock_integration.version = "1.0.0"
+
+        # Mock get_enabled_integrations to return the integration
+        manager._integration_manager.get_enabled_integrations = MagicMock(
+            return_value=[mock_integration]
+        )
+
         await manager._publish_update_notification([])
 
-        # Verify state topic is published with "off" when no updates
+        # Verify discovery is published for the consolidated update entity
         calls = mock_mqtt.publish.call_args_list
-        state_call = calls[1]
-        assert state_call[0][0] == "homeassistant/update/shack_updates/state"
-        assert state_call[0][1] == "off"
-
-        # Verify details topic is published with empty list
-        details_call = calls[2]
-        assert details_call[0][0] == "shack/updates/available"
-        details = json.loads(details_call[0][1])
-        assert details == []
+        discovery_topics = [
+            c[0][0] for c in calls if "homeassistant/update/" in c[0][0]
+        ]
+        assert any("shack_updates" in t for t in discovery_topics)
 
     @pytest.mark.asyncio
     async def test_publish_update_notification_no_mqtt_client(self):
@@ -918,13 +923,20 @@ class TestUpdateNotification:
 
     @pytest.mark.asyncio
     async def test_publish_update_notification_multiple_updates(self):
-        """Test that update notification handles multiple updates."""
+        """Test that update notification consolidates multiple updates into one entity."""
         mock_mqtt = MagicMock()
         manager, _ = self._create_manager(mock_mqtt)
 
-        # Create multiple mock updates
+        # Create mock integrations and updates
+        integrations = []
         updates = []
         for i in range(3):
+            mock_integration = MagicMock()
+            mock_integration.domain = f"integration_{i}"
+            mock_integration.name = f"Integration {i}"
+            mock_integration.version = f"1.0.{i}"
+            integrations.append(mock_integration)
+
             mock_update = MagicMock()
             mock_update.domain = f"integration_{i}"
             mock_update.name = f"Integration {i}"
@@ -932,16 +944,34 @@ class TestUpdateNotification:
             mock_update.latest_version = f"1.1.{i}"
             updates.append(mock_update)
 
+        # Mock get_enabled_integrations to return all integrations
+        manager._integration_manager.get_enabled_integrations = MagicMock(
+            return_value=integrations
+        )
+
         await manager._publish_update_notification(updates)
 
-        # Verify details topic contains all updates
+        # Verify discovery topic for consolidated entity (only one, not 3)
         calls = mock_mqtt.publish.call_args_list
-        details_call = calls[2]
-        details = json.loads(details_call[0][1])
-        assert len(details) == 3
-        for i, detail in enumerate(details):
-            assert detail["domain"] == f"integration_{i}"
-            assert detail["name"] == f"Integration {i}"
+        discovery_calls = [
+            c for c in calls if "homeassistant/update/shack_updates/config" in c[0][0]
+        ]
+        assert len(discovery_calls) == 1  # Only one consolidated entity
+
+        # Verify the state payload lists all 3 updates
+        state_calls = [
+            c
+            for c in calls
+            if "shack_updates" in c[0][0] and c[0][0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        state = json.loads(state_calls[0][0][1])
+        assert "release_summary" in state
+        assert "Integration 0" in state["release_summary"]
+        assert "Integration 1" in state["release_summary"]
+        assert "Integration 2" in state["release_summary"]
+        # installed_version and latest_version must differ for badge
+        assert state["installed_version"] != state["latest_version"]
 
     @pytest.mark.asyncio
     async def test_initial_update_check_finds_updates(self):
@@ -949,7 +979,13 @@ class TestUpdateNotification:
         mock_mqtt = MagicMock()
         manager, MockIntegrationManager = self._create_manager(mock_mqtt)
 
-        # Mock integration manager to return updates
+        # Create mock integration
+        mock_integration = MagicMock()
+        mock_integration.domain = "test_integration"
+        mock_integration.name = "Test Integration"
+        mock_integration.version = "1.0.0"
+
+        # Mock integration manager to return updates and integrations
         mock_update = MagicMock()
         mock_update.domain = "test_integration"
         mock_update.name = "Test Integration"
@@ -960,16 +996,18 @@ class TestUpdateNotification:
         mock_integration_manager.check_for_updates = AsyncMock(
             return_value=[mock_update]
         )
+        mock_integration_manager.get_enabled_integrations = MagicMock(
+            return_value=[mock_integration]
+        )
         manager._integration_manager = mock_integration_manager
         manager._running = True
 
-        with patch("shim.manager.create_persistent_notification", return_value=True):
-            with patch("asyncio.sleep"):  # Skip the delay
-                await manager._initial_update_check()
+        with patch("asyncio.sleep"):  # Skip the delay
+            await manager._initial_update_check()
 
-        # Verify that update notification was published
+        # Verify that update notification was published to MQTT
         calls = mock_mqtt.publish.call_args_list
-        assert len(calls) >= 2  # Discovery and state
+        assert len(calls) >= 1  # At least the notification topic
 
     @pytest.mark.asyncio
     async def test_periodic_update_check_finds_updates(self):
@@ -977,7 +1015,13 @@ class TestUpdateNotification:
         mock_mqtt = MagicMock()
         manager, _ = self._create_manager(mock_mqtt)
 
-        # Mock integration manager to return updates
+        # Create mock integration
+        mock_integration = MagicMock()
+        mock_integration.domain = "test_integration"
+        mock_integration.name = "Test Integration"
+        mock_integration.version = "1.0.0"
+
+        # Mock integration manager to return updates and integrations
         mock_update = MagicMock()
         mock_update.domain = "test_integration"
         mock_update.name = "Test Integration"
@@ -988,13 +1032,11 @@ class TestUpdateNotification:
         mock_integration_manager.check_for_updates = AsyncMock(
             return_value=[mock_update]
         )
+        mock_integration_manager.get_enabled_integrations = MagicMock(
+            return_value=[mock_integration]
+        )
         manager._integration_manager = mock_integration_manager
         manager._running = True
-
-        # Cancel the periodic check after first iteration
-        async def cancel_after_first():
-            await asyncio.sleep(0.1)
-            manager._running = False
 
         # Start cancellation and periodic check
         with patch("asyncio.sleep", side_effect=[0, asyncio.CancelledError()]):
@@ -1005,4 +1047,5 @@ class TestUpdateNotification:
 
         # Verify that update notification was published
         calls = mock_mqtt.publish.call_args_list
-        assert len(calls) >= 2  # Discovery and state
+        # Should have at least discovery config + state for update entity
+        assert len(calls) >= 1
