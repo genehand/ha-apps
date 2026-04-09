@@ -110,6 +110,46 @@ class Camera(Entity):
         # Publish empty image initially (entity will update with actual image)
         mqtt.publish(image_topic, "", qos=0, retain=True)
 
+    def _mqtt_publish(self) -> None:
+        """Publish camera image to MQTT.
+
+        Fetches the current camera image via async_camera_image() and publishes
+        it to the image_topic as raw bytes, as required by the MQTT camera integration.
+        """
+        if not self.entity_id:
+            return
+
+        if not hasattr(self.hass, "_mqtt_client"):
+            return
+
+        mqtt = self.hass._mqtt_client
+        if not mqtt.is_connected():
+            return
+
+        # Skip streaming cameras - they don't work well over MQTT
+        if self.is_streaming or isinstance(self, MjpegCamera):
+            return
+
+        base_topic = self._get_mqtt_base_topic()
+        if not base_topic:
+            return
+
+        image_topic = f"{base_topic}/image"
+
+        # Schedule async image fetch and publish
+        async def _publish_image():
+            try:
+                image_bytes = await self.async_camera_image()
+                if image_bytes:
+                    mqtt.publish(image_topic, image_bytes, qos=0, retain=True)
+            except Exception:
+                # Silently ignore errors - camera may not have image available yet
+                pass
+
+        # Schedule the async task
+        if hasattr(self.hass, "async_add_job"):
+            self.hass.async_add_job(_publish_image)
+
 
 class MjpegCamera(Camera):
     """MJPEG streaming camera entity."""
