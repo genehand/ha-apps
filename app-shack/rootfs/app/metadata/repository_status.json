@@ -19,7 +19,7 @@
       "notes": "Rinnai water heater integration (custom repo)"
     },
     "finity69x2/nws_alerts": {
-      "version": "6.6.1"
+      "version": "6.7"
     },
     "heyajohnny/cryptoinfo": {
       "version": "1.0.10"
@@ -40,7 +40,7 @@
       "version": "1.13.3"
     },
     "schmittx/home-assistant-leviton-decora-smart-wifi": {
-      "version": "1.7.1",
+      "version": "1.7.2",
       "notes": "Leviton Decora Smart WiFi switches (custom repo)"
     },
     "xZetsubou/hass-localtuya": {

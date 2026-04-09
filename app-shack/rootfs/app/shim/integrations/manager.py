@@ -178,6 +178,9 @@ class IntegrationManager:
         # Periodic update check task
         self._update_check_task: Optional[asyncio.Task] = None
 
+        # Callback for when updates are found (set externally, e.g., by ShimManager)
+        self._on_updates_found: Optional[callable] = None
+
         self._load_integrations()
         self._load_custom_repos()
         self._load_unsupported_repos()
@@ -864,6 +867,16 @@ class IntegrationManager:
             # Fallback to simple string comparison
             return latest != current
 
+    def set_updates_found_callback(self, callback: Optional[callable]) -> None:
+        """Set callback to be called when updates are found during periodic check.
+
+        Args:
+            callback: Async or sync callable that will be called with the list
+                     of IntegrationInfo objects that have updates available.
+        """
+        self._on_updates_found = callback
+        _LOGGER.debug(f"Set updates found callback: {callback is not None}")
+
     async def start_background_tasks(self):
         """Start background tasks for install queue and update checking."""
         if self._install_worker_task is None or self._install_worker_task.done():
@@ -997,6 +1010,15 @@ class IntegrationManager:
                 updates = await self.check_for_updates()
                 if updates:
                     _LOGGER.info(f"Found {len(updates)} available updates")
+                    # Notify callback if set (e.g., to publish MQTT update entity)
+                    if self._on_updates_found:
+                        try:
+                            if asyncio.iscoroutinefunction(self._on_updates_found):
+                                await self._on_updates_found(updates)
+                            else:
+                                self._on_updates_found(updates)
+                        except Exception as e:
+                            _LOGGER.error(f"Error in updates found callback: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:

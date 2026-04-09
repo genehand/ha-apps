@@ -95,6 +95,10 @@ class ShimManager:
         await self._integration_manager.fetch_hacs_repositories()
 
         # Start integration manager background tasks
+        # Set callback so periodic updates trigger MQTT publish
+        self._integration_manager.set_updates_found_callback(
+            self._on_updates_found_callback
+        )
         await self._integration_manager.start_background_tasks()
 
         _LOGGER.debug("Shim Manager phase 1 complete (ready for web server)")
@@ -832,6 +836,17 @@ class ShimManager:
         """Re-check for updates and re-publish the update entity."""
         _LOGGER.debug("Refreshing update entity after install")
         updates = await self._integration_manager.check_for_updates()
+        await self._publish_update_notification(updates)
+
+    async def _on_updates_found_callback(self, updates: List) -> None:
+        """Callback for when periodic update check finds updates.
+
+        This is called by IntegrationManager when it finds updates during
+        its periodic check, allowing us to publish to MQTT.
+        """
+        _LOGGER.info(
+            f"Periodic check found {len(updates)} updates, publishing notification"
+        )
         await self._publish_update_notification(updates)
 
     async def create_config_entry(

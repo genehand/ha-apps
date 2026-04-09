@@ -5,7 +5,6 @@ This app creates a shim environment that lets you run [HACS](https://www.hacs.xy
 ## Features
 
 - **HACS Integration Support**: Install and run HACS integrations from the official repository
-- **Web UI Management**: FastAPI + HTMX interface for browsing, installing, and configuring integrations
 - **MQTT Auto-Discovery**: Entities automatically appear in Home Assistant via MQTT discovery
 - **Config Flow Support**: Guided setup for integrations that require configuration
 - **Auto-Updates**: Automatic update checking for installed integrations
@@ -74,13 +73,3 @@ Many HACS integrations work out of the box. To add a new integration:
 4. Entities should appear in Home Assistant automatically
 
 For integrations that need special handling, see the `shim/` directory for platform implementations.
-
-## Contributing
-
-Contributions welcome! Areas needing help:
-
-- Additional entity platform support
-- Better error handling for edge cases
-- Web UI improvements
-- Documentation
-- Test coverage
