@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock, mpsc};
+use tokio::sync::{broadcast, RwLock};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, ConnectReturnCode};
 use tracing::{info, debug, error};
 use serde_json::json;
@@ -8,15 +8,12 @@ use chrono::Utc;
 
 use crate::Config;
 use crate::PlaybackState;
-use crate::PlayerCommand;
 
 /// MQTT bridge for Home Assistant discovery
 pub struct MqttBridge {
     config: Config,
     playback_state: Arc<RwLock<PlaybackState>>,
     state_rx: broadcast::Receiver<()>,
-    #[allow(dead_code)]
-    command_tx: mpsc::UnboundedSender<PlayerCommand>,
 }
 
 impl MqttBridge {
@@ -24,13 +21,11 @@ impl MqttBridge {
         config: Config,
         playback_state: Arc<RwLock<PlaybackState>>,
         state_rx: broadcast::Receiver<()>,
-        command_tx: mpsc::UnboundedSender<PlayerCommand>,
     ) -> Self {
         Self {
             config,
             playback_state,
             state_rx,
-            command_tx,
         }
     }
 

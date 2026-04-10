@@ -10,7 +10,7 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tracing::{error, info};
 
 use crate::{Config, PlaybackState};
@@ -54,6 +54,7 @@ pub struct AppState {
     pub playback_state: Arc<RwLock<PlaybackState>>,
     pub token_file: std::path::PathBuf,
     oauth_flows: Arc<Mutex<HashMap<String, OauthFlowState>>>,
+    token_tx: broadcast::Sender<()>,
 }
 
 impl AppState {
@@ -61,12 +62,14 @@ impl AppState {
         config: Config,
         playback_state: Arc<RwLock<PlaybackState>>,
         token_file: std::path::PathBuf,
+        token_tx: broadcast::Sender<()>,
     ) -> Self {
         Self {
             config,
             playback_state,
             token_file,
             oauth_flows: Arc::new(Mutex::new(HashMap::new())),
+            token_tx,
         }
     }
 
@@ -83,9 +86,9 @@ impl AppState {
         token::load_token(&self.token_file).await
     }
 
-    /// Save token to file
+    /// Save token to file and notify daemon
     pub async fn save_token(&self, token: &Token) -> anyhow::Result<()> {
-        token::save_token(&self.token_file, token).await
+        token::save_token(&self.token_file, token, Some(&self.token_tx)).await
     }
 
     /// Clear token (logout)
@@ -805,10 +808,13 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         
+        let (token_tx, _) = broadcast::channel(1);
+
         AppState::new(
             config,
             Arc::new(RwLock::new(PlaybackState::default())),
             token_file,
+            token_tx,
         )
     }
 

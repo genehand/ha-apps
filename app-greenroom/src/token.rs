@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tokio::sync::broadcast;
+use tracing::{debug, info};
 
 /// OAuth token storage structure used across the application.
 /// 
@@ -27,14 +28,27 @@ impl Token {
 }
 
 /// Save a token to a file, creating parent directories if needed.
-pub async fn save_token(token_file: &PathBuf, token: &Token) -> anyhow::Result<()> {
+/// 
+/// If a `notify_tx` is provided, sends a notification after successful save.
+pub async fn save_token(
+    token_file: &PathBuf,
+    token: &Token,
+    notify_tx: Option<&broadcast::Sender<()>>,
+) -> anyhow::Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = token_file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let contents = serde_json::to_string_pretty(token)?;
     tokio::fs::write(token_file, contents).await?;
-    info!("Saved OAuth token to {}", token_file.display());
+    debug!("Saved OAuth token to {}", token_file.display());
+
+    // Notify daemon that a new token is available
+    if let Some(tx) = notify_tx {
+        let _ = tx.send(());
+        debug!("Sent token notification to daemon");
+    }
+
     Ok(())
 }
 

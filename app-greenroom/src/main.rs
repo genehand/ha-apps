@@ -6,7 +6,7 @@ mod web;
 use std::sync::Arc;
 use std::path::PathBuf;
 use clap::Parser;
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{info, error};
 
 use crate::librespot::SpotifyClient;
@@ -211,15 +211,16 @@ async fn main() -> anyhow::Result<()> {
     
     // State change notification channel (for pushing updates to MQTT)
     let (state_tx, state_rx) = broadcast::channel(16);
-    
-    // Command channel (kept for potential future use, currently unused)
-    let (command_tx, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+
+    // Token notification channel (for notifying daemon of new tokens from web UI)
+    let (token_tx, token_rx) = broadcast::channel(1);
 
     // Start web server for OAuth UI
     let app_state = AppState::new(
         config.clone(),
         playback_state.clone(),
         token_file.clone(),
+        token_tx,
     );
     let web_app = router(app_state);
     let web_port = cli.web_port;
@@ -249,7 +250,6 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         playback_state.clone(),
         state_rx,
-        command_tx,
     );
 
     // Start Spotify client
@@ -257,8 +257,8 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         playback_state.clone(),
         state_tx,
-        command_rx,
         token_file,
+        token_rx,
     );
 
     // Set up shutdown signal handler
