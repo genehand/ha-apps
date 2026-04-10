@@ -372,7 +372,20 @@ impl SpotifyClient {
 
         debug!("Subscribed to cluster updates! Monitoring playback from other Spotify devices...");
 
-        {
+        // Try to fetch current playback state immediately after connecting
+        // This helps us show the current track instead of waiting for the next update
+        match self.request_current_state(&session).await {
+            Ok(()) => debug!("Requested current playback state"),
+            Err(e) => debug!("Could not request current state: {}", e),
+        }
+
+        // Only reset to "Waiting" if we don't have current playback info
+        let has_current_info = {
+            let state = self.playback_state.read().await;
+            state.track.is_some() && state.track.as_ref().unwrap() != "Waiting for playback..."
+        };
+
+        if !has_current_info {
             let mut state = self.playback_state.write().await;
             state.track = Some("Waiting for playback...".to_string());
             state.artist = Some("Monitor active".to_string());
@@ -390,9 +403,19 @@ impl SpotifyClient {
 
         let mut last_update = Instant::now();
         let silence_warning_threshold = Duration::from_secs(60);
-        let silence_timeout = Duration::from_secs(120); // Force reconnect after 2 min silence
+        let silence_timeout_idle = Duration::from_secs(120); // 2 min when idle/paused
+        let silence_timeout_playing = Duration::from_secs(30); // 30 sec when playing
+        let mut consecutive_errors = 0u32;
 
         loop {
+            // Determine timeout based on current playback state
+            let is_playing = playback_state.read().await.is_playing;
+            let silence_timeout = if is_playing {
+                silence_timeout_playing
+            } else {
+                silence_timeout_idle
+            };
+
             tokio::select! {
                 cluster_result = cluster_updates.next() => {
                     match cluster_result {
@@ -402,6 +425,11 @@ impl SpotifyClient {
                                 info!("Connection restored - received update after {}s silence", elapsed.as_secs());
                             }
                             last_update = Instant::now();
+                            // Reset error count on successful update
+                            if consecutive_errors > 0 {
+                                debug!("Resetting error count after successful update");
+                                consecutive_errors = 0;
+                            }
                             self.handle_cluster_update(&cluster_update, &playback_state, &session_clone, &state_tx).await;
                         }
                         Some(Err(e)) => {
@@ -423,7 +451,9 @@ impl SpotifyClient {
                 _ = tokio::time::sleep(silence_timeout) => {
                     let elapsed = last_update.elapsed();
                     if elapsed >= silence_timeout {
-                        error!("No updates received for {}s, forcing reconnection", elapsed.as_secs());
+                        consecutive_errors += 1;
+                        error!("No updates received for {}s ({} consecutive), forcing reconnection", 
+                            elapsed.as_secs(), consecutive_errors);
                         return Err(anyhow::anyhow!("Connection timed out - no updates for {}s", elapsed.as_secs()));
                     }
                 }
@@ -584,7 +614,34 @@ impl SpotifyClient {
             }
         }
     }
-    
+
+    /// Request current playback state from Spotify after connecting.
+    /// This helps us get the current track immediately instead of waiting for the next update.
+    async fn request_current_state(&self, session: &Session) -> anyhow::Result<()> {
+        // In the Connect protocol, we can request the current state by sending
+        // a PUT state request with the current device state. This triggers Spotify
+        // to send us the current cluster state including active playback.
+        debug!("Requesting current playback state from Spotify...");
+
+        // Create a state request that asks for current state without changing anything
+        let put_state_request = create_join_cluster_request(session, &self.config.device_name);
+
+        // Send the request - this should trigger a cluster update response
+        match session.spclient()
+            .put_connect_state_request(&put_state_request)
+            .await {
+            Ok(_bytes) => {
+                debug!("Sent state request, waiting for cluster update...");
+                // Give Spotify a moment to respond
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                Ok(())
+            }
+            Err(e) => {
+                Err(anyhow::anyhow!("Failed to request current state: {}", e))
+            }
+        }
+    }
+
     async fn run_demo_mode(&mut self) -> anyhow::Result<()> {
         {
             let mut state = self.playback_state.write().await;
