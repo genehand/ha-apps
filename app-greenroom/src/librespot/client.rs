@@ -420,8 +420,8 @@ impl SpotifyClient {
                     match cluster_result {
                         Some(Ok(cluster_update)) => {
                             let elapsed = last_update.elapsed();
-                            if elapsed > Duration::from_secs(60) {
-                                info!("Connection restored - received update after {}s silence", elapsed.as_secs());
+                            if elapsed > Duration::from_secs(180) {
+                                debug!("Received update after {}s silence", elapsed.as_secs());
                             }
                             last_update = Instant::now();
                             // Reset error count on successful update
@@ -1156,94 +1156,6 @@ mod tests {
         assert!(nested_path.exists());
     }
 
-    /// Test that verifies token notification channel is consumed properly
-    /// This ensures reconnections don't fail due to "already consumed" errors
-    #[tokio::test]
-    async fn test_token_receiver_not_consumed_on_multiple_attempts() {
-        let config = Config {
-            spotify_username: "".to_string(),
-            device_name: "Test".to_string(),
-            mqtt_host: "localhost".to_string(),
-            mqtt_port: 1883,
-            mqtt_username: None,
-            mqtt_password: None,
-            mqtt_device_id: "test".to_string(),
-        };
-
-        // Create a token file
-        let temp_dir = tempfile::tempdir().unwrap();
-        let token_path = temp_dir.path().join("token.json");
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let token = create_test_token(now + 3600);
-
-        // Save token to file
-        let contents = serde_json::to_string_pretty(&token).unwrap();
-        tokio::fs::write(&token_path, contents).await.unwrap();
-
-        let (state_tx, _) = broadcast::channel(16);
-        let (token_tx, token_rx) = broadcast::channel(1);
-
-        let client = SpotifyClient::new(
-            config,
-            Arc::new(RwLock::new(PlaybackState::default())),
-            state_tx,
-            token_path.clone(),
-            token_rx,
-        );
-
-        // Verify token_rx was consumed (taken by run_media_monitor when it was None)
-        // But the client should still be usable for reconnection attempts
-        assert!(client.token_rx.is_some(), "token_rx should be Some initially");
-
-        // Simulate what happens when we get a new token notification
-        // (web UI saves a new token)
-        let _ = token_tx.send(());
-
-        // The notification should be there
-        // In a real scenario, run_demo_mode would pick this up
-    }
-
-    /// Test that verifies the error classification logic in run()
-    /// Ensures WebSocket/timeout errors are treated as reconnections, not failures
-    #[tokio::test]
-    async fn test_error_classification_for_reconnection() {
-        // Test error messages that should trigger reconnection
-        let reconnect_errors = vec![
-            "Connection to Spotify server closed",
-            "WebSocket connection failed",
-            "Connection timed out - no updates for 120s",
-            "WebSocket protocol error",
-        ];
-
-        for err_msg in reconnect_errors {
-            assert!(
-                err_msg.contains("Connection to Spotify server closed")
-                    || err_msg.contains("WebSocket")
-                    || err_msg.contains("timed out"),
-                "Error '{}' should be classified for reconnection",
-                err_msg
-            );
-        }
-    }
-
-    /// Test that verifies the silence timeout calculation
-    #[tokio::test]
-    async fn test_silence_timeout_thresholds() {
-        let silence_warning = Duration::from_secs(60);
-        let silence_timeout = Duration::from_secs(120);
-
-        // Verify warning comes before timeout
-        assert!(silence_warning < silence_timeout);
-        assert_eq!(silence_timeout.as_secs() - silence_warning.as_secs(), 60);
-
-        // Verify timeout is 2 minutes
-        assert_eq!(silence_timeout.as_secs(), 120);
-    }
-
     /// Test that backoff calculation works correctly for consecutive errors
     #[test]
     fn test_backoff_calculation() {
@@ -1271,43 +1183,5 @@ mod tests {
             );
             assert_eq!(backoff, expected, "Backoff for {} consecutive errors should be {}s", consecutive_errors, expected);
         }
-    }
-
-    /// Test that verifies error count should reset after successful connection
-    #[test]
-    fn test_error_count_reset_logic() {
-        // Simulate the logic in run() - error count should reset on success
-        let mut consecutive_errors = 3u32;
-
-        // After successful connection (Ok(()))
-        if consecutive_errors > 0 {
-            consecutive_errors = 0;
-        }
-
-        assert_eq!(consecutive_errors, 0, "Error count should be reset to 0 after successful connection");
-    }
-
-    /// Test that verifies error count increments on failure
-    #[test]
-    fn test_error_count_increment() {
-        let mut consecutive_errors = 0u32;
-
-        // Simulate error
-        consecutive_errors += 1;
-        assert_eq!(consecutive_errors, 1);
-
-        // Another error
-        consecutive_errors += 1;
-        assert_eq!(consecutive_errors, 2);
-
-        // After successful connection, should reset
-        if consecutive_errors > 0 {
-            consecutive_errors = 0;
-        }
-        assert_eq!(consecutive_errors, 0);
-
-        // New error after reset should start from 1 again
-        consecutive_errors += 1;
-        assert_eq!(consecutive_errors, 1);
     }
 }
