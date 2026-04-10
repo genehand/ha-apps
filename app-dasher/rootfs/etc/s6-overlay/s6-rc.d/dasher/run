@@ -1,0 +1,21 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community Add-on: Dasher
+# Starts Dasher
+# ==============================================================================
+
+# Set log level from add-on configuration (default to info if not set)
+log_level=$(bashio::config 'log_level')
+export RUST_LOG=${log_level:-info}
+
+# Get configuration values from add-on options
+export HA_HOST=$(bashio::config 'ha_host')
+export TRANSPARENT=$(bashio::config 'transparent')
+
+bashio::log.info "Home Assistant host: ${HA_HOST}"
+bashio::log.info "Transparent mode: ${TRANSPARENT}"
+bashio::log.info "Starting Dasher..."
+
+# Run dasher (all config via environment variables)
+exec /usr/local/bin/dasher
