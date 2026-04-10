@@ -1,9 +1,3 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:trixie
-FROM $BUILD_FROM
-
-ARG BUILD_VERSION
-ENV BUILD_VERSION=${BUILD_VERSION}
-
 # ====== Build stage ======
 FROM rust:trixie AS builder
 
@@ -16,10 +10,11 @@ COPY src ./src
 # Build release binary
 RUN cargo build --release
 
-# ====== Runtime stage ======
-FROM ${BUILD_FROM}
 
-# Install runtime dependencies (even with null audio backend, librespot links these)
+# ====== Runtime stage ======
+FROM ghcr.io/home-assistant/base-debian:trixie
+
+# Install librespot dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     libssl3 \
