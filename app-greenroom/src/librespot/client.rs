@@ -58,11 +58,13 @@ pub struct SpotifyClient {
 }
 
 impl SpotifyClient {
-    pub fn new(config: Config, playback_state: Arc<RwLock<PlaybackState>>, state_tx: broadcast::Sender<()>, command_rx: mpsc::UnboundedReceiver<PlayerCommand>) -> Self {
-        let token_file = std::env::var("TOKEN_FILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("greenroom_token.json"));
-        
+    pub fn new(
+        config: Config,
+        playback_state: Arc<RwLock<PlaybackState>>,
+        state_tx: broadcast::Sender<()>,
+        command_rx: mpsc::UnboundedReceiver<PlayerCommand>,
+        token_file: PathBuf,
+    ) -> Self {
         Self {
             config,
             playback_state,
@@ -72,16 +74,80 @@ impl SpotifyClient {
         }
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
-        if self.config.spotify_username.is_empty() {
-            info!("No Spotify username configured, running in demo mode");
-            return self.run_demo_mode().await;
+    /// Check if a valid token exists (for web UI status)
+    pub async fn has_valid_token(&self) -> bool {
+        if !self.token_file.exists() {
+            return false;
         }
 
+        match tokio::fs::read_to_string(&self.token_file).await {
+            Ok(contents) => {
+                match serde_json::from_str::<StoredToken>(&contents) {
+                    Ok(token) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        // Valid if not expired (with 5 min buffer)
+                        token.expires_at > now + 300
+                    }
+                    Err(_) => false,
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Send a Home Assistant persistent notification
+    async fn send_ha_notification(&self, title: &str, message: &str) {
+        // Use HA Supervisor API to create notification
+        let supervisor_token = match std::env::var("SUPERVISOR_TOKEN") {
+            Ok(t) => t,
+            Err(_) => {
+                warn!("SUPERVISOR_TOKEN not set, cannot send HA notification");
+                return;
+            }
+        };
+
+        let client = reqwest::Client::new();
+        let url = "http://supervisor/core/api/services/persistent_notification/create";
+        
+        let body = serde_json::json!({
+            "title": title,
+            "message": message,
+            "notification_id": "greenroom_auth_error"
+        });
+
+        match client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", supervisor_token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(_) => info!("Sent HA notification: {}", title),
+            Err(e) => warn!("Failed to send HA notification: {}", e),
+        }
+    }
+
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let mut consecutive_errors: u32 = 0;
         let max_backoff_secs = 300;
         
         loop {
+            // Check for token first - if present, try to connect
+            let has_token = self.has_valid_token().await;
+            
+            if !has_token && self.config.spotify_username.is_empty() {
+                info!("No Spotify token or username configured, running in demo mode");
+                info!("Use the web UI to authenticate with Spotify");
+                // Run demo mode until token appears
+                self.run_demo_mode().await?;
+                // Demo mode returned (token appeared), continue to connection
+                continue;
+            }
+            
             info!("Attempting to connect to Spotify...");
             
             match self.attempt_connection().await {
@@ -175,6 +241,10 @@ impl SpotifyClient {
     }
 
     async fn save_token(&self, token: &StoredToken) -> anyhow::Result<()> {
+        // Ensure parent directory exists
+        if let Some(parent) = self.token_file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
         let contents = serde_json::to_string_pretty(token)?;
         tokio::fs::write(&self.token_file, contents).await?;
         info!("Saved OAuth token to {}", self.token_file.display());
@@ -210,10 +280,21 @@ impl SpotifyClient {
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create OAuth client: {}", e))?;
 
-        let new_token = oauth_client
+        let new_token = match oauth_client
             .refresh_token_async(&token.refresh_token)
             .await
-            .map_err(|e| anyhow::anyhow!("Token refresh failed: {}", e))?;
+        {
+            Ok(t) => t,
+            Err(e) => {
+                error!("Token refresh failed: {}", e);
+                // Send HA notification about auth failure
+                self.send_ha_notification(
+                    "Greenroom Authentication Failed",
+                    "Spotify token refresh failed. Please reconnect your account through the Greenroom web UI."
+                ).await;
+                return Err(anyhow::anyhow!("Token refresh failed: {}", e));
+            }
+        };
 
         info!("Token refreshed successfully!");
         
@@ -494,19 +575,27 @@ impl SpotifyClient {
         }
     }
     
-    async fn run_demo_mode(self) -> anyhow::Result<()> {
+    async fn run_demo_mode(&mut self) -> anyhow::Result<()> {
         {
             let mut state = self.playback_state.write().await;
             state.track = Some("Not Connected".to_string());
-            state.artist = Some("Configure Spotify credentials in add-on settings".to_string());
-            state.album = Some("-".to_string());
+            state.artist = Some("Open the Greenroom web UI to connect Spotify".to_string());
+            state.album = Some("Click the Greenroom panel in the sidebar".to_string());
             state.is_playing = false;
             state.is_idle = true;
             state.volume = 0.0;
         }
 
+        // Keep running but periodically check if token appears
         loop {
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            // Check for token every 10 seconds
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            
+            if self.has_valid_token().await {
+                info!("Token detected! Attempting to connect...");
+                // Token appeared, return to trigger reconnection
+                return Ok(());
+            }
         }
     }
 }

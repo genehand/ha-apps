@@ -1,0 +1,43 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community Add-on: Greenroom
+# Starts Greenroom
+# ==============================================================================
+
+export RUST_LOG=info
+
+# Get configuration values from add-on options
+export SPOTIFY_USERNAME=$(bashio::config 'spotify_username')
+export DEVICE_NAME=$(bashio::config 'device_name')
+
+# MQTT configuration - try Supervisor API first, fallback to user config
+if bashio::services.available 'mqtt'; then
+    export MQTT_HOST=$(bashio::services 'mqtt' 'host')
+    export MQTT_PORT=$(bashio::services 'mqtt' 'port')
+    export MQTT_USERNAME=$(bashio::services 'mqtt' 'username')
+    export MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
+    bashio::log.info "Using MQTT credentials from Supervisor"
+else
+    export MQTT_HOST=$(bashio::config 'mqtt_host')
+    export MQTT_PORT=$(bashio::config 'mqtt_port')
+    export MQTT_USERNAME=$(bashio::config 'mqtt_username')
+    export MQTT_PASSWORD=$(bashio::config 'mqtt_password')
+    bashio::log.info "Using MQTT credentials from add-on config"
+fi
+
+# Web UI configuration for ingress
+export GREENROOM_WEB_PORT=8099
+# Ingress path is provided by HA supervisor via env var
+export INGRESS_PATH=$(bashio::addon.ingress_entry)
+
+# Token file location (using add-on data directory)
+export TOKEN_FILE=/data/greenroom_token.json
+
+bashio::log.info "Device name: ${DEVICE_NAME}"
+bashio::log.info "Ingress path: ${INGRESS_PATH}"
+bashio::log.info "MQTT broker: ${MQTT_HOST}:${MQTT_PORT}"
+bashio::log.info "Starting Greenroom..."
+
+# Run greenroom (all config via environment variables)
+exec greenroom

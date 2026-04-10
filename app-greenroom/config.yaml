@@ -1,6 +1,6 @@
 slug: "app-greenroom"
 name: "Greenroom"
-version: "0.1.0"
+version: "0.1.4"
 
 #image: "ghcr.io/genehand/greenroom-{arch}"
 
@@ -18,13 +18,32 @@ boot: auto
 
 host_network: true
 
+# Ingress configuration for OAuth web UI
+ingress: true
+ingress_port: 8099
+ingress_entry: /
+
+ports:
+  8099/tcp: null  # Not exposed externally, only via ingress
+
+services:
+  - mqtt:want
+
 options:
   spotify_username: ""
   device_name: "Greenroom"
+  mqtt_host: core-mosquitto
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
 
 schema:
   spotify_username: str
   device_name: str
+  mqtt_host: str?
+  mqtt_port: int?
+  mqtt_username: str?
+  mqtt_password: password?
 
 panel_icon: mdi:spotify
 panel_title: "Greenroom"

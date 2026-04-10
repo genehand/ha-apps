@@ -108,6 +108,10 @@ impl MqttBridge {
                                         error!("Failed to publish discovery configs: {}", e);
                                     } else {
                                         discovery_published = true;
+                                        // Publish initial state so sensor shows up immediately
+                                        if let Err(e) = self.publish_state(&client, device_id).await {
+                                            error!("Failed to publish initial state: {}", e);
+                                        }
                                     }
                                 }
                                 // No command subscription - this is a monitor-only integration

@@ -24,6 +24,10 @@ Unlike other Spotify integrations, Greenroom uses the **Spotify Connect protocol
 
 ## Architecture
 
+- **Web UI**: Axum-based HTTP server for OAuth authentication (Home Assistant ingress)
+  - PKCE OAuth flow to Spotify (no client secrets)
+  - Minimal HTMX frontend with status display
+  - Accessible via HA sidebar panel
 - **Spotify Integration**: Uses librespot to connect to Spotify's WebSocket cluster
   - Monitors playback from any device on your account (phone, desktop, smart speaker)
   - Receives real-time track/artist/album metadata via Spotify's internal protocol
@@ -33,6 +37,8 @@ Unlike other Spotify integrations, Greenroom uses the **Spotify Connect protocol
   - Main sensor with state (playing/paused) and JSON attributes
   - Auto-discovery via `homeassistant/*/greenroom/config`
 
+All three components (web UI, Spotify daemon, MQTT bridge) run concurrently in a single binary.
+
 ## File Structure
 
 ```
@@ -40,48 +46,73 @@ app-greenroom/
 ├── AGENTS.md              # This file
 ├── config.yaml            # Add-on configuration
 ├── Dockerfile             # Multi-stage Rust build
-└── rootfs/app/            # Rust application
-    ├── Cargo.toml         # Rust dependencies
-    └── src/
-        ├── main.rs        # Entry point
-        ├── librespot/     # Spotify client (OAuth, cluster monitoring, command sender)
-        └── mqtt.rs        # MQTT bridge (HA discovery, command receiver)
+├── build.sh               # Local build script
+├── Cargo.toml             # Rust dependencies
+├── build.rs               # Build script for vergen
+├── src/                   # Rust application
+│   ├── main.rs            # Entry point - spawns web server + daemon + mqtt
+│   ├── web.rs             # Web UI (OAuth flow, status page)
+│   ├── mqtt.rs            # MQTT bridge (HA discovery, state publishing)
+│   └── librespot/         # Spotify client (cluster monitoring, token refresh)
+│       ├── mod.rs
+│       └── client.rs
+└── rootfs/
+    └── etc/services.d/greenroom/
+        ├── run            # S6 service run script
+        └── finish         # S6 service finish script
 ```
 
 ## Build
 
 ```bash
 # Build locally
-cd rootfs/app
-cargo build
+cargo build --release
+
+# Run locally (requires TOKEN_FILE env or creates local file)
 cargo run
 ```
 
-Or with Docker:
+Or build the Docker image:
 ```bash
 docker build --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base:latest -t app-greenroom .
 ```
 
+The binary will be at `target/release/greenroom`.
+
 ## Configuration
 
-**OAuth Login:**
+### OAuth Setup (Web UI)
 
-1. Start the add-on
-2. Open the web UI (or check logs for auth URL)
-3. Log in to Spotify in your browser
-4. Token is saved for future sessions
+1. Install and start the Greenroom add-on
+2. Open the Greenroom panel from the HA sidebar (uses ingress)
+3. Click "Connect Spotify" button
+4. Log in to Spotify and authorize Greenroom
+5. Token is automatically saved and the daemon connects
+
+The web UI remains accessible for checking connection status and playback info. Use "Disconnect" to clear stored credentials.
+
+### Legacy OAuth (CLI)
+
+If you prefer not to use the web UI, you can still use librespot's built-in OAuth flow:
+
+1. Set `spotify_username` in add-on configuration
+2. Start the add-on
+3. Check logs for auth URL or use the web UI button
+4. Token is saved to `/data/greenroom_token.json`
 
 ### Environment Variables / CLI Options
 
 | Variable | CLI Option | Default | Description |
 |----------|------------|---------|-------------|
-| `SPOTIFY_USERNAME` | `--spotify-username` | - | Spotify account email (optional) |
+| `SPOTIFY_USERNAME` | `--spotify-username` | - | Spotify account email (optional, legacy OAuth) |
 | `DEVICE_NAME` | `--device-name` | "Greenroom" | Name shown in HA and Spotify |
-| `MQTT_HOST` | `--mqtt-host` | "homeassistant.local" | MQTT broker hostname |
+| `MQTT_HOST` | `--mqtt-host` | "core-mosquitto" | MQTT broker hostname |
 | `MQTT_PORT` | `--mqtt-port` | 1883 | MQTT broker port |
-| `MQTT_USERNAME` | `--mqtt-username` | - | MQTT auth username |
-| `MQTT_PASSWORD` | `--mqtt-password` | - | MQTT auth password |
-| `MQTT_DEVICE_ID` | `--mqtt-device-id` | "greenroom" | Unique device ID for topics |
+| `MQTT_USERNAME` | `--mqtt-username` | - | MQTT auth username (auto-fetched in add-on) |
+| `MQTT_PASSWORD` | `--mqtt-password` | - | MQTT auth password (auto-fetched in add-on) |
+| `MQTT_DEVICE_ID` | `--mqtt-device-id` | "greenroom" | MQTT device ID (used in topic names) |
+| `GREENROOM_WEB_PORT` | `--web-port` | 8099 | Port for web UI (internal, via ingress) |
+| `TOKEN_FILE` | - | `/data/greenroom_token.json` | Path to store OAuth token |
 | `RUST_LOG` | `--log-level` | "info" | Log level (trace/debug/info/warn/error) |
 
 CLI options take precedence over environment variables.
@@ -95,12 +126,31 @@ CLI options take precedence over environment variables.
 
 ## How It Works
 
-1. **OAuth Authentication**: User logs in via browser using PKCE (no client secrets), token saved to `/config`
+### Initial Setup
+
+1. **Web UI OAuth**: User opens Greenroom panel in HA sidebar, clicks "Connect Spotify"
+2. **PKCE Flow**: Server generates PKCE challenge, redirects to Spotify auth
+3. **Callback**: Spotify redirects back to ingress URL with authorization code
+4. **Token Exchange**: Server exchanges code for access/refresh tokens via Spotify's token endpoint
+5. **Token Storage**: Token saved to `/data/greenroom_token.json`
+
+### Runtime Operation
+
+1. **Token Detection**: Daemon detects valid token and connects to Spotify using librespot
 2. **Spotify Session**: Establishes session with `streaming` OAuth scope (not Web API scopes)
 3. **Cluster Join**: Sends `PutStateRequest` with `NEW_DEVICE` to join Spotify's Connect cluster via WebSocket
 4. **WebSocket Monitoring**: Listens to `hm://connect-state/v1/cluster` for real-time playback updates
 5. **Metadata Fetching**: Fetches track/album/artist metadata via librespot's internal Mercury API (not Web API)
-6. **MQTT Publishing**: Publishes to `greenroom/<device_id>/state` and `.../attributes`
+6. **MQTT Publishing**: Publishes to `greenroom/<device_id>/state` via MQTT discovery
+7. **Token Refresh**: Daemon automatically refreshes token before expiration; on failure, sends HA notification and enters demo mode
+
+### Demo Mode
+
+If no valid token exists at startup:
+- Daemon enters demo mode with "Not Connected" status
+- Web UI shows "Connect Spotify" button
+- Daemon polls every 10 seconds for new token
+- When token appears, automatically connects
 
 ## Home Assistant Entities
 
@@ -154,12 +204,44 @@ Spotify intentionally separates authentication for different use cases:
 
 The Web Player API requires TOTP-based authentication with dynamic secrets that change frequently.  Legal concerns (cease and desist letters to similar projects) prevent us from pursuing this approach.
 
+## Ingress Configuration
+
+The web UI uses Home Assistant's ingress feature:
+
+- **Port**: 8099 (internal, not exposed externally)
+- **Access**: Via HA sidebar panel or `.../hassio/ingress/<addon_slug>`
+- **OAuth Redirect**: Uses `INGRESS_PATH` environment variable (set by Supervisor) to construct callback URL
+- **Benefits**: Works through Nabu Casa cloud, no port forwarding needed
+- **Readiness**: Notifies S6-overlay via `/dev/fd/3` when web server is bound and ready
+
 ## Dependency Fix
 
-The vergen crate conflict was resolved by pinning specific versions simiar to [spotatui](https://github.com/LargeModGames/spotatui):
+The vergen crate conflict was resolved by pinning specific versions similar to [spotatui](https://github.com/LargeModGames/spotatui):
 
 ```toml
 vergen = "=9.0.6"
 vergen-lib = "=9.1.0"
 vergen-gitcl = "=1.0.8"
+```
+
+## Development Notes
+
+### Testing OAuth Flow Locally
+
+Since the OAuth callback requires the ingress path, local testing is limited. You can:
+1. Run the binary with `GREENROOM_WEB_PORT=8099`
+2. Navigate to `http://localhost:8099/`
+3. Click "Connect Spotify" (but callback will fail without proper ingress)
+
+For full testing, build the add-on and install in a test HA instance.
+
+### Token File Format
+
+```json
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "expires_at": 1234567890,
+  "scopes": ["streaming"]
+}
 ```

@@ -1,6 +1,6 @@
 [package]
 name = "greenroom"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Spotify Connect monitor device for Home Assistant"
@@ -35,6 +35,18 @@ rumqttc = "0.24"
 # HTTP client (for spclient)
 hyper = { version = "1", features = ["full"] }
 http = "1"
+reqwest = { version = "0.12", features = ["json"] }
+
+# Web server (for OAuth UI)
+axum = { version = "0.7", features = ["tokio"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+tower = { version = "0.4", features = ["make"] }
+
+# OAuth PKCE and token exchange
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+urlencoding = "2"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

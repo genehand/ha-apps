@@ -1,29 +1,17 @@
-# syntax=docker/dockerfile:1
-ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base:latest
+ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:trixie
+FROM $BUILD_FROM
+
+ARG BUILD_VERSION
+ENV BUILD_VERSION=${BUILD_VERSION}
 
 # ====== Build stage ======
-FROM ${BUILD_FROM} AS builder
+FROM rust:trixie AS builder
 
-# Install Rust and build dependencies
-RUN apk add --no-cache \
-    rust cargo \
-    protobuf-dev \
-    clang-dev \
-    g++ \
-    make \
-    cmake \
-    alsa-lib-dev \
-    openssl-dev \
-    pkgconfig
-
-# Set up working directory
 WORKDIR /build
 
 # Copy cargo files first for caching
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY proto ./proto
-COPY build.rs ./
 
 # Build release binary
 RUN cargo build --release
@@ -32,11 +20,20 @@ RUN cargo build --release
 FROM ${BUILD_FROM}
 
 # Install runtime dependencies (even with null audio backend, librespot links these)
-RUN apk add --no-cache \
-    alsa-lib \
-    openssl \
-    ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libasound2 \
+    libssl3 \
+    ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY rootfs /
 
 # Copy binary from build stage
 COPY --from=builder /build/target/release/greenroom /usr/bin/
-COPY run.sh /run.sh
+
+LABEL \
+    org.opencontainers.image.title="Home Assistant App: Greenroom" \
+    org.opencontainers.image.description="Spotify Connect monitor for track info without the Web API" \
+    org.opencontainers.image.source="https://github.com/genehand/ha-apps"
+
+EXPOSE 8099

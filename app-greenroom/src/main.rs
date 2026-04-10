@@ -1,13 +1,42 @@
 mod librespot;
 mod mqtt;
+mod web;
 
 use std::sync::Arc;
+use std::path::PathBuf;
 use clap::Parser;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{info, error};
 
 use crate::librespot::SpotifyClient;
 use crate::mqtt::MqttBridge;
+use crate::web::{router, AppState};
+
+/// Notify S6-overlay that the service is ready (only when running as addon).
+fn notify_readiness() {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::path::Path;
+
+    // Only signal readiness when running in addon environment
+    if !Path::new("/data/options.json").exists() {
+        return;
+    }
+
+    // Write a newline to file descriptor 3 to signal readiness to S6
+    match OpenOptions::new().write(true).open("/dev/fd/3") {
+        Ok(mut fd) => {
+            if let Err(e) = writeln!(fd) {
+                tracing::debug!("Could not write readiness notification: {}", e);
+            } else {
+                tracing::debug!("Readiness notification sent to S6");
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Could not open readiness notification fd: {}", e);
+        }
+    }
+}
 
 /// Greenroom - Spotify Connect device with MQTT discovery for Home Assistant
 #[derive(Parser, Debug, Clone)]
@@ -46,6 +75,10 @@ pub struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, env = "RUST_LOG", default_value = "info", help = "Log level: trace, debug, info, warn, error")]
     pub log_level: String,
+
+    /// Web UI port for OAuth flow
+    #[arg(long, env = "GREENROOM_WEB_PORT", default_value = "8099", help = "Port for the web UI (used for OAuth)")]
+    pub web_port: u16,
 }
 
 /// Shared state between Spotify client and MQTT bridge
@@ -140,14 +173,75 @@ async fn main() -> anyhow::Result<()> {
     // Convert CLI args to config
     let config: Config = cli.clone().into();
 
-    // Shared state
-    let playback_state = Arc::new(RwLock::new(PlaybackState::default()));
+    // Token file path - use /data in add-on environment, otherwise local file
+    let token_file = std::env::var("TOKEN_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            // Check for /data/options.json which is only present in HA add-on environment
+            if std::path::Path::new("/data/options.json").exists() {
+                PathBuf::from("/data/greenroom_token.json")
+            } else {
+                PathBuf::from("greenroom_token.json")
+            }
+        });
+
+    // Determine initial state based on whether we have auth credentials
+    let has_token = token_file.exists() && 
+        std::fs::read_to_string(&token_file)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+            .map(|v| v.get("access_token").is_some())
+            .unwrap_or(false);
+
+    let (initial_track, initial_artist) = if has_token {
+        ("Waiting for playback...".to_string(), "Monitor active".to_string())
+    } else {
+        ("Not Connected".to_string(), "Open the Greenroom web UI to connect Spotify".to_string())
+    };
+
+    // Shared state - initialize with idle status so sensor shows "idle" not "paused"
+    let initial_state = PlaybackState {
+        track: Some(initial_track),
+        artist: Some(initial_artist),
+        is_idle: true,
+        ..Default::default()
+    };
+    let playback_state = Arc::new(RwLock::new(initial_state));
     
     // State change notification channel (for pushing updates to MQTT)
     let (state_tx, state_rx) = broadcast::channel(16);
     
     // Command channel (kept for potential future use, currently unused)
     let (command_tx, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+
+    // Start web server for OAuth UI
+    let app_state = AppState::new(
+        config.clone(),
+        playback_state.clone(),
+        token_file.clone(),
+    );
+    let web_app = router(app_state);
+    let web_port = cli.web_port;
+
+    // Bind the listener first, then notify readiness, then serve
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], web_port));
+    info!("Starting web server on http://{}", addr);
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!("Failed to bind web server: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    // Notify S6 that we're ready (only in addon environment)
+    notify_readiness();
+
+    let web_server = async move {
+        axum::serve(listener, web_app)
+            .await
+            .map_err(|e| anyhow::anyhow!("Web server error: {}", e))
+    };
 
     // Start MQTT bridge
     let mqtt_bridge = MqttBridge::new(
@@ -163,10 +257,31 @@ async fn main() -> anyhow::Result<()> {
         playback_state.clone(),
         state_tx,
         command_rx,
+        token_file,
     );
 
-    // Run both concurrently
+    // Set up shutdown signal handler
+    let shutdown_signal = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Received Ctrl+C, shutting down...");
+            }
+            Err(e) => {
+                error!("Failed to listen for Ctrl+C: {}", e);
+            }
+        }
+    };
+
+    // Run all three concurrently, with shutdown signal
     tokio::select! {
+        _ = shutdown_signal => {
+            info!("Shutdown signal received, exiting...");
+        }
+        result = web_server => {
+            if let Err(e) = result {
+                error!("Web server error: {}", e);
+            }
+        }
         result = mqtt_bridge.run() => {
             if let Err(e) = result {
                 error!("MQTT bridge error: {}", e);
