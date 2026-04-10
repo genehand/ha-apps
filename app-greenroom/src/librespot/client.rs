@@ -4,7 +4,6 @@ use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time::sleep;
 use tracing::{info, error, debug, warn};
-use serde::{Serialize, Deserialize};
 use futures::StreamExt;
 use protobuf::{EnumOrUnknown, MessageField};
 
@@ -22,33 +21,25 @@ use librespot_protocol::media::AudioQuality;
 use librespot_protocol::player::{PlayOrigin, Suppressions, ContextPlayerOptions, PlayerState};
 
 use crate::{Config, PlaybackState, PlayerCommand};
+use crate::token::{self, Token};
 
 /// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
 const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 
-/// Stored OAuth token with expiration info
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredToken {
-    access_token: String,
-    refresh_token: String,
-    expires_at: u64, // Unix timestamp
-    scopes: Vec<String>,
-}
-
-impl From<OAuthToken> for StoredToken {
-    fn from(token: OAuthToken) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let expires_at = now + 3600;
-        
-        Self {
-            access_token: token.access_token,
-            refresh_token: token.refresh_token,
-            expires_at,
-            scopes: token.scopes,
-        }
+/// Convert librespot's OAuthToken to our shared Token type.
+/// Calculates expiration as now + 3600 seconds since librespot doesn't provide expires_at.
+fn token_from_oauth(token: OAuthToken) -> Token {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let expires_at = now + 3600;
+    
+    Token {
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+        expires_at,
+        scopes: token.scopes,
     }
 }
 
@@ -79,25 +70,9 @@ impl SpotifyClient {
 
     /// Check if a valid token exists (for web UI status)
     pub async fn has_valid_token(&self) -> bool {
-        if !self.token_file.exists() {
-            return false;
-        }
-
-        match tokio::fs::read_to_string(&self.token_file).await {
-            Ok(contents) => {
-                match serde_json::from_str::<StoredToken>(&contents) {
-                    Ok(token) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        // Valid if not expired (with 5 min buffer)
-                        token.expires_at > now + 300
-                    }
-                    Err(_) => false,
-                }
-            }
-            Err(_) => false,
+        match token::load_token(&self.token_file).await {
+            Some(token) => token.is_valid(),
+            None => false,
         }
     }
 
@@ -141,14 +116,46 @@ impl SpotifyClient {
         loop {
             // Check for token first - if present, try to connect
             let has_token = self.has_valid_token().await;
+            let has_file = self.token_file.exists();
             
             if !has_token && self.config.spotify_username.is_empty() {
-                info!("No Spotify token or username configured, running in demo mode");
-                info!("Use the web UI to authenticate with Spotify");
-                // Run demo mode until token appears
-                self.run_demo_mode().await?;
-                // Demo mode returned (token appeared), continue to connection
-                continue;
+                // Check if we have a file but it's expired (can try refresh)
+                if has_file {
+                    debug!("Token file exists but may be expired, attempting refresh...");
+                    match self.load_token().await {
+                        Some(token) => {
+                            // Try to refresh - this will connect and block until disconnect
+                            match self.refresh_token(token).await {
+                                Ok(()) => {
+                                    info!("Connection ended, will reconnect...");
+                                }
+                                Err(e) => {
+                                    error!("Failed to refresh expired token: {}", e);
+                                    info!("Please reconnect via the web UI");
+                                    self.run_demo_mode().await?;
+                                    continue;
+                                }
+                            }
+                            // After refresh+connect ends, go to reconnection logic
+                            consecutive_errors = 0;
+                            sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                        None => {
+                            info!("No valid token found in file, running in demo mode");
+                            info!("Use the web UI to authenticate with Spotify");
+                            self.run_demo_mode().await?;
+                            continue;
+                        }
+                    }
+                } else {
+                    info!("No Spotify token configured, running in demo mode");
+                    info!("Use the web UI to authenticate with Spotify");
+                    // Run demo mode until token appears
+                    self.run_demo_mode().await?;
+                    // Demo mode returned (token appeared), continue to connection
+                    continue;
+                }
             }
             
             info!("Attempting to connect to Spotify...");
@@ -218,43 +225,21 @@ impl SpotifyClient {
         }
     }
 
-    async fn load_token(&self) -> Option<StoredToken> {
-        if !self.token_file.exists() {
-            return None;
-        }
-        
-        match tokio::fs::read_to_string(&self.token_file).await {
-            Ok(contents) => {
-                match serde_json::from_str::<StoredToken>(&contents) {
-                    Ok(token) => {
-                        debug!("Loaded token from {}", self.token_file.display());
-                        Some(token)
-                    }
-                    Err(e) => {
-                        error!("Failed to parse token file: {}", e);
-                        None
-                    }
-                }
+    async fn load_token(&self) -> Option<Token> {
+        match token::load_token(&self.token_file).await {
+            Some(token) => {
+                debug!("Loaded token from {}", self.token_file.display());
+                Some(token)
             }
-            Err(e) => {
-                error!("Failed to read token file: {}", e);
-                None
-            }
+            None => None,
         }
     }
 
-    async fn save_token(&self, token: &StoredToken) -> anyhow::Result<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = self.token_file.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let contents = serde_json::to_string_pretty(token)?;
-        tokio::fs::write(&self.token_file, contents).await?;
-        info!("Saved OAuth token to {}", self.token_file.display());
-        Ok(())
+    async fn save_token(&self, token: &Token) -> anyhow::Result<()> {
+        token::save_token(&self.token_file, token).await
     }
 
-    async fn connect_with_token(&mut self, token: StoredToken) -> anyhow::Result<()> {
+    async fn connect_with_token(&mut self, token: Token) -> anyhow::Result<()> {
         let credentials = Credentials::with_access_token(&token.access_token);
         
         let session_config = SessionConfig::default();
@@ -272,7 +257,7 @@ impl SpotifyClient {
         }
     }
 
-    async fn refresh_token(&mut self, token: StoredToken) -> anyhow::Result<()> {
+    async fn refresh_token(&mut self, token: Token) -> anyhow::Result<()> {
         info!("Refreshing OAuth token...");
         
         let oauth_client = OAuthClientBuilder::new(
@@ -299,9 +284,9 @@ impl SpotifyClient {
             }
         };
 
-        info!("Token refreshed successfully!");
+        debug!("Token refreshed successfully!");
         
-        let stored_token = StoredToken::from(new_token);
+        let stored_token = token_from_oauth(new_token);
         self.save_token(&stored_token).await?;
         
         self.connect_with_token(stored_token).await
@@ -329,7 +314,7 @@ impl SpotifyClient {
         info!("Successfully obtained OAuth access token!");
         debug!("Token scopes: {:?}", token.scopes);
 
-        let stored_token = StoredToken::from(token);
+        let stored_token = token_from_oauth(token);
         self.save_token(&stored_token).await?;
         
         self.connect_with_token(stored_token).await
@@ -555,7 +540,7 @@ impl SpotifyClient {
                 
                 let _ = state_tx.send(());
 
-                info!(
+                debug!(
                     "Playback update: {} - {} (playing: {}, volume: {}%)",
                     track_name,
                     artist_name,
@@ -673,5 +658,383 @@ fn create_join_cluster_request(session: &Session, device_name: &str) -> PutState
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_test_token(expires_at: u64) -> Token {
+        Token {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at,
+            scopes: vec!["streaming".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_valid_token() {
+        // Create a temp file with a token that expires in 1 hour
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        // Create minimal client to test with
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            temp_file.path().to_path_buf(),
+        );
+        
+        assert!(client.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_expired_token() {
+        // Create a temp file with a token that expired 1 hour ago
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now - 3600);
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            temp_file.path().to_path_buf(),
+        );
+        
+        // Should return false for expired token
+        assert!(!client.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_near_expiry() {
+        // Create a temp file with a token that expires in 2 minutes (within 5-min buffer)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 120); // 2 minutes
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            temp_file.path().to_path_buf(),
+        );
+        
+        // Should return false because it's within the 5-min buffer
+        assert!(!client.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_missing_file() {
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        // Use a non-existent path
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            PathBuf::from("/nonexistent/path/token.json"),
+        );
+        
+        assert!(!client.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_load_token_with_valid_file() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            temp_file.path().to_path_buf(),
+        );
+        
+        let loaded = client.load_token().await;
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.access_token, "test_access_token");
+        assert_eq!(loaded.refresh_token, "test_refresh_token");
+    }
+
+    #[tokio::test]
+    async fn test_startup_has_file_but_expired_should_try_refresh() {
+        // This test verifies the startup logic: when has_valid_token returns false
+        // but file exists, we should try to refresh
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now - 3600); // Expired 1 hour ago
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        let client = SpotifyClient::new(
+            config.clone(),
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            temp_file.path().to_path_buf(),
+        );
+        
+        // Verify the conditions that trigger the refresh path
+        let has_token = client.has_valid_token().await;
+        let has_file = client.token_file.exists();
+        
+        assert!(!has_token, "Token should be expired");
+        assert!(has_file, "Token file should exist");
+        
+        // This combination should trigger the refresh attempt in run()
+        // has_token = false, has_file = true, spotify_username is empty
+        assert!(config.spotify_username.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_invalid_json() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"not valid json").unwrap();
+        
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            temp_file.path().to_path_buf(),
+        );
+        
+        // Should handle invalid JSON gracefully
+        assert!(!client.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_load_token_with_invalid_json() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"not valid json").unwrap();
+        
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            temp_file.path().to_path_buf(),
+        );
+        
+        // Should return None for invalid JSON
+        assert!(client.load_token().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_save_token_creates_file() {
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        // Create temp directory for token file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let token_path = temp_dir.path().join("greenroom_token.json");
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            token_path.clone(),
+        );
+        
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+        
+        // Save the token
+        client.save_token(&token).await.unwrap();
+        
+        // Verify file exists and contains expected data
+        assert!(token_path.exists());
+        let contents = tokio::fs::read_to_string(&token_path).await.unwrap();
+        let loaded: Token = serde_json::from_str(&contents).unwrap();
+        assert_eq!(loaded.access_token, "test_access_token");
+        assert_eq!(loaded.refresh_token, "test_refresh_token");
+        assert_eq!(loaded.expires_at, token.expires_at);
+    }
+
+    #[tokio::test]
+    async fn test_save_token_creates_parent_dirs() {
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        let (state_tx, _) = broadcast::channel(16);
+        let (_, command_rx) = mpsc::unbounded_channel::<PlayerCommand>();
+        
+        // Create temp directory with nested path
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nested_path = temp_dir.path().join("data").join("subdir").join("token.json");
+        
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            state_tx,
+            command_rx,
+            nested_path.clone(),
+        );
+        
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+        
+        // Save should create parent directories
+        client.save_token(&token).await.unwrap();
+        
+        assert!(nested_path.exists());
     }
 }

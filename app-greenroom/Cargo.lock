@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "greenroom"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -782,6 +782,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",

@@ -9,11 +9,12 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
 use crate::{Config, PlaybackState};
+use crate::token::{self, Token};
 
 /// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
 const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
@@ -36,15 +37,6 @@ fn build_url(headers: &HeaderMap, path: &str) -> String {
     } else {
         format!("{}/{}", base, path)
     }
-}
-
-/// OAuth token storage structure (matches what daemon expects)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthToken {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: u64,
-    pub scopes: Vec<String>,
 }
 
 /// In-memory storage for PKCE verifiers during OAuth flow
@@ -80,59 +72,25 @@ impl AppState {
 
     /// Check if a valid token exists
     pub async fn has_valid_token(&self) -> bool {
-        if !self.token_file.exists() {
-            return false;
-        }
-
-        match tokio::fs::read_to_string(&self.token_file).await {
-            Ok(contents) => {
-                match serde_json::from_str::<OAuthToken>(&contents) {
-                    Ok(token) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        // Valid if not expired (with 5 min buffer)
-                        token.expires_at > now + 300
-                    }
-                    Err(_) => false,
-                }
-            }
-            Err(_) => false,
+        match token::load_token(&self.token_file).await {
+            Some(token) => token.is_valid(),
+            None => false,
         }
     }
 
     /// Load token if available
-    pub async fn load_token(&self) -> Option<OAuthToken> {
-        if !self.token_file.exists() {
-            return None;
-        }
-
-        match tokio::fs::read_to_string(&self.token_file).await {
-            Ok(contents) => serde_json::from_str::<OAuthToken>(&contents).ok(),
-            Err(_) => None,
-        }
+    pub async fn load_token(&self) -> Option<Token> {
+        token::load_token(&self.token_file).await
     }
 
     /// Save token to file
-    pub async fn save_token(&self, token: &OAuthToken) -> anyhow::Result<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = self.token_file.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let contents = serde_json::to_string_pretty(token)?;
-        tokio::fs::write(&self.token_file, contents).await?;
-        info!("Saved OAuth token to {}", self.token_file.display());
-        Ok(())
+    pub async fn save_token(&self, token: &Token) -> anyhow::Result<()> {
+        token::save_token(&self.token_file, token).await
     }
 
     /// Clear token (logout)
     pub async fn clear_token(&self) -> anyhow::Result<()> {
-        if self.token_file.exists() {
-            tokio::fs::remove_file(&self.token_file).await?;
-            info!("Cleared OAuth token from {}", self.token_file.display());
-        }
-        Ok(())
+        token::clear_token(&self.token_file).await
     }
 }
 
@@ -201,7 +159,7 @@ pub fn router(state: AppState) -> Router {
 /// Render just the status content (inner HTML for the content div)
 fn render_status_content(
     has_token: bool,
-    token_info: Option<OAuthToken>,
+    token_info: Option<Token>,
     playback: PlaybackState,
     _config: &Config,
     login_url: &str,
@@ -575,7 +533,7 @@ async fn auth_callback_handler(
                         + token_response.expires_in;
 
     // Save token
-    let token = OAuthToken {
+    let token = Token {
         access_token: token_response.access_token,
         refresh_token: token_response.refresh_token,
         expires_at,
@@ -592,18 +550,17 @@ async fn auth_callback_handler(
     <div class="max-w-md mx-auto">
         <div class="bg-red-900/50 border border-red-700 rounded p-4">
             <strong class="text-red-200">Failed to save credentials.</strong>
-            <p class="text-red-300 mt-2">{}</p>
+            <p class="text-sm text-gray-400">Please try connecting again.</p>
         </div>
     </div>
 </body>
 </html>"#,
-            e
         ));
     }
 
-    info!("Successfully authenticated with Spotify");
+    info!("OAuth authentication successful!");
 
-    // Close window after successful auth
+    // Return success HTML
     Html(format!(
         r#"<!DOCTYPE html>
 <html class="dark">
@@ -757,7 +714,7 @@ async fn auth_manual_handler(
         + token_response.expires_in;
 
     // Save token
-    let token = OAuthToken {
+    let token = Token {
         access_token: token_response.access_token,
         refresh_token: token_response.refresh_token,
         expires_at,
@@ -828,4 +785,149 @@ async fn auth_disconnect_handler(State(state): State<AppState>) -> Html<String> 
             <script>setTimeout(() => window.close(), 2000);</script>
         </div>"#
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use tempfile::NamedTempFile;
+
+    fn create_test_state(token_file: std::path::PathBuf) -> AppState {
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+        
+        AppState::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            token_file,
+        )
+    }
+
+    fn create_test_token(expires_at: u64) -> Token {
+        Token {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at,
+            scopes: vec!["streaming".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_valid_token() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        let state = create_test_state(temp_file.path().to_path_buf());
+        assert!(state.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_expired_token() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now - 3600); // Expired 1 hour ago
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        let state = create_test_state(temp_file.path().to_path_buf());
+        assert!(!state.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_near_expiry() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 120); // 2 minutes (within 5-min buffer)
+        let json = serde_json::to_string(&token).unwrap();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+        
+        let state = create_test_state(temp_file.path().to_path_buf());
+        assert!(!state.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_valid_token_with_missing_file() {
+        let state = create_test_state(PathBuf::from("/nonexistent/path/token.json"));
+        assert!(!state.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_token() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let token_path = temp_dir.path().join("token.json");
+        
+        let state = create_test_state(token_path.clone());
+        
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+        
+        // Save token
+        state.save_token(&token).await.unwrap();
+        
+        // Load and verify
+        let loaded = state.load_token().await;
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.access_token, token.access_token);
+        assert_eq!(loaded.refresh_token, token.refresh_token);
+        assert_eq!(loaded.expires_at, token.expires_at);
+    }
+
+    #[tokio::test]
+    async fn test_clear_token() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let token_path = temp_dir.path().join("token.json");
+        
+        let state = create_test_state(token_path.clone());
+        
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+        
+        // Save token
+        state.save_token(&token).await.unwrap();
+        assert!(token_path.exists());
+        assert!(state.has_valid_token().await);
+        
+        // Clear token
+        state.clear_token().await.unwrap();
+        assert!(!token_path.exists());
+        assert!(!state.has_valid_token().await);
+    }
+
+    #[tokio::test]
+    async fn test_clear_token_when_no_file() {
+        let state = create_test_state(PathBuf::from("/nonexistent/path/token.json"));
+        // Should not error when clearing non-existent file
+        state.clear_token().await.unwrap();
+    }
 }

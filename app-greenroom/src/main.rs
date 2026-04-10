@@ -1,5 +1,6 @@
 mod librespot;
 mod mqtt;
+mod token;
 mod web;
 
 use std::sync::Arc;
