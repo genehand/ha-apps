@@ -1,6 +1,6 @@
 [package]
 name = "dasher"
-version = "0.6.2"
+version = "0.6.4"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Filter websocket events for dashboard entities"

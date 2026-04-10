@@ -5,9 +5,10 @@
 # Starts Greenroom
 # ==============================================================================
 
-export RUST_LOG=info
+# Get configuration values from add-on options (with defaults)
+export RUST_LOG=$(bashio::config 'log_level' 'info')
 
-# Get configuration values from add-on options
+# Get other configuration values from add-on options
 export SPOTIFY_USERNAME=$(bashio::config 'spotify_username')
 export DEVICE_NAME=$(bashio::config 'device_name')
 

@@ -1,6 +1,6 @@
 slug: app-greenroom
 name: Greenroom
-version: 0.2.2
+version: 0.2.3
 
 #image: "ghcr.io/genehand/greenroom-{arch}"
 
@@ -43,6 +43,7 @@ schema:
   mqtt_port: int?
   mqtt_username: str?
   mqtt_password: password?
+  log_level: list(trace|debug|info|warn|error)?
 
 panel_icon: mdi:spotify
 panel_title: "Greenroom"

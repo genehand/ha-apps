@@ -5,6 +5,9 @@
 # Starts Shack service
 # ==============================================================================
 
+# Set log level from add-on configuration (default to INFO)
+export LOG_LEVEL=$(bashio::config 'log_level' 'INFO')
+
 bashio::log.info "Starting Shack..."
 
 # Create venv at /data/.venv if it doesn't exist

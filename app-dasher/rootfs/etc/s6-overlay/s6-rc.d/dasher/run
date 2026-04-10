@@ -5,9 +5,8 @@
 # Starts Dasher
 # ==============================================================================
 
-# Set log level from add-on configuration (default to info if not set)
-log_level=$(bashio::config 'log_level')
-export RUST_LOG=${log_level:-info}
+# Set log level from add-on configuration (default to INFO)
+export RUST_LOG=$(bashio::config 'log_level' 'INFO')
 
 # Get configuration values from add-on options
 export HA_HOST=$(bashio::config 'ha_host')
