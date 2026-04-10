@@ -307,6 +307,7 @@ async fn process_client_message(
                 let mut state =
                     client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
                 state.subscribe_entities_id = Some(id);
+                state.lovelace_entities.clear();
                 debug!(
                     "subscribe_entities request with ID: {} for {}",
                     id, client_ip
