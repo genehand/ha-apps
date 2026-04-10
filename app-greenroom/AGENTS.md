@@ -1,8 +1,8 @@
 # app-greenroom
 
-A Home Assistant Add-on that monitors Spotify playback via the Connect protocol (not Web API).
+Home Assistant app that monitors Spotify playback via the Connect protocol.
 
-> **🔑 Key Feature**: Does **NOT** use the Spotify Web API - works with any Spotify account including Free, Basic, and Premium plans without API keys or developer credentials.
+> **🔑 Key Feature**: Does **NOT** use the Spotify Web API - works with any Spotify account.
 
 ## Overview
 
@@ -14,7 +14,7 @@ Greenroom **displays** playback information (track, artist, artwork, volume, shu
 
 ## Why No Web API?
 
-Unlike other Spotify integrations, Greenroom uses the **Spotify Connect protocol** (the same protocol smart speakers use) rather than the Web API:
+Unlike other Spotify integrations, Greenroom uses the **Spotify Connect protocol** (the protocol smart speakers use) rather than the Web API:
 
 - ✅ **Works with any plan**: Free, Basic, Premium
 - ✅ **No developer account**: No API keys, client secrets, or app registration needed
@@ -27,39 +27,35 @@ Unlike other Spotify integrations, Greenroom uses the **Spotify Connect protocol
 - **Web UI**: Axum-based HTTP server for OAuth authentication (Home Assistant ingress)
   - PKCE OAuth flow to Spotify (no client secrets)
   - Minimal HTMX frontend with status display
-  - Accessible via HA sidebar panel
+
 - **Spotify Integration**: Uses librespot to connect to Spotify's WebSocket cluster
   - Monitors playback from any device on your account (phone, desktop, smart speaker)
   - Receives real-time track/artist/album metadata via Spotify's internal protocol
   - Joins the Spotify Connect cluster to receive playback updates from any device
-  - **Does not use Spotify Web API** - connects as a Connect device instead
+  - **Does not use the Spotify Web API** - connects as a Connect device instead
+
 - **MQTT Bridge**: Publishes discovery configs and state to Home Assistant
   - Main sensor with state (playing/paused) and JSON attributes
   - Auto-discovery via `homeassistant/*/greenroom/config`
 
-All three components (web UI, Spotify daemon, MQTT bridge) run concurrently in a single binary.
+All three components (web UI, Spotify daemon, MQTT bridge) run concurrently in one binary.
 
 ## File Structure
 
 ```
 app-greenroom/
-├── AGENTS.md              # This file
 ├── config.yaml            # Add-on configuration
 ├── Dockerfile             # Multi-stage Rust build
-├── build.sh               # Local build script
 ├── Cargo.toml             # Rust dependencies
 ├── build.rs               # Build script for vergen
-├── src/                   # Rust application
-│   ├── main.rs            # Entry point - spawns web server + daemon + mqtt
-│   ├── web.rs             # Web UI (OAuth flow, status page)
-│   ├── mqtt.rs            # MQTT bridge (HA discovery, state publishing)
-│   └── librespot/         # Spotify client (cluster monitoring, token refresh)
-│       ├── mod.rs
-│       └── client.rs
-└── rootfs/
-    └── etc/services.d/greenroom/
-        ├── run            # S6 service run script
-        └── finish         # S6 service finish script
+└── src/                   # Rust application
+    ├── main.rs            # Entry point - spawns web server + daemon + mqtt
+    ├── web.rs             # Web UI (OAuth flow, status page)
+    ├── mqtt.rs            # MQTT bridge (HA discovery, state publishing)
+    └── librespot/         # Spotify client (cluster monitoring, token refresh)
+        ├── mod.rs
+        └── client.rs
+
 ```
 
 ## Build
@@ -72,22 +68,23 @@ cargo build --release
 cargo run
 ```
 
-Or build the Docker image:
-```bash
-docker build --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base:latest -t app-greenroom .
-```
-
-The binary will be at `target/release/greenroom`.
+The binary will be at `target/release/greenroom`
 
 ## Configuration
 
 ### OAuth Setup (Web UI)
 
+Due to Spotify's OAuth restrictions on librespot's client ID (which only permits localhost redirects), the web UI uses a manual code exchange flow:
+
 1. Install and start the Greenroom add-on
-2. Open the Greenroom panel from the HA sidebar (uses ingress)
-3. Click "Connect Spotify" button
-4. Log in to Spotify and authorize Greenroom
-5. Token is automatically saved and the daemon connects
+2. Open the Greenroom Web UI (uses ingress)
+3. Click "Connect Spotify" button - opens instructions in a new window
+4. Click "Open Spotify Authorization" to open Spotify in a new tab
+5. Log in to Spotify and authorize Greenroom
+6. The page will redirect to `127.0.0.1:5588` and show an error (expected!)
+7. Copy the `code` value from the URL bar (the part after `code=` and before `&state=`)
+8. Paste the code into the form on the Greenroom instructions page
+9. Click "Complete Connection" - token is saved and the daemon connects
 
 The web UI remains accessible for checking connection status and playback info. Use "Disconnect" to clear stored credentials.
 
@@ -128,11 +125,12 @@ CLI options take precedence over environment variables.
 
 ### Initial Setup
 
-1. **Web UI OAuth**: User opens Greenroom panel in HA sidebar, clicks "Connect Spotify"
-2. **PKCE Flow**: Server generates PKCE challenge, redirects to Spotify auth
-3. **Callback**: Spotify redirects back to ingress URL with authorization code
-4. **Token Exchange**: Server exchanges code for access/refresh tokens via Spotify's token endpoint
-5. **Token Storage**: Token saved to `/data/greenroom_token.json`
+1. **Web UI OAuth**: User opens Greenroom Web UI, clicks "Connect Spotify"
+2. **Instructions Page**: Server shows instructions with "Open Spotify Authorization" button
+3. **PKCE Flow**: User clicks button, Spotify OAuth opens in new tab with PKCE challenge
+4. **Manual Code Entry**: Spotify redirects to localhost (fails in browser), user copies code from URL
+5. **Token Exchange**: User pastes code into form, server exchanges for tokens via PKCE
+6. **Token Storage**: Token saved to `/data/greenroom_token.json`
 
 ### Runtime Operation
 
@@ -210,8 +208,7 @@ The web UI uses Home Assistant's ingress feature:
 
 - **Port**: 8099 (internal, not exposed externally)
 - **Access**: Via HA sidebar panel or `.../hassio/ingress/<addon_slug>`
-- **OAuth Redirect**: Uses `INGRESS_PATH` environment variable (set by Supervisor) to construct callback URL
-- **Benefits**: Works through Nabu Casa cloud, no port forwarding needed
+- **URL Handling**: Uses `X-Ingress-Path` HTTP header (set by HA Supervisor) to construct proper URLs for all links and forms
 - **Readiness**: Notifies S6-overlay via `/dev/fd/3` when web server is bound and ready
 
 ## Dependency Fix
@@ -228,12 +225,17 @@ vergen-gitcl = "=1.0.8"
 
 ### Testing OAuth Flow Locally
 
-Since the OAuth callback requires the ingress path, local testing is limited. You can:
+The manual code entry flow works without full ingress setup:
+
 1. Run the binary with `GREENROOM_WEB_PORT=8099`
 2. Navigate to `http://localhost:8099/`
-3. Click "Connect Spotify" (but callback will fail without proper ingress)
+3. Click "Connect Spotify" - opens instructions page
+4. Click "Open Spotify Authorization" - opens Spotify OAuth in a new tab
+5. After Spotify auth, the redirect to `127.0.0.1:5588` will fail (expected)
+6. Copy the `code` value from the URL and paste into the form
+7. The token will be saved locally
 
-For full testing, build the add-on and install in a test HA instance.
+Note: Without the `X-Ingress-Path` header, navigation links may not work correctly. For full testing with proper URL handling, build the add-on and install in a test HA instance.
 
 ### Token File Format
 
