@@ -23,6 +23,9 @@ use librespot_protocol::player::{PlayOrigin, Suppressions, ContextPlayerOptions,
 
 use crate::{Config, PlaybackState, PlayerCommand};
 
+/// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
+const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
+
 /// Stored OAuth token with expiration info
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredToken {
@@ -273,7 +276,7 @@ impl SpotifyClient {
         info!("Refreshing OAuth token...");
         
         let oauth_client = OAuthClientBuilder::new(
-            "65b708073fc0480ea92a077233ca87bd",
+            LIBRESPOT_CLIENT_ID,
             "http://127.0.0.1:5588/login",
             vec!["streaming"],
         )
@@ -310,7 +313,7 @@ impl SpotifyClient {
         info!("Please log in to Spotify and authorize Greenroom.");
         
         let oauth_client = OAuthClientBuilder::new(
-            "65b708073fc0480ea92a077233ca87bd",
+            LIBRESPOT_CLIENT_ID,
             "http://127.0.0.1:5588/login",
             vec!["streaming"],
         )

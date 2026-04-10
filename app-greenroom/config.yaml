@@ -1,12 +1,12 @@
-slug: "app-greenroom"
-name: "Greenroom"
-version: "0.1.4"
+slug: app-greenroom
+name: Greenroom
+version: 0.2.0
 
 #image: "ghcr.io/genehand/greenroom-{arch}"
 
 init: false
 
-description: "Spotify Connect monitor"
+description: Spotify Connect monitor
 
 arch:
   - aarch64
@@ -21,7 +21,6 @@ host_network: true
 # Ingress configuration for OAuth web UI
 ingress: true
 ingress_port: 8099
-ingress_entry: /
 
 ports:
   8099/tcp: null  # Not exposed externally, only via ingress
