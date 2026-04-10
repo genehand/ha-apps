@@ -3,19 +3,19 @@ use axum::{
     extract::{ConnectInfo, Request, State},
     response::Response,
 };
-use futures::{Sink, Stream, sink::SinkExt, stream::StreamExt};
+use futures::{sink::SinkExt, stream::StreamExt, Sink, Stream};
 use tracing::{debug, error, info};
-use yawc::{CompressionLevel, IncomingUpgrade, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
+use yawc::{
+    close::CloseCode, frame::Frame, frame::OpCode, CompressionLevel, IncomingUpgrade, Options,
+    WebSocket,
+};
 
 use crate::state::AppState;
 use crate::utils;
 
 /// Forward WebSocket frames from source to destination
-async fn forward_frames<S, D>(
-    mut source: S,
-    mut destination: D,
-    direction: &str,
-) where
+async fn forward_frames<S, D>(mut source: S, mut destination: D, direction: &str)
+where
     S: Stream<Item = Frame> + Unpin,
     D: Sink<Frame> + Unpin,
     D::Error: std::fmt::Display,
@@ -108,19 +108,18 @@ pub async fn handle(
     };
 
     // Build custom HTTP request with original headers
-    let mut request_builder = yawc::HttpRequest::builder()
-        .method("GET")
-        .uri(&ha_url);
+    let mut request_builder = yawc::HttpRequest::builder().method("GET").uri(&ha_url);
 
     // Copy headers from original request, excluding Host and WebSocket-specific headers
     for (key, value) in req.headers() {
         let key_str = key.as_str().to_lowercase();
         // Skip Host and WebSocket-specific headers (yawc sets these)
-        if key_str == "host" 
+        if key_str == "host"
             || key_str == "upgrade"
             || key_str == "connection"
             || key_str == "sec-websocket-key"
-            || key_str == "sec-websocket-version" {
+            || key_str == "sec-websocket-version"
+        {
             continue;
         }
         if let Ok(name) = http::header::HeaderName::from_bytes(key.as_ref()) {

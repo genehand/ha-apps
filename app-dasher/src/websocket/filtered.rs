@@ -3,10 +3,13 @@ use axum::{
     extract::{ConnectInfo, Request, State},
     response::Response,
 };
-use futures::{Sink, Stream, sink::SinkExt, stream::StreamExt};
+use futures::{sink::SinkExt, stream::StreamExt, Sink, Stream};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
-use yawc::{CompressionLevel, IncomingUpgrade, Options, WebSocket, close::CloseCode, frame::Frame, frame::OpCode};
+use yawc::{
+    close::CloseCode, frame::Frame, frame::OpCode, CompressionLevel, IncomingUpgrade, Options,
+    WebSocket,
+};
 
 use crate::state::{AppState, ClientStates};
 use crate::utils;
@@ -70,14 +73,31 @@ async fn forward_ha_to_client<S, D>(
             OpCode::Text => {
                 let text = frame.as_str();
                 match serde_json::from_str::<Value>(text) {
+                    Ok(Value::Array(messages)) => {
+                        // Handle batched JSON array messages
+                        let mut responses = Vec::new();
+                        for data in messages {
+                            if let Some(processed) =
+                                process_server_message(data, conn_id, client_states, client_ip)
+                                    .await
+                            {
+                                responses.push(processed);
+                            }
+                        }
+                        if !responses.is_empty() {
+                            let response_text =
+                                serde_json::to_string(&responses).unwrap_or_default();
+                            let response_frame = Frame::text(response_text);
+                            if let Err(e) = destination.send(response_frame).await {
+                                warn!("Error sending to client: {}", e);
+                                break;
+                            }
+                        }
+                    }
                     Ok(data) => {
-                        let processed = process_server_message(
-                            data,
-                            conn_id,
-                            client_states,
-                            client_ip,
-                        )
-                        .await;
+                        // Single message
+                        let processed =
+                            process_server_message(data, conn_id, client_states, client_ip).await;
 
                         if let Some(response) = processed {
                             let response_frame = Frame::text(response.to_string());
@@ -161,7 +181,12 @@ pub async fn handler(
     response
 }
 
-pub async fn handle(client_socket: yawc::HttpWebSocket, state: crate::AppState, client_ip: String, use_compression: bool) {
+pub async fn handle(
+    client_socket: yawc::HttpWebSocket,
+    state: crate::AppState,
+    client_ip: String,
+    use_compression: bool,
+) {
     let config = state.config;
     let client_states = state.client_states;
     let conn_id = format!("{:p}", &client_socket);
@@ -184,9 +209,7 @@ pub async fn handle(client_socket: yawc::HttpWebSocket, state: crate::AppState, 
     };
 
     // Build custom HTTP request with Host header
-    let mut request_builder = yawc::HttpRequest::builder()
-        .method("GET")
-        .uri(&ha_url_str);
+    let mut request_builder = yawc::HttpRequest::builder().method("GET").uri(&ha_url_str);
 
     // Set Host header from HA URL
     if let Some(host) = config.ha_host.split(':').next() {
@@ -308,9 +331,10 @@ async fn process_server_message(
     // Handle lovelace/config response
     if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
         if Some(id) == lovelace_config_id {
-            if data.get("type").and_then(|v| v.as_str()) == Some("result")
-                && data.get("success").and_then(|v| v.as_bool()) == Some(true)
-            {
+            let msg_type = data.get("type").and_then(|v| v.as_str());
+            let success = data.get("success").and_then(|v| v.as_bool());
+
+            if msg_type == Some("result") && success == Some(true) {
                 if let Some(result) = data.get("result") {
                     // Parse entities and rules
                     let mut entities = std::collections::HashSet::new();
@@ -345,11 +369,14 @@ async fn process_server_message(
         }
     }
 
-    // Handle subscribe_entities response
+    // Handle subscribe_entities initial response (field 'a')
     if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
         if Some(id) == subscribe_entities_id {
-            if data.get("type").and_then(|v| v.as_str()) == Some("event") {
+            let msg_type = data.get("type").and_then(|v| v.as_str());
+
+            if msg_type == Some("event") {
                 if let Some(event) = data.get("event") {
+                    // Initial response with all states (field 'a')
                     if let Some(compressed_states) = event.get("a") {
                         client_state.all_states = Some(compressed_states.clone());
 
@@ -370,16 +397,20 @@ async fn process_server_message(
                 }
             }
 
+            // Note: subscribe_entities updates with field 'c' are handled by the
+            // generic event handler below, which also handles state_changed events
             return Some(data);
         }
     }
 
-    // Handle event messages
+    // Handle event messages (non-subscribe_entities)
     if data.get("type").and_then(|v| v.as_str()) == Some("event") {
-        if !client_state.lovelace_entities.is_empty() {
-            if let Some(event) = data.get("event") {
+        if let Some(event) = data.get("event") {
+            let event_type = event.get("event_type").and_then(|v| v.as_str());
+
+            if !client_state.lovelace_entities.is_empty() {
                 // Skip state_changed events (they duplicate compressed updates)
-                if event.get("event_type").and_then(|v| v.as_str()) == Some("state_changed") {
+                if event_type == Some("state_changed") {
                     return None;
                 }
 
@@ -553,5 +584,141 @@ mod tests {
         let received = sink_rx.next().await;
         assert!(received.is_some());
         assert_eq!(received.unwrap().opcode(), OpCode::Close);
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_batched_array() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-batched";
+        let client_ip = "127.0.0.1";
+
+        // Setup: configure lovelace entities
+        {
+            let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+            state.lovelace_entities.insert("light.kitchen".to_string());
+            state
+                .lovelace_entities
+                .insert("light.living_room".to_string());
+        }
+
+        // Send batched JSON array with multiple messages
+        let batched = r#"[{"type":"event","event":{"c":{"light.kitchen":{"s":"on"}}}},{"type":"event","event":{"c":{"light.living_room":{"s":"off"}}}}]"#;
+        tx.send(Frame::text(batched)).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Should receive batched array response
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let text = received.unwrap().as_str().to_string();
+
+        // Verify it's a JSON array with both messages
+        assert!(text.starts_with('['));
+        assert!(text.ends_with(']'));
+        // Both entities should be in the response
+        assert!(text.contains("light.kitchen"));
+        assert!(text.contains("light.living_room"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_batched_with_filtering() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-filter-batched";
+        let client_ip = "127.0.0.1";
+
+        // Setup: configure only kitchen entity
+        {
+            let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+            state.lovelace_entities.insert("light.kitchen".to_string());
+        }
+
+        // Send batched array with kitchen (tracked) and bedroom (not tracked)
+        let batched = r#"[{"type":"event","event":{"c":{"light.kitchen":{"s":"on"},"light.bedroom":{"s":"off"}}}}]"#;
+        tx.send(Frame::text(batched)).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Should receive only the kitchen update
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let text = received.unwrap().as_str().to_string();
+
+        // Verify kitchen is in response
+        assert!(text.contains("light.kitchen"));
+        // Bedroom should be filtered out
+        assert!(!text.contains("light.bedroom"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_batched_all_filtered_out() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-filter-all";
+        let client_ip = "127.0.0.1";
+
+        // Setup: configure only kitchen entity
+        {
+            let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+            state.lovelace_entities.insert("light.kitchen".to_string());
+        }
+
+        // Send batched array with only untracked entities
+        let batched = r#"[{"type":"event","event":{"c":{"light.bedroom":{"s":"off"},"light.office":{"s":"on"}}}}]"#;
+        tx.send(Frame::text(batched)).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Nothing should be sent since all entities were filtered out
+        let received = sink_rx.next().await;
+        assert!(received.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_mixed_batched_and_individual() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-mixed";
+        let client_ip = "127.0.0.1";
+
+        // Setup: configure entities
+        {
+            let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+            state.lovelace_entities.insert("light.kitchen".to_string());
+        }
+
+        // Send batched array
+        let batched = r#"[{"type":"event","event":{"c":{"light.kitchen":{"s":"on"}}}}]"#;
+        tx.send(Frame::text(batched)).await.unwrap();
+
+        // Send individual message (not batched)
+        let individual = r#"{"type":"event","event":{"c":{"light.kitchen":{"s":"off"}}}}"#;
+        tx.send(Frame::text(individual)).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Should receive two responses
+        let first = sink_rx.next().await;
+        assert!(first.is_some());
+        let first_text = first.unwrap().as_str().to_string();
+        assert!(first_text.contains("kitchen"));
+
+        let second = sink_rx.next().await;
+        assert!(second.is_some());
+        let second_text = second.unwrap().as_str().to_string();
+        assert!(second_text.contains("kitchen"));
     }
 }

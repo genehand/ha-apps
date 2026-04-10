@@ -226,7 +226,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let config =
+            create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
         let state = create_test_state(config);
 
         let mut req = Request::new(Body::empty());
@@ -263,7 +264,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let config =
+            create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
         let state = create_test_state(config);
 
         let mut req = Request::new(Body::empty());
@@ -315,7 +317,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let config =
+            create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
         let state = create_test_state(config);
 
         let mut req = Request::new(Body::empty());
@@ -329,7 +332,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         // Verify Content-Type and Content-Encoding headers
-        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
         assert_eq!(response.headers().get("content-encoding").unwrap(), "gzip");
 
         // Verify body is still compressed
@@ -361,7 +367,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let config =
+            create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
         let state = create_test_state(config);
 
         let mut req = Request::new(Body::empty());

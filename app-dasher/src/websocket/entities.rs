@@ -260,10 +260,8 @@ fn check_attribute_match(
                     return false;
                 }
             }
-        } else {
-            if actual_value != value_pattern {
-                return false;
-            }
+        } else if actual_value != value_pattern {
+            return false;
         }
     }
 

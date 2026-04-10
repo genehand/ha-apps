@@ -63,7 +63,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let app = Router::new()
-        .route("/api/websocket", axum::routing::get(websocket::filtered::handler))
+        .route(
+            "/api/websocket",
+            axum::routing::get(websocket::filtered::handler),
+        )
         .route("/", axum::routing::any(catchall_handler))
         .route("/{*path}", axum::routing::any(catchall_handler))
         .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()))
@@ -122,4 +125,3 @@ async fn catchall_handler(
         }
     }
 }
-
