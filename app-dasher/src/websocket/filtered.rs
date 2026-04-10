@@ -296,11 +296,15 @@ async fn process_client_message(
 ) {
     if let Some(msg_type) = data.get("type").and_then(|v| v.as_str()) {
         if msg_type == "lovelace/config" {
-            if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
-                let mut state =
-                    client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
-                state.lovelace_config_id = Some(id);
-                debug!("lovelace/config request with ID: {} for {}", id, client_ip);
+            // Only track lovelace/config if url_path field exists (even if null), otherwise the requested
+            // page isn't a dashboard so we don't want to filter
+            if data.get("url_path").is_some() {
+                if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
+                    let mut state =
+                        client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+                    state.lovelace_config_id = Some(id);
+                    debug!("lovelace/config request with ID: {} for {}", id, client_ip);
+                }
             }
         } else if msg_type == "subscribe_entities" {
             if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
@@ -721,5 +725,80 @@ mod tests {
         assert!(second.is_some());
         let second_text = second.unwrap().as_str().to_string();
         assert!(second_text.contains("kitchen"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_tracks_lovelace_config_with_url_path() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-conn-lovelace";
+        let client_ip = "127.0.0.1";
+
+        // Send lovelace/config message with url_path present
+        let lovelace_msg = r#"{"type":"lovelace/config","id":100,"url_path":"my-dashboard"}"#;
+        tx.send(Frame::text(lovelace_msg)).await.unwrap();
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Verify message was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+
+        // Verify state was updated - ID should be tracked
+        let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+        assert_eq!(state.lovelace_config_id, Some(100));
+    }
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_tracks_lovelace_config_with_null_url_path() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-conn-lovelace-null";
+        let client_ip = "127.0.0.1";
+
+        // Send lovelace/config message with url_path as null
+        let lovelace_msg = r#"{"type":"lovelace/config","id":101,"url_path":null}"#;
+        tx.send(Frame::text(lovelace_msg)).await.unwrap();
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Verify message was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+
+        // Verify state was updated - ID should be tracked even with null url_path
+        let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+        assert_eq!(state.lovelace_config_id, Some(101));
+    }
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_skips_lovelace_config_without_url_path() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-conn-no-url-path";
+        let client_ip = "127.0.0.1";
+
+        // Send lovelace/config message without url_path field
+        let lovelace_msg = r#"{"type":"lovelace/config","id":102}"#;
+        tx.send(Frame::text(lovelace_msg)).await.unwrap();
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Verify message was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+
+        // Verify state was NOT updated - ID should not be tracked without url_path
+        let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+        assert_eq!(state.lovelace_config_id, None);
     }
 }
