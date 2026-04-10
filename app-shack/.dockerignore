@@ -7,6 +7,7 @@ __pycache__/
 *.egg
 *.egg-info/
 rootfs/app/.venv/
+rootfs/app/data/
 dist/
 build/
 .pytest_cache/
