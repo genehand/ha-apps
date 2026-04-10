@@ -936,4 +936,74 @@ mod tests {
         // Should not error when clearing non-existent file
         state.clear_token().await.unwrap();
     }
+
+    /// Test that saving a token sends a notification to the daemon
+    #[tokio::test]
+    async fn test_save_token_sends_notification() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let token_path = temp_dir.path().join("token.json");
+
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+
+        let (token_tx, mut token_rx) = broadcast::channel(1);
+
+        let state = AppState::new(
+            config,
+            Arc::new(RwLock::new(PlaybackState::default())),
+            token_path.clone(),
+            token_tx,
+        );
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+
+        // Save token should trigger notification
+        state.save_token(&token).await.unwrap();
+
+        // Verify notification was sent
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            token_rx.recv()
+        ).await;
+
+        assert!(result.is_ok(), "Should receive notification within 1 second");
+        assert!(result.unwrap().is_ok(), "Notification should be Ok");
+    }
+
+    /// Test that token notification is NOT sent when notify_tx is None
+    /// (used when daemon saves its own refreshed token)
+    #[tokio::test]
+    async fn test_save_token_without_notification() {
+        use crate::token;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let token_path = temp_dir.path().join("token.json");
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = create_test_token(now + 3600);
+
+        // Save with None notification sender (daemon internal save)
+        token::save_token(&token_path, &token, None).await.unwrap();
+
+        // Token should be saved
+        assert!(token_path.exists());
+        let loaded: Token = serde_json::from_str(
+            &tokio::fs::read_to_string(&token_path).await.unwrap()
+        ).unwrap();
+        assert_eq!(loaded.access_token, token.access_token);
+    }
 }
