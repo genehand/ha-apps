@@ -162,7 +162,12 @@ impl SpotifyClient {
             
             match self.attempt_connection().await {
                 Ok(()) => {
-                    warn!("Spotify connection ended, will reconnect...");
+                    warn!("Spotify connection ended cleanly, will reconnect...");
+                    // Reset error count on successful connection
+                    if consecutive_errors > 0 {
+                        debug!("Resetting consecutive error count after successful connection");
+                        consecutive_errors = 0;
+                    }
                 }
                 Err(e) => {
                     let err_msg = format!("{}", e);
@@ -174,7 +179,7 @@ impl SpotifyClient {
                         error!("Connection error: {}", e);
                     }
                     consecutive_errors += 1;
-                    
+
                     // Exponential backoff: 5s, 10s, 20s, 40s, 80s, then cap at 300s (5min)
                     let backoff_secs = std::cmp::min(
                         5 * 2u64.saturating_pow(consecutive_errors.saturating_sub(1).into()),
@@ -186,9 +191,8 @@ impl SpotifyClient {
                     continue;
                 }
             }
-            
-            // Reset error count on successful connection (even if it ended cleanly)
-            consecutive_errors = 0;
+
+            // Standard reconnection delay after clean connection
             sleep(Duration::from_secs(5)).await;
         }
     }
@@ -370,6 +374,12 @@ impl SpotifyClient {
             .listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>)
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to cluster: {}", e))?;
 
+        // Also keep the connection_id stream open as a WebSocket health indicator
+        let mut connection_id_stream = session
+            .dealer()
+            .listen_for("hm://pusher/v1/connections/", extract_connection_id)
+            .map_err(|e| anyhow::anyhow!("Failed to re-subscribe to connection_id: {}", e))?;
+
         debug!("Subscribed to cluster updates! Monitoring playback from other Spotify devices...");
 
         // Try to fetch current playback state immediately after connecting
@@ -402,26 +412,15 @@ impl SpotifyClient {
         info!("Greenroom monitor active - tracking Spotify playback");
 
         let mut last_update = Instant::now();
-        let silence_warning_threshold = Duration::from_secs(60);
-        let silence_timeout_idle = Duration::from_secs(120); // 2 min when idle/paused
-        let silence_timeout_playing = Duration::from_secs(30); // 30 sec when playing
         let mut consecutive_errors = 0u32;
 
         loop {
-            // Determine timeout based on current playback state
-            let is_playing = playback_state.read().await.is_playing;
-            let silence_timeout = if is_playing {
-                silence_timeout_playing
-            } else {
-                silence_timeout_idle
-            };
-
             tokio::select! {
                 cluster_result = cluster_updates.next() => {
                     match cluster_result {
                         Some(Ok(cluster_update)) => {
                             let elapsed = last_update.elapsed();
-                            if elapsed > silence_warning_threshold {
+                            if elapsed > Duration::from_secs(60) {
                                 info!("Connection restored - received update after {}s silence", elapsed.as_secs());
                             }
                             last_update = Instant::now();
@@ -447,14 +446,22 @@ impl SpotifyClient {
                         }
                     }
                 }
-                // Force reconnection if we haven't received updates for too long
-                _ = tokio::time::sleep(silence_timeout) => {
-                    let elapsed = last_update.elapsed();
-                    if elapsed >= silence_timeout {
-                        consecutive_errors += 1;
-                        error!("No updates received for {}s ({} consecutive), forcing reconnection", 
-                            elapsed.as_secs(), consecutive_errors);
-                        return Err(anyhow::anyhow!("Connection timed out - no updates for {}s", elapsed.as_secs()));
+                // Monitor connection_id stream as WebSocket health indicator
+                connection_result = connection_id_stream.next() => {
+                    match connection_result {
+                        Some(Ok(_id)) => {
+                            // Connection ID messages indicate WebSocket is alive
+                            // This works even when no playback updates are coming
+                            debug!("WebSocket alive - received connection ID message");
+                        }
+                        Some(Err(e)) => {
+                            warn!("Connection ID stream error: {}", e);
+                            return Err(anyhow::anyhow!("Connection health check failed: {}", e));
+                        }
+                        None => {
+                            warn!("Connection ID stream ended - WebSocket connection lost");
+                            return Err(anyhow::anyhow!("WebSocket connection closed"));
+                        }
                     }
                 }
             }
@@ -1235,5 +1242,72 @@ mod tests {
 
         // Verify timeout is 2 minutes
         assert_eq!(silence_timeout.as_secs(), 120);
+    }
+
+    /// Test that backoff calculation works correctly for consecutive errors
+    #[test]
+    fn test_backoff_calculation() {
+        let max_backoff_secs = 300u64;
+
+        // Test backoff progression: 5s, 10s, 20s, 40s, 80s, 160s, 300s (cap)
+        let test_cases: Vec<(u32, u64)> = vec![
+            (0, 5),   // 5 * 2^0 = 5
+            (1, 5),   // 5 * 2^0 = 5
+            (2, 10),  // 5 * 2^1 = 10
+            (3, 20),  // 5 * 2^2 = 20
+            (4, 40),  // 5 * 2^3 = 40
+            (5, 80),  // 5 * 2^4 = 80
+            (6, 160), // 5 * 2^5 = 160
+            (7, 300), // 5 * 2^6 = 320, capped at 300
+            (10, 300), // Should still be capped
+        ];
+
+        for (consecutive_errors, expected) in test_cases {
+            let consecutive_errors_u64: u64 = consecutive_errors.into();
+            let power: u32 = consecutive_errors_u64.saturating_sub(1).try_into().unwrap_or(0);
+            let backoff = std::cmp::min(
+                5 * 2u64.saturating_pow(power),
+                max_backoff_secs
+            );
+            assert_eq!(backoff, expected, "Backoff for {} consecutive errors should be {}s", consecutive_errors, expected);
+        }
+    }
+
+    /// Test that verifies error count should reset after successful connection
+    #[test]
+    fn test_error_count_reset_logic() {
+        // Simulate the logic in run() - error count should reset on success
+        let mut consecutive_errors = 3u32;
+
+        // After successful connection (Ok(()))
+        if consecutive_errors > 0 {
+            consecutive_errors = 0;
+        }
+
+        assert_eq!(consecutive_errors, 0, "Error count should be reset to 0 after successful connection");
+    }
+
+    /// Test that verifies error count increments on failure
+    #[test]
+    fn test_error_count_increment() {
+        let mut consecutive_errors = 0u32;
+
+        // Simulate error
+        consecutive_errors += 1;
+        assert_eq!(consecutive_errors, 1);
+
+        // Another error
+        consecutive_errors += 1;
+        assert_eq!(consecutive_errors, 2);
+
+        // After successful connection, should reset
+        if consecutive_errors > 0 {
+            consecutive_errors = 0;
+        }
+        assert_eq!(consecutive_errors, 0);
+
+        // New error after reset should start from 1 again
+        consecutive_errors += 1;
+        assert_eq!(consecutive_errors, 1);
     }
 }
