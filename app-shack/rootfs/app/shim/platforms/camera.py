@@ -7,6 +7,9 @@ from typing import Any, Optional
 
 from ..entity import Entity, EntityDescription
 from ..frozen_dataclass_compat import FrozenOrThawed
+from ..logging import get_logger
+
+_LOGGER = get_logger(__name__)
 
 DOMAIN = "camera"
 
@@ -43,6 +46,58 @@ class Camera(Entity):
         """Return stream of camera."""
         raise NotImplementedError()
 
+    async def async_added_to_hass(self) -> None:
+        """Run when entity about to be added to hass.
+
+        Auto-detect and register with coordinator for entities that have a
+        coordinator attribute but don't inherit from CoordinatorEntity.
+        This fixes integrations like moonraker where PreviewCamera only
+        inherits from Camera but needs coordinator updates.
+        """
+        await super().async_added_to_hass()
+
+        # Check if this entity has a coordinator but isn't CoordinatorEntity
+        coordinator = getattr(self, "coordinator", None)
+        if coordinator is None:
+            return
+
+        # Check if this entity is already a CoordinatorEntity (skip if so)
+        # We detect this by checking if _handle_coordinator_update is overridden
+        # in a parent class that inherits from CoordinatorEntity
+        if hasattr(self, "_handle_coordinator_update"):
+            # Check if it's the CoordinatorEntity's method
+            import inspect
+
+            mro = type(self).__mro__
+            for cls in mro:
+                if cls.__name__ == "CoordinatorEntity":
+                    # Already a CoordinatorEntity, skip
+                    _LOGGER.debug(
+                        f"Camera {self.entity_id} is already CoordinatorEntity, "
+                        "skipping auto-registration"
+                    )
+                    return
+
+        # Check if coordinator has async_add_listener
+        if not hasattr(coordinator, "async_add_listener"):
+            _LOGGER.debug(
+                f"Camera {self.entity_id} coordinator has no async_add_listener"
+            )
+            return
+
+        # Register for coordinator updates
+        _LOGGER.debug(
+            f"Camera {self.entity_id} auto-registering with coordinator for updates"
+        )
+
+        def _on_coordinator_update():
+            """Handle coordinator update."""
+            _LOGGER.debug(f"Camera {self.entity_id} handling coordinator update")
+            self.async_write_ha_state()
+
+        remove_listener = coordinator.async_add_listener(_on_coordinator_update)
+        self.async_on_remove(remove_listener)
+
     async def _publish_mqtt_discovery(self) -> None:
         """Publish MQTT discovery config for camera.
 
@@ -51,9 +106,6 @@ class Camera(Entity):
         """
         # Skip streaming cameras - only publish thumbnail/static cameras
         if self.is_streaming or isinstance(self, MjpegCamera):
-            from ..logging import get_logger
-
-            _LOGGER = get_logger(__name__)
             _LOGGER.debug(
                 f"Skipping MQTT discovery for streaming camera {self.entity_id}"
             )
@@ -149,6 +201,43 @@ class Camera(Entity):
         # Schedule the async task
         if hasattr(self.hass, "async_add_job"):
             self.hass.async_add_job(_publish_image)
+
+    async def _cleanup_mqtt(self) -> None:
+        """Clean up MQTT topics for camera entities.
+
+        Cameras don't use state_topic - they use image_topic instead.
+        Override base class to skip state_topic cleanup.
+        """
+        _LOGGER.debug(f"_cleanup_mqtt called for camera {self.entity_id}")
+
+        if not self.hass or not self.entity_id:
+            _LOGGER.debug(
+                f"  Skipping cleanup: hass={self.hass is not None}, entity_id={self.entity_id}"
+            )
+            return
+
+        if not hasattr(self.hass, "_mqtt_client"):
+            _LOGGER.debug(f"  Skipping cleanup: no _mqtt_client attribute")
+            return
+
+        mqtt = self.hass._mqtt_client
+
+        from ..entity import get_mqtt_entity_id
+
+        entity_id_clean = get_mqtt_entity_id(self.entity_id)
+        platform = "camera"
+
+        # Delete discovery config topic (empty payload with retain=True removes it)
+        discovery_topic = f"homeassistant/{platform}/{entity_id_clean}/config"
+        mqtt.publish(discovery_topic, "", qos=0, retain=True)
+        _LOGGER.debug(f"  Published empty payload to {discovery_topic}")
+
+        # Clear image topic (cameras use image_topic, not state_topic)
+        image_topic = f"homeassistant/{platform}/{entity_id_clean}/image"
+        mqtt.publish(image_topic, "", qos=0, retain=True)
+        _LOGGER.debug(f"  Published empty payload to {image_topic}")
+
+        _LOGGER.debug(f"Cleaned up MQTT topics for camera {self.entity_id}")
 
 
 class MjpegCamera(Camera):
