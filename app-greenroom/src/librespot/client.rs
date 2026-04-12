@@ -26,6 +26,19 @@ use crate::token::{self, Token};
 /// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
 const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 
+/// Max backoff for reconnection attempts (5 minutes)
+const MAX_BACKOFF_SECS: u64 = 300;
+
+/// Calculate exponential backoff delay for reconnection attempts.
+/// Returns delay in seconds: 5, 5, 10, 20, 40, 80, 160, capped at 300.
+pub fn calculate_backoff(consecutive_errors: u32) -> u64 {
+    let power: u32 = (consecutive_errors as u64).saturating_sub(1).try_into().unwrap_or(0);
+    std::cmp::min(
+        5 * 2u64.saturating_pow(power),
+        MAX_BACKOFF_SECS
+    )
+}
+
 /// Convert librespot's OAuthToken to our shared Token type.
 /// Calculates expiration as now + 3600 seconds since librespot doesn't provide expires_at.
 fn token_from_oauth(token: OAuthToken) -> Token {
@@ -111,7 +124,6 @@ impl SpotifyClient {
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut consecutive_errors: u32 = 0;
-        let max_backoff_secs = 300;
         
         loop {
             // Check for token first - if present, try to connect
@@ -180,11 +192,7 @@ impl SpotifyClient {
                     }
                     consecutive_errors += 1;
 
-                    // Exponential backoff: 5s, 10s, 20s, 40s, 80s, then cap at 300s (5min)
-                    let backoff_secs = std::cmp::min(
-                        5 * 2u64.saturating_pow(consecutive_errors.saturating_sub(1).into()),
-                        max_backoff_secs
-                    );
+                    let backoff_secs = calculate_backoff(consecutive_errors);
                     warn!("Waiting {} seconds before reconnection attempt (error count: {})...",
                         backoff_secs, consecutive_errors);
                     sleep(Duration::from_secs(backoff_secs)).await;
@@ -1159,28 +1167,21 @@ mod tests {
     /// Test that backoff calculation works correctly for consecutive errors
     #[test]
     fn test_backoff_calculation() {
-        let max_backoff_secs = 300u64;
-
-        // Test backoff progression: 5s, 10s, 20s, 40s, 80s, 160s, 300s (cap)
+        // Test backoff progression: 5s, 5s, 10s, 20s, 40s, 80s, 160s, 300s (cap)
         let test_cases: Vec<(u32, u64)> = vec![
-            (0, 5),   // 5 * 2^0 = 5
-            (1, 5),   // 5 * 2^0 = 5
-            (2, 10),  // 5 * 2^1 = 10
-            (3, 20),  // 5 * 2^2 = 20
-            (4, 40),  // 5 * 2^3 = 40
-            (5, 80),  // 5 * 2^4 = 80
-            (6, 160), // 5 * 2^5 = 160
-            (7, 300), // 5 * 2^6 = 320, capped at 300
+            (0, 5),    // 5 * 2^0 = 5 (first attempt)
+            (1, 5),    // 5 * 2^0 = 5 (first error)
+            (2, 10),   // 5 * 2^1 = 10
+            (3, 20),   // 5 * 2^2 = 20
+            (4, 40),   // 5 * 2^3 = 40
+            (5, 80),   // 5 * 2^4 = 80
+            (6, 160),  // 5 * 2^5 = 160
+            (7, 300),  // 5 * 2^6 = 320, capped at 300
             (10, 300), // Should still be capped
         ];
 
         for (consecutive_errors, expected) in test_cases {
-            let consecutive_errors_u64: u64 = consecutive_errors.into();
-            let power: u32 = consecutive_errors_u64.saturating_sub(1).try_into().unwrap_or(0);
-            let backoff = std::cmp::min(
-                5 * 2u64.saturating_pow(power),
-                max_backoff_secs
-            );
+            let backoff = super::calculate_backoff(consecutive_errors);
             assert_eq!(backoff, expected, "Backoff for {} consecutive errors should be {}s", consecutive_errors, expected);
         }
     }

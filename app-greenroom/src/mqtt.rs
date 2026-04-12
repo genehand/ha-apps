@@ -2,12 +2,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, ConnectReturnCode};
-use tracing::{info, debug, error};
+use tracing::{info, debug, error, warn};
 use serde_json::json;
 use chrono::Utc;
 
 use crate::Config;
 use crate::PlaybackState;
+use crate::librespot::calculate_backoff;
 
 /// MQTT bridge for Home Assistant discovery
 pub struct MqttBridge {
@@ -30,6 +31,29 @@ impl MqttBridge {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
+        let mut consecutive_errors: u32 = 0;
+
+        loop {
+            match self.run_connection().await {
+                Ok(()) => {
+                    warn!("MQTT connection ended cleanly, will reconnect...");
+                    consecutive_errors = 0;
+                }
+                Err(e) => {
+                    error!("MQTT connection error: {}", e);
+                    consecutive_errors += 1;
+
+                    let backoff_secs = calculate_backoff(consecutive_errors);
+                    warn!("Waiting {} seconds before MQTT reconnection attempt (error count: {})...",
+                        backoff_secs, consecutive_errors);
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                }
+            }
+        }
+    }
+
+    /// Run a single MQTT connection until it drops
+    async fn run_connection(&mut self) -> anyhow::Result<()> {
         // Get MQTT settings from config
         let host = &self.config.mqtt_host;
         let port = self.config.mqtt_port;
@@ -41,7 +65,7 @@ impl MqttBridge {
 
         let mut mqttoptions = MqttOptions::new(device_id, host.clone(), port);
         mqttoptions.set_keep_alive(Duration::from_secs(30));
-        
+
         // Set Last Will and Testament - broker will publish "offline" if we disconnect unexpectedly
         let avail_topic = format!("greenroom/{}/availability", device_id);
         let will = rumqttc::LastWill::new(&avail_topic, "offline", QoS::AtLeastOnce, true);
@@ -53,7 +77,7 @@ impl MqttBridge {
         }
 
         let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
-        
+
         // Flag to track if we've published discovery configs
         let mut discovery_published = false;
 
@@ -78,7 +102,7 @@ impl MqttBridge {
                     info!("Received SIGTERM, shutting down gracefully...");
                     if discovery_published {
                         let _ = client.publish(&avail_topic, QoS::AtLeastOnce, true, "offline").await;
-                        client.disconnect().await?;
+                        let _ = client.disconnect().await;
                     }
                     return Ok(());
                 }
@@ -86,7 +110,7 @@ impl MqttBridge {
                     info!("Received SIGINT, shutting down gracefully...");
                     if discovery_published {
                         let _ = client.publish(&avail_topic, QoS::AtLeastOnce, true, "offline").await;
-                        client.disconnect().await?;
+                        let _ = client.disconnect().await;
                     }
                     return Ok(());
                 }
@@ -112,15 +136,20 @@ impl MqttBridge {
                                 // No command subscription - this is a monitor-only integration
                             } else {
                                 error!("MQTT connection failed: {:?}", connack.code);
+                                return Err(anyhow::anyhow!("MQTT connection failed: {:?}", connack.code));
                             }
                         }
                         Ok(Event::Incoming(Packet::Disconnect)) => {
-                            error!("MQTT disconnected");
-                            discovery_published = false;
+                            error!("MQTT disconnected by broker");
+                            return Err(anyhow::anyhow!("MQTT disconnected by broker"));
+                        }
+                        Ok(Event::Outgoing(rumqttc::Outgoing::Disconnect)) => {
+                            debug!("MQTT disconnect acknowledged");
+                            return Ok(());
                         }
                         Err(e) => {
                             error!("MQTT error: {}", e);
-                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            return Err(anyhow::anyhow!("MQTT error: {}", e));
                         }
                         _ => {}
                     }
@@ -221,5 +250,33 @@ impl MqttBridge {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that MqttBridge can be created with minimal config
+    #[test]
+    fn test_mqtt_bridge_creation() {
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: Some("test".to_string()),
+            mqtt_password: Some("pass".to_string()),
+            mqtt_device_id: "test".to_string(),
+        };
+
+        let playback_state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (_, state_rx) = broadcast::channel(16);
+
+        let bridge = MqttBridge::new(config, playback_state, state_rx);
+
+        assert_eq!(bridge.config.device_name, "Test");
+        assert_eq!(bridge.config.mqtt_host, "localhost");
+        assert_eq!(bridge.config.mqtt_port, 1883);
     }
 }
