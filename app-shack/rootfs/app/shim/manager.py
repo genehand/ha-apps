@@ -521,18 +521,16 @@ class ShimManager:
         )
 
         if success:
-            # Store version for logging before clearing
-            installed_version = info.latest_version
-
             # Clear update status for this integration
             info.update_available = False
             info.latest_version = None
+            self._integration_manager._save_integrations()
 
             # Reload
             for entry in entries:
                 await self._integration_loader.setup_integration(entry)
 
-            _LOGGER.info(f"Successfully updated {domain} to {installed_version}")
+            _LOGGER.info(f"Successfully updated {domain}")
 
             # Re-check updates and republish to clear the MQTT topic
             updates = await self._integration_manager.check_for_updates()

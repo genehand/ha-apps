@@ -833,6 +833,14 @@ class IntegrationManager:
                         _LOGGER.info(
                             f"Update available for {domain}: {info.version} -> {latest}"
                         )
+                    else:
+                        # No update available - clear flags
+                        if info.update_available:
+                            info.update_available = False
+                            info.latest_version = None
+                            _LOGGER.debug(
+                                f"Cleared update flag for {domain} - now up to date"
+                            )
                 else:
                     # Fallback to GitHub API for custom repos not in CDN
                     latest = await self._get_latest_version_from_github(
@@ -845,6 +853,14 @@ class IntegrationManager:
                         _LOGGER.info(
                             f"Update available for {domain}: {info.version} -> {latest}"
                         )
+                    else:
+                        # No update available - clear flags
+                        if info.update_available:
+                            info.update_available = False
+                            info.latest_version = None
+                            _LOGGER.debug(
+                                f"Cleared update flag for {domain} - now up to date"
+                            )
             except Exception as e:
                 _LOGGER.warning(f"Failed to check updates for {domain}: {e}")
 
@@ -1185,17 +1201,27 @@ class IntegrationManager:
             existing_info = self._integrations.get(actual_domain)
             was_enabled = existing_info.enabled if existing_info else False
 
+            # Get installed version from manifest
+            installed_version = manifest.get("version", "unknown")
+
+            # Warn if installed version doesn't match requested version
+            if version and installed_version != version:
+                _LOGGER.warning(
+                    f"Version mismatch for {actual_domain}: requested {version}, "
+                    f"got {installed_version}"
+                )
+
             # Update integration info using actual domain
             info = IntegrationInfo(
                 domain=actual_domain,
                 name=manifest.get("name", actual_domain),
-                version=manifest.get("version", "unknown"),
+                version=installed_version,
                 description=manifest.get("documentation", ""),
                 source=source,
                 repository_url=repo_url,
                 enabled=was_enabled,
                 installed_at=datetime.now().isoformat(),
-                latest_version=version or manifest.get("version", "unknown"),
+                latest_version=version or installed_version,
                 config_flow=manifest.get("config_flow", False),
                 requirements=manifest.get("requirements", []),
                 dependencies=manifest.get("dependencies", []),

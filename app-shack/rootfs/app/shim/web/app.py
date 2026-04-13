@@ -211,6 +211,30 @@ class WebUI:
                             }
                         )
 
+            # Check for version mismatch (upstream maintainer forgot to bump manifest)
+            version_warning = None
+            if info.update_available and info.latest_version:
+                # Fetch CDN data to get the "actual" latest version
+                integration_manager = self._shim_manager.get_integration_manager()
+                hacs_repo = None
+                if info.full_name and info.full_name in integration_manager._hacs_repos:
+                    hacs_repo = integration_manager._hacs_repos[info.full_name]
+                elif info.repository_url:
+                    # Find by repository URL
+                    for repo in integration_manager._hacs_repos.values():
+                        if repo.get("repository_url") == info.repository_url:
+                            hacs_repo = repo
+                            break
+
+                if hacs_repo:
+                    cdn_latest = hacs_repo.get("last_version")
+                    if cdn_latest and cdn_latest != info.version:
+                        version_warning = (
+                            f"Installed version ({info.version}) does not match "
+                            f"latest release ({cdn_latest}). The maintainer may have "
+                            f"forgotten to bump the version in manifest.json."
+                        )
+
             # Convert to dict for template compatibility
             info_dict = info.to_dict()
             entries_dicts = [
@@ -240,6 +264,7 @@ class WebUI:
                 entries=entries_dicts,
                 entities=entities_dicts,
                 devices=devices,
+                version_warning=version_warning,
             )
             return HTMLResponse(content=html)
 

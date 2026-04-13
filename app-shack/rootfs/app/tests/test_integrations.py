@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shim.core import HomeAssistant
 from shim.import_patch import setup_import_patching
 from shim.integrations.loader import IntegrationLoader
-from shim.integrations.manager import IntegrationManager
+from shim.integrations.manager import IntegrationManager, IntegrationInfo
 from shim.config_entries import ConfigEntry
 from shim.storage import Storage
 
