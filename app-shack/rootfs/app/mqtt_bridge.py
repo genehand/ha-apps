@@ -115,32 +115,17 @@ class MqttBridge:
                 # Re-subscribe to all topics on reconnect
                 self._resubscribe_all()
             else:
-                error_codes = {
-                    1: "incorrect protocol version",
-                    2: "invalid client identifier",
-                    3: "server unavailable",
-                    4: "bad username or password",
-                    5: "not authorised",
-                }
-                error_msg = error_codes.get(rc, f"unknown error (code {rc})")
+                # rc is a ReasonCode object - convert to string for error message
+                error_msg = str(rc)
                 self._connection_error = f"Connection failed: {error_msg}"
                 logger.error(f"MQTT connection failed: {error_msg}")
 
         def on_disconnect(client, userdata, disconnect_flags, rc, properties):
             self._connected = False
             if rc != 0:
-                error_codes = {
-                    1: "unacceptable protocol version",
-                    2: "identifier rejected",
-                    3: "server unavailable",
-                    4: "bad username or password",
-                    5: "not authorized",
-                    6: "unexpected disconnect",
-                    7: "connection refused - invalid credentials",
-                }
-                error_msg = error_codes.get(rc, f"unknown error (code {rc})")
-                self._last_disconnect_error = f"MQTT disconnect (rc={rc}): {error_msg}"
-                logger.warning(f"Unexpected MQTT disconnection (rc={rc})")
+                error_msg = str(rc)
+                self._last_disconnect_error = f"MQTT disconnect ({rc}): {error_msg}"
+                logger.warning(f"Unexpected MQTT disconnection ({rc})")
             else:
                 self._last_disconnect_error = None
                 logger.info("MQTT disconnected cleanly")

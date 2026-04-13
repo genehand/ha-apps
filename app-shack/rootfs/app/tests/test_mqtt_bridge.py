@@ -210,7 +210,8 @@ class TestMqttBridge:
             assert status["connected"] is False
             assert status["status_class"] == "disconnected"
             assert "error" in status
-            assert "rc=7" in status["error"]
+            # Error message contains the reason code (format: "(7): 7")
+            assert "7" in status["error"]
 
     def test_last_disconnect_error_initial(self):
         """Test last_disconnect_error is initially None."""
@@ -239,8 +240,8 @@ class TestMqttBridge:
             mock_client.on_disconnect(mock_client, None, {}, 7, None)
 
             assert bridge.last_disconnect_error is not None
-            assert "rc=7" in bridge.last_disconnect_error
-            assert "invalid credentials" in bridge.last_disconnect_error
+            # Error message format is: "MQTT disconnect (7): 7"
+            assert "7" in bridge.last_disconnect_error
 
     @pytest.mark.asyncio
     async def test_last_disconnect_error_cleared_on_connect(self):
