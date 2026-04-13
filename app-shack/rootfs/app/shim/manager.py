@@ -745,6 +745,7 @@ class ShimManager:
                 "name": "Shack",
                 "manufacturer": "Custom",
                 "model": "Integration Bridge",
+                "suggested_area": "None",
             },
         }
 
