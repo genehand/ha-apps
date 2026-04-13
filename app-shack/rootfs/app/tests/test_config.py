@@ -125,18 +125,37 @@ class TestConfig:
             "integration2": "ERROR",
         }
 
-    def test_load_mqtt_services_fallback_when_no_services(self, tmp_path, monkeypatch):
-        """Test that config falls back to manual options when services not available."""
+    def test_load_mqtt_from_env_when_set(self, monkeypatch):
+        """Test that config uses environment variables when set (bashio)."""
+        # Set environment variables as bashio would
+        monkeypatch.setenv("MQTT_HOST", "auto.mosquitto.local")
+        monkeypatch.setenv("MQTT_PORT", "1883")
+        monkeypatch.setenv("MQTT_USERNAME", "addons")
+        monkeypatch.setenv("MQTT_PASSWORD", "auto_generated_token")
 
-        # Mock both API and file to return None
-        def mock_query_api(path):
-            return None
+        # Even with manual config provided, env vars should take priority
+        data = {
+            "mqtt_host": "manual.broker.com",
+            "mqtt_port": 1884,
+            "mqtt_username": "manual_user",
+            "mqtt_password": "manual_pass",
+        }
 
-        def mock_load_file(cls):
-            return None
+        config = Config.from_dict(data)
 
-        monkeypatch.setattr("config._query_supervisor_api", mock_query_api)
-        monkeypatch.setattr(Config, "_load_mqtt_services", classmethod(mock_load_file))
+        # Should use environment variables from bashio
+        assert config.mqtt_host == "auto.mosquitto.local"
+        assert config.mqtt_port == 1883
+        assert config.mqtt_username == "addons"
+        assert config.mqtt_password == "auto_generated_token"
+
+    def test_load_mqtt_fallback_when_env_not_set(self, monkeypatch):
+        """Test that config falls back to manual options when env vars not set."""
+        # Ensure environment variables are not set
+        monkeypatch.delenv("MQTT_HOST", raising=False)
+        monkeypatch.delenv("MQTT_PORT", raising=False)
+        monkeypatch.delenv("MQTT_USERNAME", raising=False)
+        monkeypatch.delenv("MQTT_PASSWORD", raising=False)
 
         data = {
             "mqtt_host": "my.broker.com",
@@ -152,55 +171,24 @@ class TestConfig:
         assert config.mqtt_username == "manual_user"
         assert config.mqtt_password == "manual_pass"
 
-    def test_load_mqtt_services_uses_supervisor_api(self, tmp_path, monkeypatch):
-        """Test that config uses Supervisor API credentials when available."""
+    def test_load_mqtt_incomplete_env_uses_manual(self, monkeypatch):
+        """Test that incomplete env vars fall back to manual config."""
+        # Set only some env vars (incomplete)
+        monkeypatch.setenv("MQTT_HOST", "auto.mosquitto.local")
+        # Missing username and password
 
-        # Mock Supervisor API response
-        def mock_query_api(path):
-            if path == "/services/mqtt":
-                return {
-                    "data": {
-                        "host": "auto.mosquitto.local",
-                        "port": 1883,
-                        "username": "addons",
-                        "password": "auto_generated_token",
-                    }
-                }
-            return None
-
-        # Mock the _load_mqtt_services method directly to return API data
-        def mock_load_services(cls):
-            response = mock_query_api("/services/mqtt")
-            if response and "data" in response:
-                data = response["data"]
-                if data and data.get("username") and data.get("password"):
-                    return {
-                        "host": data.get("host", "core-mosquitto"),
-                        "port": data.get("port", 1883),
-                        "username": data.get("username"),
-                        "password": data.get("password"),
-                    }
-            return None
-
-        monkeypatch.setattr(
-            Config, "_load_mqtt_services", classmethod(mock_load_services)
-        )
-
-        # Even with manual config provided, services should take priority
         data = {
             "mqtt_host": "manual.broker.com",
-            "mqtt_port": 1884,
             "mqtt_username": "manual_user",
             "mqtt_password": "manual_pass",
         }
 
         config = Config.from_dict(data)
 
-        # Should use services credentials from API
-        assert config.mqtt_host == "auto.mosquitto.local"
-        assert config.mqtt_port == 1883
-        assert config.mqtt_username == "addons"
-        assert config.mqtt_password == "auto_generated_token"
+        # Should fall back to manual config
+        assert config.mqtt_host == "manual.broker.com"
+        assert config.mqtt_username == "manual_user"
+        assert config.mqtt_password == "manual_pass"
 
     def test_load_from_json_file(self, tmp_path):
         """Test loading config from JSON file."""
@@ -275,26 +263,22 @@ class TestConfig:
         assert loaded["log_level"] == "DEBUG"
 
 
-class TestLoadMqttServices:
-    """Test cases for _load_mqtt_services method."""
+class TestLoadMqttFromEnv:
+    """Test cases for _load_mqtt_from_env method."""
 
-    def test_load_mqtt_services_returns_none_when_no_services(self, monkeypatch):
-        """Test _load_mqtt_services returns None when no services available."""
+    def test_load_mqtt_from_env_returns_none_when_not_set(self, monkeypatch):
+        """Test _load_mqtt_from_env returns None when env vars not set."""
+        # Ensure environment variables are not set
+        monkeypatch.delenv("MQTT_HOST", raising=False)
+        monkeypatch.delenv("MQTT_PORT", raising=False)
+        monkeypatch.delenv("MQTT_USERNAME", raising=False)
+        monkeypatch.delenv("MQTT_PASSWORD", raising=False)
 
-        # Mock both API and file to return None
-        def mock_query_api(path):
-            return None
-
-        monkeypatch.setattr("config._query_supervisor_api", mock_query_api)
-        monkeypatch.setattr(
-            Config, "_load_mqtt_services", classmethod(lambda cls: None)
-        )
-
-        result = Config._load_mqtt_services()
+        result = Config._load_mqtt_from_env()
         assert result is None
 
-    def test_load_mqtt_services_returns_data_from_api(self, monkeypatch):
-        """Test _load_mqtt_services returns data from Supervisor API when available."""
+    def test_load_mqtt_from_env_returns_data_when_set(self, monkeypatch):
+        """Test _load_mqtt_from_env returns data when all env vars set."""
         expected_data = {
             "host": "mosquitto",
             "port": 1883,
@@ -302,121 +286,30 @@ class TestLoadMqttServices:
             "password": "secret123",
         }
 
-        def mock_query_api(path):
-            if path == "/services/mqtt":
-                return {"data": expected_data}
-            return None
+        monkeypatch.setenv("MQTT_HOST", "mosquitto")
+        monkeypatch.setenv("MQTT_PORT", "1883")
+        monkeypatch.setenv("MQTT_USERNAME", "addons")
+        monkeypatch.setenv("MQTT_PASSWORD", "secret123")
 
-        monkeypatch.setattr("config._query_supervisor_api", mock_query_api)
-        monkeypatch.setattr(
-            Config, "_load_mqtt_services", classmethod(lambda cls: expected_data)
-        )
-
-        result = Config._load_mqtt_services()
+        result = Config._load_mqtt_from_env()
         assert result == expected_data
 
-    def test_load_mqtt_services_api_missing_credentials(self, monkeypatch):
-        """Test _load_mqtt_services falls back when API has no credentials."""
+    def test_load_mqtt_from_env_returns_none_when_incomplete(self, monkeypatch):
+        """Test _load_mqtt_from_env returns None when env vars incomplete."""
+        # Set only some env vars
+        monkeypatch.setenv("MQTT_HOST", "mosquitto")
+        monkeypatch.setenv("MQTT_PORT", "1883")
+        # Missing username and password
 
-        # Mock API to return empty data
-        def mock_query_api(path):
-            if path == "/services/mqtt":
-                return {
-                    "data": {"host": "mosquitto", "port": 1883}
-                }  # No username/password
-            return None
-
-        monkeypatch.setattr("config._query_supervisor_api", mock_query_api)
-
-        # Mock _load_mqtt_services to return None (simulating API with no credentials)
-        monkeypatch.setattr(
-            Config, "_load_mqtt_services", classmethod(lambda cls: None)
-        )
-
-        result = Config._load_mqtt_services()
+        result = Config._load_mqtt_from_env()
         assert result is None
 
-    def test_load_mqtt_services_returns_data_from_file(self, tmp_path, monkeypatch):
-        """Test _load_mqtt_services returns data from services file when API fails."""
+    def test_load_mqtt_from_env_uses_default_port(self, monkeypatch):
+        """Test _load_mqtt_from_env uses default port 1883 when not set."""
+        monkeypatch.setenv("MQTT_HOST", "mosquitto")
+        monkeypatch.setenv("MQTT_USERNAME", "addons")
+        monkeypatch.setenv("MQTT_PASSWORD", "secret123")
+        # Port not set
 
-        # Mock API to fail
-        monkeypatch.setattr("config._query_supervisor_api", lambda path: None)
-
-        services_dir = tmp_path / "services" / "mqtt"
-        services_dir.mkdir(parents=True)
-        services_file = services_dir / "config.json"
-
-        expected_data = {
-            "host": "mosquitto",
-            "port": 1883,
-            "username": "addons",
-            "password": "secret123",
-        }
-        with open(services_file, "w") as f:
-            json.dump(expected_data, f)
-
-        # Monkeypatch the path in the method
-        def mock_load(cls):
-            # API call returns None
-            api_result = None
-            if api_result and "data" in api_result:
-                return api_result["data"]
-
-            # Fallback to file
-            try:
-                with open(services_file, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return None
-
-        monkeypatch.setattr(Config, "_load_mqtt_services", classmethod(mock_load))
-
-        result = Config._load_mqtt_services()
-        assert result == expected_data
-
-    def test_load_mqtt_services_handles_json_error(self, tmp_path, monkeypatch):
-        """Test _load_mqtt_services handles malformed JSON gracefully."""
-        monkeypatch.setattr("config._query_supervisor_api", lambda path: None)
-
-        services_dir = tmp_path / "services" / "mqtt"
-        services_dir.mkdir(parents=True)
-        services_file = services_dir / "config.json"
-
-        # Write invalid JSON
-        with open(services_file, "w") as f:
-            f.write("not valid json")
-
-        def mock_load(cls):
-            try:
-                with open(services_file, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return None
-
-        monkeypatch.setattr(Config, "_load_mqtt_services", classmethod(mock_load))
-
-        result = Config._load_mqtt_services()
-        assert result is None
-
-    def test_load_mqtt_services_handles_io_error(self, tmp_path, monkeypatch):
-        """Test _load_mqtt_services handles IO errors gracefully."""
-        monkeypatch.setattr("config._query_supervisor_api", lambda path: None)
-
-        services_dir = tmp_path / "services" / "mqtt"
-        services_dir.mkdir(parents=True)
-        services_file = services_dir / "config.json"
-
-        # Create file but make it unreadable (use a directory as file)
-        services_file.mkdir()  # Can't read a directory as JSON
-
-        def mock_load(cls):
-            try:
-                with open(services_file, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return None
-
-        monkeypatch.setattr(Config, "_load_mqtt_services", classmethod(mock_load))
-
-        result = Config._load_mqtt_services()
-        assert result is None
+        result = Config._load_mqtt_from_env()
+        assert result["port"] == 1883

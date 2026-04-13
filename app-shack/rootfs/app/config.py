@@ -32,19 +32,38 @@ def _query_supervisor_api(path: str) -> Optional[dict]:
         import urllib.error
 
         url = f"http://supervisor{path}"
+        logger.debug("Querying Supervisor API: %s", url)
         req = urllib.request.Request(
             url,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
+                "Content-Type": "application/json",
             },
         )
 
         with urllib.request.urlopen(req, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
+            data = json.loads(response.read().decode("utf-8"))
+            logger.debug("Supervisor API response for %s: %s", path, data)
+            return data
 
+    except urllib.error.HTTPError as e:
+        # Try to read error response body
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8")
+        except:
+            pass
+        logger.error(
+            "Supervisor API HTTP error for %s: %s %s - %s",
+            path,
+            e.code,
+            e.reason,
+            error_body,
+        )
+        return None
     except Exception as e:
-        logger.debug("Supervisor API query failed for %s: %s", path, e)
+        logger.error("Supervisor API query failed for %s: %s", path, e)
         return None
 
 
@@ -97,42 +116,26 @@ class Config:
             return config
 
     @classmethod
-    def _load_mqtt_services(cls) -> Optional[dict]:
-        """Load MQTT credentials from HA Supervisor API or services file.
+    def _load_mqtt_from_env(cls) -> Optional[dict]:
+        """Load MQTT credentials from environment variables.
 
-        Returns dict with host, port, username, password or None if not available.
+        These are set by the S6 run script using bashio.
+        Returns dict with host, port, username, password or None if not set.
         """
-        # First try the Supervisor API (more reliable)
-        response = _query_supervisor_api("/services/mqtt")
-        if response and "data" in response:
-            data = response["data"]
-            if data and data.get("username") and data.get("password"):
-                logger.info("Using MQTT credentials from Supervisor API")
-                return {
-                    "host": data.get("host", "core-mosquitto"),
-                    "port": data.get("port", 1883),
-                    "username": data.get("username"),
-                    "password": data.get("password"),
-                }
+        host = os.environ.get("MQTT_HOST")
+        port = os.environ.get("MQTT_PORT")
+        username = os.environ.get("MQTT_USERNAME")
+        password = os.environ.get("MQTT_PASSWORD")
 
-        # Fallback to local services file
-        services_path = "/data/services/mqtt/config.json"
-        if not os.path.exists(services_path):
-            logger.debug("MQTT services file not found at %s", services_path)
-            return None
-
-        try:
-            with open(services_path, "r") as f:
-                data = json.load(f)
-            if data and data.get("username") and data.get("password"):
-                logger.info("Using MQTT credentials from services file")
-                return data
-            else:
-                logger.warning("MQTT services file exists but missing credentials")
-                return None
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning("Failed to read MQTT services file: %s", e)
-            return None
+        if host and username and password:
+            logger.info("Using MQTT credentials from environment (bashio)")
+            return {
+                "host": host,
+                "port": int(port) if port else 1883,
+                "username": username,
+                "password": password,
+            }
+        return None
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
@@ -146,8 +149,8 @@ class Config:
                 if "name" in item
             }
 
-        # Check for built-in MQTT service credentials first
-        mqtt_services = cls._load_mqtt_services()
+        # Check for MQTT credentials from environment (set by bashio in S6 run script)
+        mqtt_services = cls._load_mqtt_from_env()
 
         if mqtt_services:
             mqtt_host = mqtt_services.get("host", "core-mosquitto")
