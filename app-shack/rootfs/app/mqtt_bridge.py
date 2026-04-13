@@ -8,13 +8,15 @@ import random
 import string
 from typing import Callable, Dict, List, Optional, Tuple
 
-from paho.mqtt.client import Client
+from paho.mqtt.client import Client, CallbackAPIVersion
 
 logger = logging.getLogger("shack.mqtt")
 
 # Reconnection settings
 RECONNECT_TIMEOUT_SECONDS = 120  # Exit if disconnected for this long
 RECONNECT_CHECK_INTERVAL = 5  # Check connection status every 5 seconds
+RECONNECT_DELAY_MIN = 5  # Min seconds between reconnect attempts
+RECONNECT_DELAY_MAX = 300  # Max seconds between reconnect attempts
 
 
 class MqttBridge:
@@ -34,12 +36,12 @@ class MqttBridge:
         self._client: Optional[Client] = None
         self._subscriptions: Dict[str, Callable] = {}  # topic -> callback
         self._watchdog_task: Optional[asyncio.Task] = None
-        self._reconnect_task: Optional[asyncio.Task] = None
         self._last_connected_time: float = 0
         self._initial_connect_complete: bool = False
         self._last_disconnect_error: Optional[str] = None
         self._connected: bool = False
         self._shutdown: bool = False
+        self._connection_error: Optional[str] = None
 
     @property
     def last_disconnect_error(self) -> Optional[str]:
@@ -86,21 +88,29 @@ class MqttBridge:
             random.choices(string.ascii_lowercase + string.digits, k=6)
         )
         client_id = f"hacs-shack-{random_suffix}"
-        self._client = Client(client_id=client_id, clean_session=True)
+
+        # Configure client with built-in automatic reconnection
+        self._client = Client(
+            callback_api_version=CallbackAPIVersion.VERSION2,
+            client_id=client_id,
+            reconnect_on_failure=True,
+        )
+        self._client.reconnect_delay_set(
+            min_delay=RECONNECT_DELAY_MIN,
+            max_delay=RECONNECT_DELAY_MAX,
+        )
         logger.debug(f"Using MQTT client_id: {client_id}")
 
         # Reset connection state tracking
         self._connected = False
         self._connection_error = None
 
-        def on_connect(client, userdata, flags, rc):
+        def on_connect(client, userdata, flags, rc, properties):
             if rc == 0:
                 self._connected = True
                 self._last_connected_time = time.time()
                 self._initial_connect_complete = True
                 self._last_disconnect_error = None  # Clear any previous error
-                # Clear reconnect task since we're now connected
-                self._reconnect_task = None
                 logger.info("Connected to MQTT broker")
                 # Re-subscribe to all topics on reconnect
                 self._resubscribe_all()
@@ -116,8 +126,7 @@ class MqttBridge:
                 self._connection_error = f"Connection failed: {error_msg}"
                 logger.error(f"MQTT connection failed: {error_msg}")
 
-        def on_disconnect(client, userdata, rc):
-            was_connected = self._connected
+        def on_disconnect(client, userdata, disconnect_flags, rc, properties):
             self._connected = False
             if rc != 0:
                 error_codes = {
@@ -136,17 +145,8 @@ class MqttBridge:
                 self._last_disconnect_error = None
                 logger.info("MQTT disconnected cleanly")
 
-            # Start reconnection loop if we were connected and not shutting down
-            if was_connected and not self._shutdown and not self._reconnect_task:
-                logger.info("Starting reconnection loop after disconnect")
-                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
-
         self._client.on_connect = on_connect
         self._client.on_disconnect = on_disconnect
-
-        # Store callbacks for reconnection
-        self._last_on_connect = on_connect
-        self._last_on_disconnect = on_disconnect
 
         if self.username and self.password:
             self._client.username_pw_set(self.username, self.password)
@@ -155,25 +155,21 @@ class MqttBridge:
             self._client.connect(self.host, self.port)
             self._client.loop_start()
 
-            # Wait for connection with timeout
+            # Wait for initial connection with timeout
             for _ in range(50):  # 5 seconds timeout
                 if self._connected:
                     break
                 if self._connection_error:
-                    # Connection failed (e.g., auth error) - don't throw, start reconnection
+                    # Connection failed initially - log and let built-in reconnection handle it
                     logger.warning(
                         f"Initial MQTT connection failed: {self._connection_error}. "
-                        f"Will retry in background."
+                        f"Will retry with built-in reconnection."
                     )
                     break
                 await asyncio.sleep(0.1)
 
-            if self._connected:
-                # Success - start the connection watchdog
-                self._watchdog_task = asyncio.create_task(self._connection_watchdog())
-            else:
-                # Failed to connect - start background reconnection task
-                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+            # Start the connection watchdog (monitors for prolonged disconnections)
+            self._watchdog_task = asyncio.create_task(self._connection_watchdog())
 
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker: {e}")
@@ -182,7 +178,6 @@ class MqttBridge:
                 self._client = None
             # Don't raise - let the app continue so UI can show the error
             self._last_disconnect_error = str(e)
-            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
     def _resubscribe_all(self):
         """Re-subscribe to all registered topics after reconnection."""
@@ -195,80 +190,6 @@ class MqttBridge:
                 self._client.message_callback_add(topic, callback)
                 result, mid = self._client.subscribe(topic)
                 logger.debug(f"Re-subscribed to {topic} (result={result})")
-
-    async def _reconnect_loop(self):
-        """Background task to retry MQTT connection when disconnected."""
-        retry_count = 0
-        base_delay = 5  # Start with 5 seconds
-        max_delay = 300  # Max 5 minutes between retries
-
-        while not self._shutdown and not self._connected:
-            retry_count += 1
-            delay = min(base_delay * (2 ** (retry_count - 1)), max_delay)
-
-            logger.info(f"MQTT reconnect attempt {retry_count} in {delay}s...")
-            await asyncio.sleep(delay)
-
-            if self._shutdown or self._connected:
-                break
-
-            try:
-                # Try to reconnect
-                if self._client:
-                    self._client.loop_stop()
-                    self._client = None
-
-                # Create new client
-                random_suffix = "".join(
-                    random.choices(string.ascii_lowercase + string.digits, k=6)
-                )
-                client_id = f"hacs-shack-{random_suffix}"
-                self._client = Client(client_id=client_id, clean_session=True)
-                logger.debug(f"Reconnect using client_id: {client_id}")
-
-                # Reset state
-                self._connection_error = None
-
-                # Re-setup callbacks (need to re-bind them)
-                self._client.on_connect = self._last_on_connect
-                self._client.on_disconnect = self._last_on_disconnect
-
-                if self.username and self.password:
-                    self._client.username_pw_set(self.username, self.password)
-
-                # Try to connect
-                self._client.connect(self.host, self.port)
-                self._client.loop_start()
-
-                # Wait for connection
-                for _ in range(50):  # 5 seconds timeout
-                    if self._connected:
-                        break
-                    if self._connection_error:
-                        break
-                    await asyncio.sleep(0.1)
-
-                if self._connected:
-                    logger.info("MQTT reconnection successful")
-                    self._watchdog_task = asyncio.create_task(
-                        self._connection_watchdog()
-                    )
-                    return  # Exit reconnection loop
-                else:
-                    logger.warning(
-                        f"Reconnection failed: {self._connection_error or 'timeout'}"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Reconnection attempt failed: {e}")
-                if self._client:
-                    try:
-                        self._client.loop_stop()
-                    except:
-                        pass
-                    self._client = None
-
-        logger.debug("Reconnection loop exiting")
 
     async def _connection_watchdog(self):
         """Monitor connection and exit if disconnected for too long."""
@@ -338,15 +259,6 @@ class MqttBridge:
     async def disconnect(self):
         """Disconnect from MQTT broker."""
         self._shutdown = True
-
-        # Stop the reconnect task first
-        if self._reconnect_task:
-            self._reconnect_task.cancel()
-            try:
-                await self._reconnect_task
-            except asyncio.CancelledError:
-                pass
-            self._reconnect_task = None
 
         # Stop the watchdog
         if self._watchdog_task:

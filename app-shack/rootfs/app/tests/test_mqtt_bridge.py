@@ -51,12 +51,12 @@ class TestMqttBridge:
 
             # Simulate successful connection
             def simulate_connect(*args, **kwargs):
-                # Call the on_connect callback with success code
-                mock_client.on_connect(mock_client, None, {}, 0)
+                mock_client.on_connect(mock_client, None, {}, 0, None)
 
             mock_client.connect = Mock(side_effect=simulate_connect)
             mock_client.loop_start = Mock()
             mock_client.username_pw_set = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
             await bridge.connect()
 
@@ -76,11 +76,12 @@ class TestMqttBridge:
             MockClient.return_value = mock_client
 
             def simulate_connect(*args, **kwargs):
-                mock_client.on_connect(mock_client, None, {}, 0)
+                mock_client.on_connect(mock_client, None, {}, 0, None)
 
             mock_client.connect = Mock(side_effect=simulate_connect)
             mock_client.loop_start = Mock()
             mock_client.username_pw_set = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
             await bridge.connect()
 
@@ -90,7 +91,7 @@ class TestMqttBridge:
 
     @pytest.mark.asyncio
     async def test_connect_failure(self):
-        """Test MQTT connection failure - app continues with reconnection loop."""
+        """Test MQTT connection failure - app continues with built-in reconnection."""
         bridge = MqttBridge(host="localhost")
 
         with patch("mqtt_bridge.Client") as MockClient:
@@ -98,19 +99,18 @@ class TestMqttBridge:
             MockClient.return_value = mock_client
 
             def simulate_failure(*args, **kwargs):
-                mock_client.on_connect(mock_client, None, {}, 5)  # Auth error
+                mock_client.on_connect(mock_client, None, {}, 5, None)  # Auth error
 
             mock_client.connect = Mock(side_effect=simulate_failure)
             mock_client.loop_start = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
-            # Should not raise - continues with reconnection loop
+            # Should not raise - built-in reconnection handles it
             await bridge.connect()
 
-            # Verify we're not connected but reconnection task is running
+            # Verify we're not connected but watchdog is monitoring
             assert not bridge._connected
-            assert bridge._reconnect_task is not None
-            assert bridge._last_disconnect_error is None  # Not set on initial failure
-            assert bridge._connection_error is not None  # But connection_error is set
+            assert bridge._connection_error is not None  # connection_error is set
 
     @pytest.mark.asyncio
     async def test_disconnect(self):
@@ -171,10 +171,11 @@ class TestMqttBridge:
             MockClient.return_value = mock_client
 
             def simulate_connect(*args, **kwargs):
-                mock_client.on_connect(mock_client, None, {}, 0)
+                mock_client.on_connect(mock_client, None, {}, 0, None)
 
             mock_client.connect = Mock(side_effect=simulate_connect)
             mock_client.loop_start = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
             await bridge.connect()
 
@@ -194,15 +195,16 @@ class TestMqttBridge:
             MockClient.return_value = mock_client
 
             def simulate_connect(*args, **kwargs):
-                mock_client.on_connect(mock_client, None, {}, 0)
+                mock_client.on_connect(mock_client, None, {}, 0, None)
 
             mock_client.connect = Mock(side_effect=simulate_connect)
             mock_client.loop_start = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
             await bridge.connect()
 
             # Simulate disconnect with error code
-            mock_client.on_disconnect(mock_client, None, 7)
+            mock_client.on_disconnect(mock_client, None, {}, 7, None)
 
             status = bridge.connection_status
             assert status["connected"] is False
@@ -225,15 +227,16 @@ class TestMqttBridge:
             MockClient.return_value = mock_client
 
             def simulate_connect(*args, **kwargs):
-                mock_client.on_connect(mock_client, None, {}, 0)
+                mock_client.on_connect(mock_client, None, {}, 0, None)
 
             mock_client.connect = Mock(side_effect=simulate_connect)
             mock_client.loop_start = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
             await bridge.connect()
 
             # Simulate unexpected disconnect with error code 7
-            mock_client.on_disconnect(mock_client, None, 7)
+            mock_client.on_disconnect(mock_client, None, {}, 7, None)
 
             assert bridge.last_disconnect_error is not None
             assert "rc=7" in bridge.last_disconnect_error
@@ -249,19 +252,20 @@ class TestMqttBridge:
             MockClient.return_value = mock_client
 
             def simulate_connect(*args, **kwargs):
-                mock_client.on_connect(mock_client, None, {}, 0)
+                mock_client.on_connect(mock_client, None, {}, 0, None)
 
             mock_client.connect = Mock(side_effect=simulate_connect)
             mock_client.loop_start = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
             await bridge.connect()
 
             # Simulate disconnect
-            mock_client.on_disconnect(mock_client, None, 7)
+            mock_client.on_disconnect(mock_client, None, {}, 7, None)
             assert bridge.last_disconnect_error is not None
 
             # Simulate reconnect
-            mock_client.on_connect(mock_client, None, {}, 0)
+            mock_client.on_connect(mock_client, None, {}, 0, None)
             assert bridge.last_disconnect_error is None
 
     @pytest.mark.asyncio
@@ -274,17 +278,18 @@ class TestMqttBridge:
             MockClient.return_value = mock_client
 
             def simulate_connect(*args, **kwargs):
-                mock_client.on_connect(mock_client, None, {}, 0)
+                mock_client.on_connect(mock_client, None, {}, 0, None)
 
             mock_client.connect = Mock(side_effect=simulate_connect)
             mock_client.loop_start = Mock()
+            mock_client.reconnect_delay_set = Mock()
 
             await bridge.connect()
 
             # Simulate error disconnect
-            mock_client.on_disconnect(mock_client, None, 7)
+            mock_client.on_disconnect(mock_client, None, {}, 7, None)
             assert bridge.last_disconnect_error is not None
 
             # Simulate clean disconnect
-            mock_client.on_disconnect(mock_client, None, 0)
+            mock_client.on_disconnect(mock_client, None, {}, 0, None)
             assert bridge.last_disconnect_error is None
