@@ -47,4 +47,4 @@ media_player:
 
 ## Alternatives
 
-You can use the Spotify Connect plugin for Music Assistant as the active playing device, then forward that stream to your players.  This works and also supports playback control but I found it awkward to setup each time.
+You can use the Spotify Connect plugin for Music Assistant as the active playing device, then forward that stream to your players.  This works and also supports playback control, but I found it awkward to setup each time.
