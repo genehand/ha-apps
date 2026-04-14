@@ -2,8 +2,6 @@
 
 A WebSocket proxy for Home Assistant to filter state events for dashboard entities.
 
-![Dasher logo](/app-dasher/logo.png)
-
 ## What It Does
 
 - Only forwards state changes for entities found on your dashboard

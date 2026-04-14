@@ -2,8 +2,6 @@
 
 This app creates a shim environment that lets you run [HACS](https://www.hacs.xyz/) integrations separately from Home Assistant and publishes standalone MQTT entities.
 
-![Shack logo](/app-shack/logo.png)
-
 ## Features
 
 - **HACS Integration Support**: Install and run HACS integrations from the official repositories

@@ -1,7 +1,5 @@
 # Greenroom
 
-![Greenroom logo](/app-greenroom/logo.png)
-
 Spotify's [2026 policy change](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security) no longer includes Web API access for non-premium accounts.
 This means the standard integrations no longer work even with paid plans like [Basic Family](https://support.spotify.com/us/article/spotify-basic/).
 
