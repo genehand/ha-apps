@@ -9,7 +9,7 @@ This means the standard integrations no longer work even with paid plans like [B
 
 - Monitors playback from any Spotify device on your account
 - Publishes real-time track info (artist, track, album art, etc) to Home Assistant via MQTT
-- **No Web API needed** — uses the Connect protocol
+- **No Web API needed** - uses the Connect protocol
 - Works with Free, Basic, and Premium Spotify accounts
 
 **Note**: Unfortunately it can't provide any playback control (play/pause/next track).
@@ -17,7 +17,7 @@ This means the standard integrations no longer work even with paid plans like [B
 ## Quick Start
 
 1. Add this repository to your Home Assistant app store
-2. Install and start the **Greenroom** app
+2. Install and start the **Greenroom** app (and the Mosquitto MQTT broker)
 3. Open the Greenroom Web UI
 4. Click "Connect Spotify" and authorize your account
 5. A `sensor.greenroom` entity will appear in Home Assistant
