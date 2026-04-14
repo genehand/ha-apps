@@ -1,17 +1,17 @@
-# AGENTS.md - Coding Guidelines for HA Dasher (Rust)
+# AGENTS.md - Coding Guidelines for HA Dasher
 
-Home Assistant WebSocket event proxy - current Rust implementation.
+Home Assistant WebSocket event proxy
 
 ## Overview
 
-This is the current implementation of HA Dasher, a proxy service that filters Home Assistant WebSocket events for dashboard entities.
+HA Dasher is a proxy service that filters Home Assistant WebSocket events for dashboard entities.
 
 ## Working Directory
 
 **Always run commands from this directory.** Do not run from the repo root.
 
 ```bash
-cd app-dasher-rust/
+cd app-dasher/
 ```
 
 ## Build Commands
@@ -161,12 +161,10 @@ struct WsMessage {
 
 - WebSocket protocol follows Home Assistant's format
 - Entity IDs follow pattern: `domain.object_id` (e.g., `light.kitchen`)
-- Supports wildcard patterns (e.g., `light.kitchen_*`)
-- Supports regex filters: `/pattern/`
 
 ## Docker/Container Guidelines
 
-- Base image: Multi-stage build with `rust:1.75` and `debian:bookworm-slim`
+- Base image: Multi-stage build with `rust:trixie` and `base-debian:trixie`
 - Supports architectures: `aarch64`, `amd64`
 - Binary built statically for minimal image size
 - Configuration mounted at `/data/options.json` in container
