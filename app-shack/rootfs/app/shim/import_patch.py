@@ -975,6 +975,85 @@ class ImportPatcher:
         homeassistant.helpers.storage = storage
         sys.modules["homeassistant.helpers.storage"] = storage
 
+        # Create instance_id stub module
+        instance_id = types.ModuleType("homeassistant.helpers.instance_id")
+        import uuid
+        from pathlib import Path
+
+        # Store state in mutable containers so functions see updates
+        # _instance_state holds: {'path': Path, 'cached_uuid': str|None}
+        _instance_state = {
+            "path": None,
+            "cached_uuid": None,
+        }
+
+        def _get_data_dir():
+            data_path = Path("/data")
+            if data_path.exists() and data_path.is_dir():
+                return data_path
+            return Path("./data")
+
+        def _load_or_create_uuid():
+            if _instance_state["cached_uuid"] is not None:
+                return _instance_state["cached_uuid"]
+
+            uuid_path = _instance_state["path"]
+
+            # Try to read existing UUID
+            try:
+                if uuid_path.exists():
+                    uuid_str = uuid_path.read_text().strip()
+                    if uuid_str:
+                        _instance_state["cached_uuid"] = uuid_str
+                        return uuid_str
+            except Exception:
+                pass
+
+            # Generate new UUID and persist it
+            new_uuid = uuid.uuid4().hex
+            try:
+                uuid_path.parent.mkdir(parents=True, exist_ok=True)
+                uuid_path.write_text(new_uuid)
+            except Exception:
+                # If we can't persist, at least cache in memory
+                pass
+
+            _instance_state["cached_uuid"] = new_uuid
+            return new_uuid
+
+        def _save_uuid(uuid_str):
+            uuid_path = _instance_state["path"]
+            try:
+                uuid_path.parent.mkdir(parents=True, exist_ok=True)
+                uuid_path.write_text(uuid_str)
+                _instance_state["cached_uuid"] = uuid_str
+            except Exception:
+                # If we can't persist, at least update cache
+                _instance_state["cached_uuid"] = uuid_str
+
+        async def async_get(hass) -> str:
+            """Get unique ID for the hass instance.
+
+            Returns a stable UUID for this app-shack instance.
+            The UUID is persisted to /data/.instance_uuid
+            """
+            return _load_or_create_uuid()
+
+        async def async_recreate(hass) -> str:
+            """Recreate a new unique ID for the hass instance."""
+            new_uuid = uuid.uuid4().hex
+            _save_uuid(new_uuid)
+            return new_uuid
+
+        # Initialize the path
+        _instance_state["path"] = _get_data_dir() / ".instance_uuid"
+
+        instance_id.async_get = async_get
+        instance_id.async_recreate = async_recreate
+        instance_id._instance_state = _instance_state
+        homeassistant.helpers.instance_id = instance_id
+        sys.modules["homeassistant.helpers.instance_id"] = instance_id
+
         # Create homeassistant.util package and submodules
         # Note: homeassistant.util may already exist from earlier setup, so we use it if available
         if not hasattr(homeassistant, "util") or homeassistant.util is None:
