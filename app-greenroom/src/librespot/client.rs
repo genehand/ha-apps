@@ -386,6 +386,12 @@ impl SpotifyClient {
             .listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>)
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to cluster: {}", e))?;
 
+        // Subscribe to player commands to log that we don't support being an active player
+        let mut player_commands = session
+            .dealer()
+            .listen_for("hm://connect-state/v1/player/command", log_player_command)
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to player commands: {}", e))?;
+
         // Also keep the connection_id stream open as a WebSocket health indicator
         let mut connection_id_stream = session
             .dealer()
@@ -428,6 +434,19 @@ impl SpotifyClient {
 
         loop {
             tokio::select! {
+                player_cmd_result = player_commands.next() => {
+                    match player_cmd_result {
+                        Some(Ok(())) => {
+                            // Player command was logged by the handler
+                        }
+                        Some(Err(e)) => {
+                            debug!("Error receiving player command: {}", e);
+                        }
+                        None => {
+                            debug!("Player command stream ended");
+                        }
+                    }
+                }
                 cluster_result = cluster_updates.next() => {
                     match cluster_result {
                         Some(Ok(cluster_update)) => {
@@ -742,6 +761,12 @@ fn extract_connection_id(msg: Message) -> Result<String, librespot_core::Error> 
         .get("Spotify-Connection-Id")
         .ok_or_else(|| librespot_core::Error::invalid_argument("Missing Spotify-Connection-Id header"))?;
     Ok(connection_id.to_owned())
+}
+
+/// This is called if a user tries to select Greenroom as the active playback device.
+fn log_player_command(_msg: Message) -> Result<(), librespot_core::Error> {
+    warn!("Greenroom is a monitor-only device - please select another Spotify device for playback");
+    Ok(())
 }
 
 fn create_join_cluster_request(session: &Session, device_name: &str) -> PutStateRequest {
