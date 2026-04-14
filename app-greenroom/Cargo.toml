@@ -1,6 +1,6 @@
 [package]
 name = "greenroom"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Spotify Connect monitor device for Home Assistant"

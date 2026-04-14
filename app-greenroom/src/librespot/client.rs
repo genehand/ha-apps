@@ -350,6 +350,12 @@ impl SpotifyClient {
     async fn run_media_monitor(&mut self, session: Session) -> anyhow::Result<()> {
         debug!("Starting dealer connection for real-time playback monitoring...");
 
+        // Subscribe to player commands to log that we don't support being an active player
+        let mut player_commands = session
+            .dealer()
+            .listen_for("hm://connect-state/v1/player/command", log_player_command)
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to player commands: {}", e))?;
+
         session.dealer().start().await
             .map_err(|e| anyhow::anyhow!("Failed to start dealer: {}", e))?;
         
@@ -385,12 +391,6 @@ impl SpotifyClient {
             .dealer()
             .listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>)
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to cluster: {}", e))?;
-
-        // Subscribe to player commands to log that we don't support being an active player
-        let mut player_commands = session
-            .dealer()
-            .listen_for("hm://connect-state/v1/player/command", log_player_command)
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to player commands: {}", e))?;
 
         // Also keep the connection_id stream open as a WebSocket health indicator
         let mut connection_id_stream = session

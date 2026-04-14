@@ -22,6 +22,29 @@ This means the standard integrations no longer work even with paid plans like [B
 4. Click "Connect Spotify" and authorize your account
 5. A `sensor.greenroom` entity will appear in Home Assistant
 
+## Media player entity
+
+Media players aren't supported by the MQTT integration, but we can use [`media_player.template`](https://github.com/sennevds/media_player.template) with this sensor:
+
+```yaml
+media_player:
+  - platform: media_player_template
+    media_players:
+      greenroom:
+        friendly_name: Greenroom
+        device_class: speaker
+        media_content_type_template: music
+        value_template: "{{ iif(has_value('sensor.greenroom'), states('sensor.greenroom'), 'idle') }}"
+        current_source_template: "{{ state_attr('sensor.greenroom', 'source') }}"
+        current_position_template: "{{ state_attr('sensor.greenroom', 'media_position') }}"
+        media_duration_template: "{{ state_attr('sensor.greenroom', 'media_duration') }}"
+        title_template: "{{ state_attr('sensor.greenroom', 'media_title') }}"
+        album_template: "{{ state_attr('sensor.greenroom', 'media_album_name') }}"
+        artist_template: "{{ state_attr('sensor.greenroom', 'media_artist') }}"
+        media_image_url_template: "{{ state_attr('sensor.greenroom', 'media_image_url') }}"
+        media_image_url_remotely_accessible: true
+```
+
 ## Alternatives
 
-You can use the Spotify Connect plugin for Music Assistant as the active playing device, then forward that stream to your players.  This works but I found it awkward to setup each time.
+You can use the Spotify Connect plugin for Music Assistant as the active playing device, then forward that stream to your players.  This works and also supports playback control but I found it awkward to setup each time.
