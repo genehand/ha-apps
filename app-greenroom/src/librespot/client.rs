@@ -180,6 +180,8 @@ impl SpotifyClient {
                         debug!("Resetting consecutive error count after successful connection");
                         consecutive_errors = 0;
                     }
+                    // Reset playback state to show disconnected
+                    self.set_disconnected_state().await;
                 }
                 Err(e) => {
                     let err_msg = format!("{}", e);
@@ -190,6 +192,8 @@ impl SpotifyClient {
                     } else {
                         error!("Connection error: {}", e);
                     }
+                    // Reset playback state to show disconnected
+                    self.set_disconnected_state().await;
                     consecutive_errors += 1;
 
                     let backoff_secs = calculate_backoff(consecutive_errors);
@@ -712,6 +716,24 @@ impl SpotifyClient {
             }
         }
     }
+
+    /// Set playback state to disconnected status.
+    /// This is called when the Spotify connection closes to signal the UI
+    /// that we're no longer receiving playback updates.
+    async fn set_disconnected_state(&self) {
+        let mut state = self.playback_state.write().await;
+        state.track = Some("Not Connected".to_string());
+        state.artist = Some("Connection lost - reconnecting...".to_string());
+        state.album = None;
+        state.artwork_url = None;
+        state.is_playing = false;
+        state.is_idle = true;
+        state.volume = 0.0;
+        state.source = None;
+        // Notify MQTT bridge to publish the updated state
+        let _ = self.state_tx.send(());
+        info!("Playback state reset to disconnected");
+    }
 }
 
 fn extract_connection_id(msg: Message) -> Result<String, librespot_core::Error> {
@@ -1184,5 +1206,121 @@ mod tests {
             let backoff = super::calculate_backoff(consecutive_errors);
             assert_eq!(backoff, expected, "Backoff for {} consecutive errors should be {}s", consecutive_errors, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn test_set_disconnected_state_resets_playback() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let token_path = temp_dir.path().join("token.json");
+
+        // Create a client with active playback state
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+
+        let (state_tx, mut state_rx) = broadcast::channel(16);
+        let (_, token_rx) = broadcast::channel(1);
+
+        // Create initial state with active playback
+        let initial_state = PlaybackState {
+            track: Some("Active Song".to_string()),
+            artist: Some("Active Artist".to_string()),
+            album: Some("Active Album".to_string()),
+            artwork_url: Some("https://example.com/image.jpg".to_string()),
+            is_playing: true,
+            is_idle: false,
+            volume: 0.75,
+            source: Some("Test Speaker".to_string()),
+            ..Default::default()
+        };
+
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(initial_state)),
+            state_tx,
+            token_path,
+            token_rx,
+        );
+
+        // Call set_disconnected_state
+        client.set_disconnected_state().await;
+
+        // Verify the state was reset
+        let state = client.playback_state.read().await;
+        assert_eq!(state.track, Some("Not Connected".to_string()));
+        assert_eq!(state.artist, Some("Connection lost - reconnecting...".to_string()));
+        assert_eq!(state.album, None);
+        assert_eq!(state.artwork_url, None);
+        assert!(!state.is_playing);
+        assert!(state.is_idle);
+        assert_eq!(state.volume, 0.0);
+        assert_eq!(state.source, None);
+
+        // Verify state change notification was sent
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            state_rx.recv()
+        ).await;
+        assert!(result.is_ok(), "State change notification should be sent");
+        assert!(result.unwrap().is_ok(), "Notification should be Ok");
+    }
+
+    #[tokio::test]
+    async fn test_set_disconnected_state_from_demo_mode() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let token_path = temp_dir.path().join("token.json");
+
+        let config = Config {
+            spotify_username: "".to_string(),
+            device_name: "Test".to_string(),
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            mqtt_device_id: "test".to_string(),
+        };
+
+        let (state_tx, mut state_rx) = broadcast::channel(16);
+        let (_, token_rx) = broadcast::channel(1);
+
+        // Start from demo mode state
+        let demo_state = PlaybackState {
+            track: Some("Not Connected".to_string()),
+            artist: Some("Open the Greenroom web UI to connect Spotify".to_string()),
+            album: Some("Click the Greenroom panel in the sidebar".to_string()),
+            is_playing: false,
+            is_idle: true,
+            volume: 0.0,
+            ..Default::default()
+        };
+
+        let client = SpotifyClient::new(
+            config,
+            Arc::new(RwLock::new(demo_state)),
+            state_tx,
+            token_path,
+            token_rx,
+        );
+
+        // Call set_disconnected_state
+        client.set_disconnected_state().await;
+
+        // Verify it was updated to the reconnection message
+        let state = client.playback_state.read().await;
+        assert_eq!(state.track, Some("Not Connected".to_string()));
+        assert_eq!(state.artist, Some("Connection lost - reconnecting...".to_string()));
+
+        // Verify notification was sent
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            state_rx.recv()
+        ).await;
+        assert!(result.is_ok(), "State change notification should be sent");
     }
 }

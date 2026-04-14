@@ -159,6 +159,21 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Check if we have actual connection (valid token AND active connection)
+fn is_connected(has_token: bool, playback: &PlaybackState) -> bool {
+    if !has_token {
+        return false;
+    }
+    // Even with a valid token, check if we're actually receiving data
+    // If track is "Not Connected" or empty, we're not really connected yet
+    match playback.track.as_deref() {
+        Some("Not Connected") => false,
+        Some("Waiting for playback...") => true, // We are connected, just waiting for music
+        Some(track) if !track.is_empty() => true, // We have actual track data
+        _ => false, // Empty string or None
+    }
+}
+
 /// Render just the status content (inner HTML for the content div)
 fn render_status_content(
     has_token: bool,
@@ -168,7 +183,8 @@ fn render_status_content(
     login_url: &str,
     disconnect_url: &str,
 ) -> String {
-    if has_token {
+    let connected = is_connected(has_token, &playback);
+    if connected {
         let account_status = if let Some(token) = token_info {
             format!(
                 "<p class=\"text-sm text-gray-400\">Token expires at: {}</p>",
@@ -219,6 +235,27 @@ fn render_status_content(
         connected_html.push_str(&disconnect_form);
         connected_html.push_str("</div>");
         connected_html
+    } else if has_token {
+        // Have token but connection lost - show reconnecting status
+        let disconnect_form = format!(
+            r#"<form action="{}" method="post" target="_blank" rel="noopener noreferrer">
+                <button type="submit" class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600">
+                    Disconnect
+                </button>
+            </form>"#,
+            disconnect_url
+        );
+        format!(
+            r#"<div class="space-y-4">
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-yellow-500 animate-pulse"></div>
+                    <p class="font-medium">Reconnecting to Spotify...</p>
+                </div>
+                <p class="text-gray-400">Connection lost. Attempting to reconnect automatically.</p>
+                {}
+            </div>"#,
+            disconnect_form
+        )
     } else {
         format!(
             r#"<div class="space-y-4">
@@ -1005,5 +1042,65 @@ mod tests {
             &tokio::fs::read_to_string(&token_path).await.unwrap()
         ).unwrap();
         assert_eq!(loaded.access_token, token.access_token);
+    }
+
+    // Tests for is_connected helper
+
+    #[test]
+    fn test_is_connected_no_token() {
+        let playback = PlaybackState::default();
+        assert!(!super::is_connected(false, &playback));
+    }
+
+    #[test]
+    fn test_is_connected_with_track_data() {
+        let playback = PlaybackState {
+            track: Some("Song Name".to_string()),
+            artist: Some("Artist Name".to_string()),
+            ..Default::default()
+        };
+        assert!(super::is_connected(true, &playback));
+    }
+
+    #[test]
+    fn test_is_connected_waiting_for_playback() {
+        // "Waiting for playback..." is a valid connected state
+        let playback = PlaybackState {
+            track: Some("Waiting for playback...".to_string()),
+            artist: Some("Monitor active".to_string()),
+            ..Default::default()
+        };
+        assert!(super::is_connected(true, &playback));
+    }
+
+    #[test]
+    fn test_is_connected_not_connected_status() {
+        // "Not Connected" means we lost the connection
+        let playback = PlaybackState {
+            track: Some("Not Connected".to_string()),
+            artist: Some("Connection lost - reconnecting...".to_string()),
+            ..Default::default()
+        };
+        assert!(!super::is_connected(true, &playback));
+    }
+
+    #[test]
+    fn test_is_connected_empty_track() {
+        // Empty track should be considered disconnected
+        let playback = PlaybackState {
+            track: Some("".to_string()),
+            ..Default::default()
+        };
+        assert!(!super::is_connected(true, &playback));
+    }
+
+    #[test]
+    fn test_is_connected_none_track() {
+        // None track should be considered disconnected
+        let playback = PlaybackState {
+            track: None,
+            ..Default::default()
+        };
+        assert!(!super::is_connected(true, &playback));
     }
 }
