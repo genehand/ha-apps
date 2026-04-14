@@ -201,16 +201,12 @@ async fn main() -> anyhow::Result<()> {
     // Token notification channel (for notifying daemon of new tokens from web UI)
     let (token_tx, token_rx) = broadcast::channel(1);
 
-    // Reconnect signal channel (for triggering immediate reconnection from web UI)
-    let (reconnect_tx, reconnect_rx) = broadcast::channel(1);
-
     // Start web server for OAuth UI
     let app_state = AppState::new(
         config.clone(),
         playback_state.clone(),
         token_file.clone(),
         token_tx,
-        reconnect_tx,
     );
     let web_app = router(app_state);
     let web_port = cli.web_port;
@@ -249,7 +245,6 @@ async fn main() -> anyhow::Result<()> {
         state_tx,
         token_file,
         token_rx,
-        reconnect_rx,
     );
 
     // Set up shutdown signal handler
