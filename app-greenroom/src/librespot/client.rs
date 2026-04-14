@@ -62,6 +62,7 @@ pub struct SpotifyClient {
     token_file: PathBuf,
     state_tx: broadcast::Sender<()>,
     token_rx: Option<broadcast::Receiver<()>>,
+    reconnect_rx: Option<broadcast::Receiver<()>>,
 }
 
 impl SpotifyClient {
@@ -71,6 +72,7 @@ impl SpotifyClient {
         state_tx: broadcast::Sender<()>,
         token_file: PathBuf,
         token_rx: broadcast::Receiver<()>,
+        reconnect_rx: broadcast::Receiver<()>,
     ) -> Self {
         Self {
             config,
@@ -78,6 +80,7 @@ impl SpotifyClient {
             token_file,
             state_tx,
             token_rx: Some(token_rx),
+            reconnect_rx: Some(reconnect_rx),
         }
     }
 
@@ -122,6 +125,28 @@ impl SpotifyClient {
         }
     }
 
+    /// Sleep while listening for reconnect signals that can interrupt the sleep
+    async fn sleep_interruptible(&mut self, duration: Duration) -> bool {
+        if let Some(ref mut rx) = self.reconnect_rx {
+            tokio::select! {
+                _ = sleep(duration) => false, // Normal timeout, not interrupted
+                result = rx.recv() => {
+                    match result {
+                        Ok(()) => {
+                            info!("Received reconnect signal from web UI, reconnecting immediately...");
+                            true // Interrupted by signal
+                        }
+                        Err(_) => false, // Channel closed or lagged, continue with normal sleep
+                    }
+                }
+            }
+        } else {
+            // No receiver available, just do normal sleep
+            sleep(duration).await;
+            false
+        }
+    }
+
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut consecutive_errors: u32 = 0;
         
@@ -150,7 +175,10 @@ impl SpotifyClient {
                             }
                             // After refresh+connect ends, go to reconnection logic
                             consecutive_errors = 0;
-                            sleep(Duration::from_secs(5)).await;
+                            let interrupted = self.sleep_interruptible(Duration::from_secs(5)).await;
+                            if interrupted {
+                                info!("Reconnecting immediately due to web UI request");
+                            }
                             continue;
                         }
                         None => {
@@ -199,13 +227,20 @@ impl SpotifyClient {
                     let backoff_secs = calculate_backoff(consecutive_errors);
                     warn!("Waiting {} seconds before reconnection attempt (error count: {})...",
                         backoff_secs, consecutive_errors);
-                    sleep(Duration::from_secs(backoff_secs)).await;
+                    let interrupted = self.sleep_interruptible(Duration::from_secs(backoff_secs)).await;
+                    if interrupted {
+                        info!("Reconnecting immediately due to web UI request");
+                        consecutive_errors = 0; // Reset error count on manual reconnect
+                    }
                     continue;
                 }
             }
 
             // Standard reconnection delay after clean connection
-            sleep(Duration::from_secs(5)).await;
+            let interrupted = self.sleep_interruptible(Duration::from_secs(5)).await;
+            if interrupted {
+                info!("Reconnecting immediately due to web UI request");
+            }
         }
     }
 
@@ -416,12 +451,19 @@ impl SpotifyClient {
         if !has_current_info {
             let mut state = self.playback_state.write().await;
             state.track = Some("Waiting for playback...".to_string());
-            state.artist = Some("Monitor active".to_string());
+            state.artist = Some("Greenroom".to_string());
             state.is_playing = false;
             state.is_idle = true;
             state.volume = 0.0;
             state.active_device_id = None;
         }
+
+        // Mark as connected to Spotify WebSocket
+        {
+            let mut state = self.playback_state.write().await;
+            state.is_spotify_connected = true;
+        }
+        let _ = self.state_tx.send(());
 
         let playback_state = self.playback_state.clone();
         let session_clone = session.clone();
@@ -691,9 +733,11 @@ impl SpotifyClient {
             state.volume = 0.0;
         }
 
-        // Take the token receiver so we can listen for notifications
+        // Take the receivers so we can listen for notifications
         let mut token_rx = self.token_rx.take()
             .ok_or_else(|| anyhow::anyhow!("Token receiver already consumed"))?;
+        let mut reconnect_rx = self.reconnect_rx.take()
+            .ok_or_else(|| anyhow::anyhow!("Reconnect receiver already consumed"))?;
 
         // Keep running but wait for either token notification or periodic check
         loop {
@@ -725,6 +769,22 @@ impl SpotifyClient {
                         }
                     }
                 }
+                // Wait for reconnect signal from web UI
+                result = reconnect_rx.recv() => {
+                    match result {
+                        Ok(()) => {
+                            if self.has_valid_token().await {
+                                info!("Received reconnect signal from web UI, attempting to connect...");
+                                return Ok(());
+                            } else {
+                                info!("Received reconnect signal but no valid token, staying in demo mode");
+                            }
+                        }
+                        Err(_) => {
+                            // Channel closed or lagged, just continue
+                        }
+                    }
+                }
                 // Periodic fallback check every 10 seconds
                 _ = tokio::time::sleep(Duration::from_secs(10)) => {
                     if self.has_valid_token().await {
@@ -741,6 +801,7 @@ impl SpotifyClient {
     /// that we're no longer receiving playback updates.
     async fn set_disconnected_state(&self) {
         let mut state = self.playback_state.write().await;
+        state.is_spotify_connected = false;
         state.track = Some("Not Connected".to_string());
         state.artist = Some("Connection lost - reconnecting...".to_string());
         state.album = None;
@@ -870,7 +931,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         let client = SpotifyClient::new(
             config,
@@ -878,6 +941,7 @@ mod tests {
             state_tx,
             temp_file.path().to_path_buf(),
             token_rx,
+            _reconnect_rx,
         );
 
         assert!(client.has_valid_token().await);
@@ -906,7 +970,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         let client = SpotifyClient::new(
             config,
@@ -914,6 +980,7 @@ mod tests {
             state_tx,
             temp_file.path().to_path_buf(),
             token_rx,
+            _reconnect_rx,
         );
 
         // Should return false for expired token
@@ -943,7 +1010,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         let client = SpotifyClient::new(
             config,
@@ -951,6 +1020,7 @@ mod tests {
             state_tx,
             temp_file.path().to_path_buf(),
             token_rx,
+            _reconnect_rx,
         );
 
         // Should return false because it's within the 5-min buffer
@@ -969,7 +1039,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         // Use a non-existent path
         let client = SpotifyClient::new(
@@ -978,6 +1050,7 @@ mod tests {
             state_tx,
             PathBuf::from("/nonexistent/path/token.json"),
             token_rx,
+            _reconnect_rx,
         );
 
         assert!(!client.has_valid_token().await);
@@ -1005,7 +1078,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         let client = SpotifyClient::new(
             config,
@@ -1013,6 +1088,7 @@ mod tests {
             state_tx,
             temp_file.path().to_path_buf(),
             token_rx,
+            _reconnect_rx,
         );
 
         let loaded = client.load_token().await;
@@ -1046,7 +1122,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         let client = SpotifyClient::new(
             config.clone(),
@@ -1054,6 +1132,7 @@ mod tests {
             state_tx,
             temp_file.path().to_path_buf(),
             token_rx,
+            _reconnect_rx,
         );
 
         // Verify the conditions that trigger the refresh path
@@ -1083,7 +1162,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         let client = SpotifyClient::new(
             config,
@@ -1091,6 +1172,7 @@ mod tests {
             state_tx,
             temp_file.path().to_path_buf(),
             token_rx,
+            _reconnect_rx,
         );
 
         // Should handle invalid JSON gracefully
@@ -1112,7 +1194,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         let client = SpotifyClient::new(
             config,
@@ -1120,6 +1204,7 @@ mod tests {
             state_tx,
             temp_file.path().to_path_buf(),
             token_rx,
+            _reconnect_rx,
         );
 
         // Should return None for invalid JSON
@@ -1138,7 +1223,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         // Create temp directory for token file
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1150,6 +1237,7 @@ mod tests {
             state_tx,
             token_path.clone(),
             token_rx,
+            _reconnect_rx,
         );
         
         let now = SystemTime::now()
@@ -1182,7 +1270,9 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         // Create temp directory with nested path
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1194,6 +1284,7 @@ mod tests {
             state_tx,
             nested_path.clone(),
             token_rx,
+            _reconnect_rx,
         );
 
         let now = SystemTime::now()
@@ -1247,7 +1338,9 @@ mod tests {
         };
 
         let (state_tx, mut state_rx) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         // Create initial state with active playback
         let initial_state = PlaybackState {
@@ -1268,6 +1361,7 @@ mod tests {
             state_tx,
             token_path,
             token_rx,
+            _reconnect_rx,
         );
 
         // Call set_disconnected_state
@@ -1275,6 +1369,7 @@ mod tests {
 
         // Verify the state was reset
         let state = client.playback_state.read().await;
+        assert!(!state.is_spotify_connected, "Connection flag should be false");
         assert_eq!(state.track, Some("Not Connected".to_string()));
         assert_eq!(state.artist, Some("Connection lost - reconnecting...".to_string()));
         assert_eq!(state.album, None);
@@ -1309,7 +1404,9 @@ mod tests {
         };
 
         let (state_tx, mut state_rx) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel(1);
+        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
+        let (_, _reconnect_rx) = broadcast::channel::<()>(1);
 
         // Start from demo mode state
         let demo_state = PlaybackState {
@@ -1328,13 +1425,15 @@ mod tests {
             state_tx,
             token_path,
             token_rx,
+            _reconnect_rx,
         );
 
         // Call set_disconnected_state
         client.set_disconnected_state().await;
 
-        // Verify it was updated to the reconnection message
+        // Verify it was updated to the reconnection message and flag is false
         let state = client.playback_state.read().await;
+        assert!(!state.is_spotify_connected, "Connection flag should be false");
         assert_eq!(state.track, Some("Not Connected".to_string()));
         assert_eq!(state.artist, Some("Connection lost - reconnecting...".to_string()));
 

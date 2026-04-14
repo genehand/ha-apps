@@ -11,7 +11,7 @@ use axum::{
 };
 use serde::Deserialize;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{Config, PlaybackState};
 use crate::token::{self, Token};
@@ -55,6 +55,7 @@ pub struct AppState {
     pub token_file: std::path::PathBuf,
     oauth_flows: Arc<Mutex<HashMap<String, OauthFlowState>>>,
     token_tx: broadcast::Sender<()>,
+    reconnect_tx: broadcast::Sender<()>,
 }
 
 impl AppState {
@@ -63,6 +64,7 @@ impl AppState {
         playback_state: Arc<RwLock<PlaybackState>>,
         token_file: std::path::PathBuf,
         token_tx: broadcast::Sender<()>,
+        reconnect_tx: broadcast::Sender<()>,
     ) -> Self {
         Self {
             config,
@@ -70,7 +72,13 @@ impl AppState {
             token_file,
             oauth_flows: Arc::new(Mutex::new(HashMap::new())),
             token_tx,
+            reconnect_tx,
         }
+    }
+
+    /// Trigger an immediate reconnection attempt
+    pub fn trigger_reconnect(&self) {
+        let _ = self.reconnect_tx.send(());
     }
 
     /// Check if a valid token exists
@@ -155,6 +163,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/callback", get(auth_callback_handler))
         .route("/auth/manual", post(auth_manual_handler))
         .route("/auth/disconnect", post(auth_disconnect_handler))
+        .route("/auth/reconnect", post(auth_reconnect_handler))
         .route("/api/status", get(status_api_handler))
         .with_state(state)
 }
@@ -164,14 +173,9 @@ fn is_connected(has_token: bool, playback: &PlaybackState) -> bool {
     if !has_token {
         return false;
     }
-    // Even with a valid token, check if we're actually receiving data
-    // If track is "Not Connected" or empty, we're not really connected yet
-    match playback.track.as_deref() {
-        Some("Not Connected") => false,
-        Some("Waiting for playback...") => true, // We are connected, just waiting for music
-        Some(track) if !track.is_empty() => true, // We have actual track data
-        _ => false, // Empty string or None
-    }
+    // Use the explicit connection flag - this is set to true when WebSocket is active
+    // and false when connection closes (regardless of track content)
+    playback.is_spotify_connected
 }
 
 /// Render just the status content (inner HTML for the content div)
@@ -182,6 +186,7 @@ fn render_status_content(
     _config: &Config,
     login_url: &str,
     disconnect_url: &str,
+    headers: &HeaderMap,
 ) -> String {
     let connected = is_connected(has_token, &playback);
     if connected {
@@ -237,6 +242,7 @@ fn render_status_content(
         connected_html
     } else if has_token {
         // Have token but connection lost - show reconnecting status
+        let reconnect_url = build_url(&headers, "auth/reconnect");
         let disconnect_form = format!(
             r#"<form action="{}" method="post" target="_blank" rel="noopener noreferrer">
                 <button type="submit" class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600">
@@ -252,8 +258,14 @@ fn render_status_content(
                     <p class="font-medium">Reconnecting to Spotify...</p>
                 </div>
                 <p class="text-gray-400">Connection lost. Attempting to reconnect automatically.</p>
+                <form action="{}" method="post">
+                    <button type="submit" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+                        Reconnect Now
+                    </button>
+                </form>
                 {}
             </div>"#,
+            reconnect_url,
             disconnect_form
         )
     } else {
@@ -289,9 +301,15 @@ async fn index_handler(
     // Get current playback info if available
     let playback = state.playback_state.read().await.clone();
 
+    // If we have a token but aren't connected, trigger immediate reconnection
+    if has_token && !playback.is_spotify_connected {
+        info!("Web UI loaded while disconnected - triggering immediate reconnection");
+        state.trigger_reconnect();
+    }
+
     let login_url = build_url(&headers, "auth/login");
     let disconnect_url = build_url(&headers, "auth/disconnect");
-    let status_html = render_status_content(has_token, token_info, playback, &state.config, &login_url, &disconnect_url);
+    let status_html = render_status_content(has_token, token_info, playback, &state.config, &login_url, &disconnect_url, &headers);
 
     Html(format!(
         r#"<!DOCTYPE html>
@@ -335,9 +353,16 @@ async fn status_api_handler(
         None
     };
     let playback = state.playback_state.read().await.clone();
+
+    // If we have a token but aren't connected, trigger immediate reconnection
+    if has_token && !playback.is_spotify_connected {
+        debug!("HTMX poll while disconnected - triggering immediate reconnection");
+        state.trigger_reconnect();
+    }
+
     let login_url = build_url(&headers, "auth/login");
     let disconnect_url = build_url(&headers, "auth/disconnect");
-    Html(render_status_content(has_token, token_info, playback, &state.config, &login_url, &disconnect_url))
+    Html(render_status_content(has_token, token_info, playback, &state.config, &login_url, &disconnect_url, &headers))
 }
 
 /// Initiate OAuth login flow - shows instructions page
@@ -827,6 +852,22 @@ async fn auth_disconnect_handler(State(state): State<AppState>) -> Html<String> 
     ))
 }
 
+/// Trigger immediate reconnection
+async fn auth_reconnect_handler(State(state): State<AppState>) -> Html<String> {
+    info!("Reconnect requested from web UI");
+    state.trigger_reconnect();
+
+    Html(format!(
+        r#"<div class="max-w-md mx-auto p-6">
+            <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4">
+                Reconnecting to Spotify...
+            </div>
+            <p class="text-sm text-gray-600">The page will refresh automatically.</p>
+            <script>setTimeout(() => window.location.reload(), 3000);</script>
+        </div>"#
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,12 +887,14 @@ mod tests {
         };
         
         let (token_tx, _) = broadcast::channel(1);
+        let (reconnect_tx, _) = broadcast::channel(1);
 
         AppState::new(
             config,
             Arc::new(RwLock::new(PlaybackState::default())),
             token_file,
             token_tx,
+            reconnect_tx,
         )
     }
 
@@ -991,12 +1034,14 @@ mod tests {
         };
 
         let (token_tx, mut token_rx) = broadcast::channel(1);
+        let (reconnect_tx, _) = broadcast::channel(1);
 
         let state = AppState::new(
             config,
             Arc::new(RwLock::new(PlaybackState::default())),
             token_path.clone(),
             token_tx,
+            reconnect_tx,
         );
 
         let now = SystemTime::now()
@@ -1053,54 +1098,33 @@ mod tests {
     }
 
     #[test]
-    fn test_is_connected_with_track_data() {
+    fn test_is_connected_with_flag_true() {
+        // Connection flag takes precedence over track content
         let playback = PlaybackState {
-            track: Some("Song Name".to_string()),
+            track: Some("Not Connected".to_string()),  // Even with this text
+            artist: Some("Connection lost...".to_string()),
+            is_spotify_connected: true,  // Flag says we're connected
+            ..Default::default()
+        };
+        assert!(super::is_connected(true, &playback));
+    }
+
+    #[test]
+    fn test_is_connected_with_flag_false() {
+        // Connection flag takes precedence over track content
+        let playback = PlaybackState {
+            track: Some("Song Name".to_string()),  // Even with real track data
             artist: Some("Artist Name".to_string()),
-            ..Default::default()
-        };
-        assert!(super::is_connected(true, &playback));
-    }
-
-    #[test]
-    fn test_is_connected_waiting_for_playback() {
-        // "Waiting for playback..." is a valid connected state
-        let playback = PlaybackState {
-            track: Some("Waiting for playback...".to_string()),
-            artist: Some("Monitor active".to_string()),
-            ..Default::default()
-        };
-        assert!(super::is_connected(true, &playback));
-    }
-
-    #[test]
-    fn test_is_connected_not_connected_status() {
-        // "Not Connected" means we lost the connection
-        let playback = PlaybackState {
-            track: Some("Not Connected".to_string()),
-            artist: Some("Connection lost - reconnecting...".to_string()),
+            is_spotify_connected: false,  // Flag says we're disconnected
             ..Default::default()
         };
         assert!(!super::is_connected(true, &playback));
     }
 
     #[test]
-    fn test_is_connected_empty_track() {
-        // Empty track should be considered disconnected
-        let playback = PlaybackState {
-            track: Some("".to_string()),
-            ..Default::default()
-        };
-        assert!(!super::is_connected(true, &playback));
-    }
-
-    #[test]
-    fn test_is_connected_none_track() {
-        // None track should be considered disconnected
-        let playback = PlaybackState {
-            track: None,
-            ..Default::default()
-        };
+    fn test_is_connected_default_flag_false() {
+        // Default state has flag false
+        let playback = PlaybackState::default();
         assert!(!super::is_connected(true, &playback));
     }
 }

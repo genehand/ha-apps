@@ -100,21 +100,7 @@ pub struct PlaybackState {
     pub shuffle: bool,
     pub repeat: String, // "off", "context", "track"
     pub active_device_id: Option<String>,   // Device ID of the active Spotify device
-}
-
-/// Player command types (kept for potential future use)
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum PlayerCommand {
-    Pause,
-    Resume,
-    SkipNext,
-    SkipPrev,
-    SeekTo(u32),
-    SetVolume(u16),
-    SetShuffle(bool),
-    SetRepeatContext(bool),
-    SetRepeatTrack(bool),
+    pub is_spotify_connected: bool,  // true when actively connected to Spotify WebSocket
 }
 
 #[derive(Clone)]
@@ -195,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(false);
 
     let (initial_track, initial_artist) = if has_token {
-        ("Waiting for playback...".to_string(), "Monitor active".to_string())
+        ("Waiting for playback...".to_string(), "Greenroom".to_string())
     } else {
         ("Not Connected".to_string(), "Open the Greenroom web UI to connect Spotify".to_string())
     };
@@ -215,12 +201,16 @@ async fn main() -> anyhow::Result<()> {
     // Token notification channel (for notifying daemon of new tokens from web UI)
     let (token_tx, token_rx) = broadcast::channel(1);
 
+    // Reconnect signal channel (for triggering immediate reconnection from web UI)
+    let (reconnect_tx, reconnect_rx) = broadcast::channel(1);
+
     // Start web server for OAuth UI
     let app_state = AppState::new(
         config.clone(),
         playback_state.clone(),
         token_file.clone(),
         token_tx,
+        reconnect_tx,
     );
     let web_app = router(app_state);
     let web_port = cli.web_port;
@@ -259,6 +249,7 @@ async fn main() -> anyhow::Result<()> {
         state_tx,
         token_file,
         token_rx,
+        reconnect_rx,
     );
 
     // Set up shutdown signal handler
