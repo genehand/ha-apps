@@ -1,6 +1,6 @@
 [package]
 name = "greenroom"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Spotify Connect monitor device for Home Assistant"
@@ -19,7 +19,6 @@ vergen-gitcl = "=1.0.8"
 
 # Spotify - using individual crates for better control
 librespot-core = "0.8"
-librespot-oauth = "0.8"
 librespot-metadata = "0.8"
 librespot-protocol = { version = "0.8", default-features = false }
 

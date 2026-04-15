@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{error, info};
 
-use crate::token::{self, Token};
+use crate::token::{self, AuthCredentials};
 use crate::{Config, PlaybackState};
 
 /// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
@@ -73,27 +73,24 @@ impl AppState {
         }
     }
 
-    /// Check if a valid token exists
-    pub async fn has_valid_token(&self) -> bool {
-        match token::load_token(&self.token_file).await {
-            Some(token) => token.is_valid(),
-            None => false,
-        }
+    /// Check if credentials exist (doesn't indicate session status)
+    pub async fn has_credentials(&self) -> bool {
+        token::has_credentials_file(&self.token_file).await
     }
 
-    /// Load token if available
-    pub async fn load_token(&self) -> Option<Token> {
-        token::load_token(&self.token_file).await
+    /// Load credentials if available
+    pub async fn load_credentials(&self) -> Option<AuthCredentials> {
+        token::load_credentials(&self.token_file).await
     }
 
-    /// Save token to file and notify daemon
-    pub async fn save_token(&self, token: &Token) -> anyhow::Result<()> {
-        token::save_token(&self.token_file, token, Some(&self.token_tx)).await
+    /// Save credentials to file and notify daemon
+    pub async fn save_credentials(&self, credentials: &AuthCredentials) -> anyhow::Result<()> {
+        token::save_credentials(&self.token_file, credentials, Some(&self.token_tx)).await
     }
 
-    /// Clear token (logout)
-    pub async fn clear_token(&self) -> anyhow::Result<()> {
-        token::clear_token(&self.token_file).await
+    /// Clear credentials (logout)
+    pub async fn clear_credentials(&self) -> anyhow::Result<()> {
+        token::clear_credentials(&self.token_file).await
     }
 }
 
@@ -123,6 +120,29 @@ fn generate_code_verifier() -> String {
             CHARSET[idx] as char
         })
         .collect()
+}
+
+/// Extract OAuth code from user input (either raw code or full URL).
+/// Handles URLs like: http://127.0.0.1:5588/login?code=AQ...&state=...
+fn extract_oauth_code(input: &str) -> String {
+    let input = input.trim();
+
+    // If it looks like a URL (contains :// or starts with http), try to parse it
+    if input.contains("://") || input.starts_with("http") {
+        // Try to find code= in the URL
+        if let Some(code_start) = input.find("code=") {
+            let after_code = &input[code_start + 5..];
+            // Extract until & or end of string
+            if let Some(amp_pos) = after_code.find('&') {
+                return after_code[..amp_pos].to_string();
+            } else {
+                return after_code.to_string();
+            }
+        }
+    }
+
+    // Not a URL or no code found, return as-is (assume it's already just the code)
+    input.to_string()
 }
 
 /// Generate PKCE code challenge from verifier
@@ -170,34 +190,19 @@ fn is_connected(_has_token: bool, playback: &PlaybackState) -> bool {
 
 /// Render just the status content (inner HTML for the content div)
 fn render_status_content(
-    has_token: bool,
-    token_info: Option<Token>,
+    has_credentials: bool,
+    _credentials: Option<AuthCredentials>,
     playback: PlaybackState,
     _config: &Config,
     login_url: &str,
     disconnect_url: &str,
 ) -> String {
-    let connected = is_connected(has_token, &playback);
+    let connected = is_connected(has_credentials, &playback);
     if connected {
-        let account_status = if let Some(token) = token_info {
-            let expires_at = chrono::DateTime::from_timestamp(token.expires_at as i64, 0)
-                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            if token.is_valid() {
-                format!(
-                    "<p class=\"text-sm text-gray-400\">Token expires at: {}</p>",
-                    expires_at
-                )
-            } else {
-                format!(
-                    "<p class=\"text-sm text-yellow-400\">Token expired at: {} (connection active)</p>",
-                    expires_at
-                )
-            }
-        } else {
-            String::new()
-        };
+        // Session is active - librespot manages tokens internally via WebSocket
+        let account_status = format!(
+            "<p class=\"text-sm text-gray-400\">Session active via WebSocket (librespot manages tokens internally)</p>"
+        );
 
         let playback_html = if playback.track.is_some() {
             format!(
@@ -247,7 +252,7 @@ fn render_status_content(
         connected_html.push_str(&disconnect_form);
         connected_html.push_str("</div>");
         connected_html
-    } else if has_token {
+    } else if has_credentials {
         // Have token but connection lost - show reconnecting status
         let disconnect_form = format!(
             r#"<form action="{}" method="post" target="_blank" rel="noopener noreferrer">
@@ -288,9 +293,9 @@ fn render_status_content(
 
 /// Main index page - status and auth UI
 async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let has_token = state.has_valid_token().await;
-    let token_info = if has_token {
-        state.load_token().await
+    let has_credentials = state.has_credentials().await;
+    let credentials = if has_credentials {
+        state.load_credentials().await
     } else {
         None
     };
@@ -301,8 +306,8 @@ async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> Htm
     let login_url = build_url(&headers, "auth/login");
     let disconnect_url = build_url(&headers, "auth/disconnect");
     let status_html = render_status_content(
-        has_token,
-        token_info,
+        has_credentials,
+        credentials,
         playback,
         &state.config,
         &login_url,
@@ -340,9 +345,9 @@ async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> Htm
 /// API endpoint for status (used by HTMX polling)
 async fn status_api_handler(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     // Returns just the inner content for HTMX to swap (not the full page)
-    let has_token = state.has_valid_token().await;
-    let token_info = if has_token {
-        state.load_token().await
+    let has_credentials = state.has_credentials().await;
+    let credentials = if has_credentials {
+        state.load_credentials().await
     } else {
         None
     };
@@ -351,8 +356,8 @@ async fn status_api_handler(State(state): State<AppState>, headers: HeaderMap) -
     let login_url = build_url(&headers, "auth/login");
     let disconnect_url = build_url(&headers, "auth/disconnect");
     Html(render_status_content(
-        has_token,
-        token_info,
+        has_credentials,
+        credentials,
         playback,
         &state.config,
         &login_url,
@@ -429,17 +434,17 @@ async fn auth_login_handler(State(state): State<AppState>, headers: HeaderMap) -
                 <div class="bg-yellow-900/50 border border-yellow-700 rounded p-3">
                     <p class="text-sm text-yellow-200">
                         <strong>Step 2:</strong> After logging in, the page will redirect to <code class="bg-yellow-800 px-1 rounded">127.0.0.1:5588</code> and show an error. 
-                        This is expected! Copy just the <strong>code value</strong> from the URL.
+                        This is expected! Copy the <strong>entire URL</strong> from the address bar (or just the code if you prefer).
                     </p>
                 </div>
                 
                 <div class="bg-gray-700 rounded p-3">
                     <p class="text-sm text-gray-300 mb-2">
-                        <strong>Step 3:</strong> Paste just the code value here:
+                        <strong>Step 3:</strong> Paste the full URL or just the code here:
                     </p>
                     <form action="{}" method="post" class="space-y-3">
                         <input type="hidden" name="state" value="{}">
-                        <input type="text" name="code" placeholder="AQ... (just the code value, no code= or &state=)" required
+                        <input type="text" name="code" placeholder="http://127.0.0.1:5588/login?code=AQ... " required
                                class="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-white placeholder-gray-400 focus:outline-none focus:border-green-500">
                         <button type="submit" class="w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
                             Complete Connection
@@ -589,8 +594,8 @@ async fn auth_callback_handler(
         .as_secs()
         + token_response.expires_in;
 
-    // Save token
-    let token = Token {
+    // Save credentials
+    let credentials = AuthCredentials {
         access_token: token_response.access_token,
         refresh_token: token_response.refresh_token,
         expires_at,
@@ -601,8 +606,8 @@ async fn auth_callback_handler(
             .collect(),
     };
 
-    if let Err(e) = state.save_token(&token).await {
-        error!("Failed to save token: {}", e);
+    if let Err(e) = state.save_credentials(&credentials).await {
+        error!("Failed to save credentials: {}", e);
         return Html(format!(
             r#"<!DOCTYPE html>
 <html class="dark">
@@ -647,7 +652,8 @@ async fn auth_manual_handler(
 ) -> Html<String> {
     let login_url = build_url(&headers, "auth/login");
     let home_url = build_url(&headers, "");
-    let code = form.code;
+    // Extract code from user input (handles both full URL and raw code)
+    let code = extract_oauth_code(&form.code);
     let state_param = form.state;
 
     // Get the stored verifier and redirect_uri
@@ -728,7 +734,7 @@ async fn auth_manual_handler(
         <div class="bg-red-900/50 border border-red-700 rounded p-4">
             <strong class="text-red-200">Spotify authorization failed.</strong>
             <p class="text-red-300 mt-2 text-sm">{}</p>
-            <p class="text-red-300 mt-2">Make sure you copied the full code from the URL.</p>
+            <p class="text-red-300 mt-2">Make sure you pasted the full URL from the address bar or the code value.</p>
         </div>
         <p class="text-center mt-4"><a href="{}" class="text-blue-400 hover:underline">Try Again</a></p>
     </div>
@@ -775,8 +781,8 @@ async fn auth_manual_handler(
         .as_secs()
         + token_response.expires_in;
 
-    // Save token
-    let token = Token {
+    // Save credentials
+    let credentials = AuthCredentials {
         access_token: token_response.access_token,
         refresh_token: token_response.refresh_token,
         expires_at,
@@ -787,8 +793,8 @@ async fn auth_manual_handler(
             .collect(),
     };
 
-    if let Err(e) = state.save_token(&token).await {
-        error!("Failed to save token: {}", e);
+    if let Err(e) = state.save_credentials(&credentials).await {
+        error!("Failed to save credentials: {}", e);
         return Html(format!(
             r#"<!DOCTYPE html>
 <html class="dark">
@@ -831,10 +837,10 @@ async fn auth_manual_handler(
     ))
 }
 
-/// Disconnect / clear token
+/// Disconnect / clear credentials
 async fn auth_disconnect_handler(State(state): State<AppState>) -> Html<String> {
-    if let Err(e) = state.clear_token().await {
-        error!("Failed to clear token: {}", e);
+    if let Err(e) = state.clear_credentials().await {
+        error!("Failed to clear credentials: {}", e);
     }
 
     info!("User disconnected Spotify account");
@@ -879,8 +885,8 @@ mod tests {
         )
     }
 
-    fn create_test_token(expires_at: u64) -> Token {
-        Token {
+    fn create_test_credentials(expires_at: u64) -> AuthCredentials {
+        AuthCredentials {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at,
@@ -889,120 +895,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_has_valid_token_with_valid_token() {
+    async fn test_has_credentials_with_file() {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = create_test_token(now + 3600);
-        let json = serde_json::to_string(&token).unwrap();
+        let credentials = create_test_credentials(now + 3600);
+        let json = serde_json::to_string(&credentials).unwrap();
 
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(json.as_bytes()).unwrap();
 
         let state = create_test_state(temp_file.path().to_path_buf());
-        assert!(state.has_valid_token().await);
+        assert!(state.has_credentials().await);
     }
 
     #[tokio::test]
-    async fn test_has_valid_token_with_expired_token() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let token = create_test_token(now - 3600); // Expired 1 hour ago
-        let json = serde_json::to_string(&token).unwrap();
-
-        let mut temp_file = NamedTempFile::new().unwrap();
-        temp_file.write_all(json.as_bytes()).unwrap();
-
-        let state = create_test_state(temp_file.path().to_path_buf());
-        assert!(!state.has_valid_token().await);
+    async fn test_has_credentials_with_missing_file() {
+        let state = create_test_state(PathBuf::from("/nonexistent/path/credentials.json"));
+        assert!(!state.has_credentials().await);
     }
 
     #[tokio::test]
-    async fn test_has_valid_token_with_near_expiry() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let token = create_test_token(now + 120); // 2 minutes (within 5-min buffer)
-        let json = serde_json::to_string(&token).unwrap();
-
-        let mut temp_file = NamedTempFile::new().unwrap();
-        temp_file.write_all(json.as_bytes()).unwrap();
-
-        let state = create_test_state(temp_file.path().to_path_buf());
-        assert!(!state.has_valid_token().await);
-    }
-
-    #[tokio::test]
-    async fn test_has_valid_token_with_missing_file() {
-        let state = create_test_state(PathBuf::from("/nonexistent/path/token.json"));
-        assert!(!state.has_valid_token().await);
-    }
-
-    #[tokio::test]
-    async fn test_save_and_load_token() {
+    async fn test_save_and_load_credentials() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let token_path = temp_dir.path().join("token.json");
+        let creds_path = temp_dir.path().join("credentials.json");
 
-        let state = create_test_state(token_path.clone());
+        let state = create_test_state(creds_path.clone());
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = create_test_token(now + 3600);
+        let credentials = create_test_credentials(now + 3600);
 
-        // Save token
-        state.save_token(&token).await.unwrap();
+        // Save credentials
+        state.save_credentials(&credentials).await.unwrap();
 
         // Load and verify
-        let loaded = state.load_token().await;
+        let loaded = state.load_credentials().await;
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
-        assert_eq!(loaded.access_token, token.access_token);
-        assert_eq!(loaded.refresh_token, token.refresh_token);
-        assert_eq!(loaded.expires_at, token.expires_at);
+        assert_eq!(loaded.access_token, credentials.access_token);
+        assert_eq!(loaded.refresh_token, credentials.refresh_token);
+        assert_eq!(loaded.expires_at, credentials.expires_at);
     }
 
     #[tokio::test]
-    async fn test_clear_token() {
+    async fn test_clear_credentials() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let token_path = temp_dir.path().join("token.json");
+        let creds_path = temp_dir.path().join("credentials.json");
 
-        let state = create_test_state(token_path.clone());
+        let state = create_test_state(creds_path.clone());
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = create_test_token(now + 3600);
+        let credentials = create_test_credentials(now + 3600);
 
-        // Save token
-        state.save_token(&token).await.unwrap();
-        assert!(token_path.exists());
-        assert!(state.has_valid_token().await);
+        // Save credentials
+        state.save_credentials(&credentials).await.unwrap();
+        assert!(creds_path.exists());
+        assert!(state.has_credentials().await);
 
-        // Clear token
-        state.clear_token().await.unwrap();
-        assert!(!token_path.exists());
-        assert!(!state.has_valid_token().await);
+        // Clear credentials
+        state.clear_credentials().await.unwrap();
+        assert!(!creds_path.exists());
+        assert!(!state.has_credentials().await);
     }
 
     #[tokio::test]
-    async fn test_clear_token_when_no_file() {
-        let state = create_test_state(PathBuf::from("/nonexistent/path/token.json"));
+    async fn test_clear_credentials_when_no_file() {
+        let state = create_test_state(PathBuf::from("/nonexistent/path/credentials.json"));
         // Should not error when clearing non-existent file
-        state.clear_token().await.unwrap();
+        state.clear_credentials().await.unwrap();
     }
 
-    /// Test that saving a token sends a notification to the daemon
+    /// Test that saving credentials sends a notification to the daemon
     #[tokio::test]
-    async fn test_save_token_sends_notification() {
+    async fn test_save_credentials_sends_notification() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let token_path = temp_dir.path().join("token.json");
+        let creds_path = temp_dir.path().join("credentials.json");
 
         let config = Config {
             spotify_username: "".to_string(),
@@ -1019,7 +993,7 @@ mod tests {
         let state = AppState::new(
             config,
             Arc::new(RwLock::new(PlaybackState::default())),
-            token_path.clone(),
+            creds_path.clone(),
             token_tx,
         );
 
@@ -1027,10 +1001,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = create_test_token(now + 3600);
+        let credentials = create_test_credentials(now + 3600);
 
-        // Save token should trigger notification
-        state.save_token(&token).await.unwrap();
+        // Save credentials should trigger notification
+        state.save_credentials(&credentials).await.unwrap();
 
         // Verify notification was sent
         let result = tokio::time::timeout(Duration::from_secs(1), token_rx.recv()).await;
@@ -1042,35 +1016,36 @@ mod tests {
         assert!(result.unwrap().is_ok(), "Notification should be Ok");
     }
 
-    /// Test that token notification is NOT sent when notify_tx is None
-    /// (used when daemon saves its own refreshed token)
+    /// Test that credentials notification is NOT sent when notify_tx is None
     #[tokio::test]
-    async fn test_save_token_without_notification() {
+    async fn test_save_credentials_without_notification() {
         use crate::token;
 
         let temp_dir = tempfile::tempdir().unwrap();
-        let token_path = temp_dir.path().join("token.json");
+        let creds_path = temp_dir.path().join("credentials.json");
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = create_test_token(now + 3600);
+        let credentials = create_test_credentials(now + 3600);
 
-        // Save with None notification sender (daemon internal save)
-        token::save_token(&token_path, &token, None).await.unwrap();
+        // Save with None notification sender
+        token::save_credentials(&creds_path, &credentials, None)
+            .await
+            .unwrap();
 
-        // Token should be saved
-        assert!(token_path.exists());
-        let loaded: Token =
-            serde_json::from_str(&tokio::fs::read_to_string(&token_path).await.unwrap()).unwrap();
-        assert_eq!(loaded.access_token, token.access_token);
+        // Credentials should be saved
+        assert!(creds_path.exists());
+        let loaded: AuthCredentials =
+            serde_json::from_str(&tokio::fs::read_to_string(&creds_path).await.unwrap()).unwrap();
+        assert_eq!(loaded.access_token, credentials.access_token);
     }
 
     // Tests for is_connected helper
 
     #[test]
-    fn test_is_connected_no_token() {
+    fn test_is_connected_no_credentials() {
         let playback = PlaybackState::default();
         assert!(!super::is_connected(false, &playback));
     }
@@ -1104,5 +1079,47 @@ mod tests {
         // Default state has flag false
         let playback = PlaybackState::default();
         assert!(!super::is_connected(true, &playback));
+    }
+
+    // Tests for extract_oauth_code
+
+    #[test]
+    fn test_extract_oauth_code_from_full_url() {
+        let url = "http://127.0.0.1:5588/login?code=AQABC123XYZ&state=some_state_value";
+        assert_eq!(super::extract_oauth_code(url), "AQABC123XYZ");
+    }
+
+    #[test]
+    fn test_extract_oauth_code_from_https_url() {
+        let url = "https://example.com/callback?code=MYCODE456&state=abc123&other=value";
+        assert_eq!(super::extract_oauth_code(url), "MYCODE456");
+    }
+
+    #[test]
+    fn test_extract_oauth_code_raw_code() {
+        // When user just pastes the code directly
+        let code = "AQABC123XYZ";
+        assert_eq!(super::extract_oauth_code(code), "AQABC123XYZ");
+    }
+
+    #[test]
+    fn test_extract_oauth_code_with_whitespace() {
+        // Should trim whitespace
+        let input = "  http://127.0.0.1:5588/login?code=AQABC123&state=test  ";
+        assert_eq!(super::extract_oauth_code(input), "AQABC123");
+    }
+
+    #[test]
+    fn test_extract_oauth_code_no_code_param() {
+        // URL without code param should return full string
+        let url = "http://127.0.0.1:5588/login?state=abc123";
+        assert_eq!(super::extract_oauth_code(url), url);
+    }
+
+    #[test]
+    fn test_extract_oauth_code_code_at_end() {
+        // Code at end of URL without trailing params
+        let url = "http://127.0.0.1:5588/login?code=ENDCODE789";
+        assert_eq!(super::extract_oauth_code(url), "ENDCODE789");
     }
 }
