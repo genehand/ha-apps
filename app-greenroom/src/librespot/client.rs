@@ -181,13 +181,13 @@ impl SpotifyClient {
                         info!("Spotify client shutting down gracefully");
                         return Ok(());
                     }
-                    warn!("Spotify connection ended cleanly, will reconnect...");
-                    // Reset error count on successful connection
+                    warn!("Spotify connection ended, will reconnect...");
+                    // Reset error count on successful connection end
                     if consecutive_errors > 0 {
                         debug!("Resetting consecutive error count after successful connection");
                         consecutive_errors = 0;
                     }
-                    // Reset playback state to show disconnected
+                    // Connection ended normally, mark as disconnected
                     self.set_disconnected_state().await;
                 }
                 Err(e) => {
@@ -537,26 +537,21 @@ impl SpotifyClient {
                             self.handle_cluster_update(&cluster_update, &playback_state, &session_clone, &state_tx).await;
                         }
                         Some(Err(e)) => {
-                            error!("Error receiving cluster update: {}", e);
-                            // Check if it's a WebSocket/protocol error that killed the connection
-                            let err_str = format!("{}", e);
-                            if err_str.contains("WebSocket") || err_str.contains("Connection reset") {
-                                warn!("WebSocket error detected, forcing reconnection");
-                                return Err(anyhow::anyhow!("WebSocket connection failed: {}", e));
+                            // Log error but let librespot handle reconnection
+                            debug!("Error receiving cluster update: {}", e);
+                            if session_clone.is_invalid() {
+                                warn!("Cluster update error and session invalid, disconnecting");
+                                return Err(anyhow::anyhow!("Connection lost: {}", e));
                             }
                         }
                         None => {
-                            // Stream ended - but check if session is truly invalid
-                            // librespot may be reconnecting internally
                             if session_clone.is_invalid() {
-                                warn!("Spotify cluster update stream ended and session is invalid");
+                                warn!("Cluster stream ended and session is invalid");
                                 return Err(anyhow::anyhow!("Connection to Spotify server closed"));
-                            } else {
-                                // Session still valid, librespot is probably reconnecting
-                                warn!("Cluster stream ended but session still valid, waiting for reconnection...");
-                                sleep(Duration::from_secs(3)).await;
-                                continue;
                             }
+                            debug!("Cluster stream ended but session still valid, waiting...");
+                            sleep(Duration::from_secs(3)).await;
+                            continue;
                         }
                     }
                 }
@@ -565,31 +560,25 @@ impl SpotifyClient {
                     match connection_result {
                         Some(Ok(_id)) => {
                             // Connection ID messages indicate WebSocket is alive
-                            // This works even when no playback updates are coming
                             debug!("WebSocket alive - received connection ID message");
                         }
                         Some(Err(e)) => {
-                            // Check if session is truly invalid before giving up
+                            // Log error but let librespot handle it
+                            debug!("Connection ID stream error: {}", e);
                             if session_clone.is_invalid() {
-                                warn!("Connection ID stream error and session is invalid: {}", e);
+                                warn!("Connection ID error and session invalid, disconnecting");
                                 return Err(anyhow::anyhow!("Connection health check failed: {}", e));
-                            } else {
-                                warn!("Connection ID stream error but session valid: {}", e);
-                                sleep(Duration::from_secs(3)).await;
-                                continue;
                             }
                         }
                         None => {
-                            // Stream ended - check if session is truly invalid
+                            // Stream ended - only disconnect if session is now invalid
                             if session_clone.is_invalid() {
                                 warn!("Connection ID stream ended and session is invalid");
                                 return Err(anyhow::anyhow!("WebSocket connection closed"));
-                            } else {
-                                // Session still valid, librespot may reconnect internally
-                                warn!("Connection ID stream ended but session still valid, waiting...");
-                                sleep(Duration::from_secs(3)).await;
-                                continue;
                             }
+                            debug!("Connection ID stream ended but session still valid, waiting...");
+                            sleep(Duration::from_secs(3)).await;
+                            continue;
                         }
                     }
                 }
@@ -600,7 +589,6 @@ impl SpotifyClient {
                         warn!("Session invalidated during monitoring (periodic check)");
                         return Err(anyhow::anyhow!("Session invalidated"));
                     }
-                    // Session still valid, just quiet
                     debug!("Periodic health check: session still valid");
                 }
             }
@@ -720,10 +708,19 @@ impl SpotifyClient {
 
                 {
                     let mut state = playback_state.write().await;
-                    state.track = Some(track_name.clone());
-                    state.artist = Some(artist_name.clone());
-                    state.album = album_name;
-                    state.artwork_url = artwork_url;
+                    if is_idle {
+                        // No active device - clear track metadata but preserve playback state
+                        state.track = None;
+                        state.artist = None;
+                        state.album = None;
+                        state.artwork_url = None;
+                    } else {
+                        // Active playback - update track metadata
+                        state.track = Some(track_name.clone());
+                        state.artist = Some(artist_name.clone());
+                        state.album = album_name;
+                        state.artwork_url = artwork_url;
+                    }
                     state.is_playing = is_playing;
                     state.is_idle = is_idle;
                     state.volume = volume;

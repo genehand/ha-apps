@@ -214,7 +214,17 @@ fn render_status_content(
                 }
             )
         } else {
-            String::new()
+            // No track metadata - show idle status
+            format!(
+                r#"<div class="mt-4 p-4 bg-gray-700 rounded">
+                    <p class="text-gray-400">{}</p>
+                </div>"#,
+                if playback.is_idle {
+                    "No active playback"
+                } else {
+                    "Waiting for playback..."
+                }
+            )
         };
 
         let disconnect_form = format!(
