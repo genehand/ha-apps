@@ -159,13 +159,12 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Check if we have actual connection (valid token AND active connection)
-fn is_connected(has_token: bool, playback: &PlaybackState) -> bool {
-    if !has_token {
-        return false;
-    }
+/// Check if we have actual connection
+/// Prioritize the connection flag - if WebSocket is active, we're connected
+/// even if token shows as expired (librespot sessions stay alive via WebSocket)
+fn is_connected(_has_token: bool, playback: &PlaybackState) -> bool {
     // Use the explicit connection flag - this is set to true when WebSocket is active
-    // and false when connection closes (regardless of track content)
+    // and false when connection closes (regardless of token expiry)
     playback.is_spotify_connected
 }
 
@@ -181,12 +180,18 @@ fn render_status_content(
     let connected = is_connected(has_token, &playback);
     if connected {
         let account_status = if let Some(token) = token_info {
-            format!(
-                "<p class=\"text-sm text-gray-400\">Token expires at: {}</p>",
-                chrono::DateTime::from_timestamp(token.expires_at as i64, 0)
-                    .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                    .unwrap_or_else(|| "Unknown".to_string())
-            )
+            let expires_at = chrono::DateTime::from_timestamp(token.expires_at as i64, 0)
+                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            if token.is_valid() {
+                format!("<p class=\"text-sm text-gray-400\">Token expires at: {}</p>", expires_at)
+            } else {
+                format!(
+                    "<p class=\"text-sm text-yellow-400\">Token expired at: {} (connection active)</p>",
+                    expires_at
+                )
+            }
         } else {
             String::new()
         };

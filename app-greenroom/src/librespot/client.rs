@@ -315,7 +315,7 @@ impl SpotifyClient {
             Ok(t) => t,
             Err(e) => {
                 let err_str = format!("{}", e);
-                error!("Token refresh failed: {}", e);
+                debug!("Token refresh failed: {}", e);
 
                 // Check if token was revoked (permanent failure)
                 if err_str.contains("invalid_grant") || err_str.contains("revoked") {
