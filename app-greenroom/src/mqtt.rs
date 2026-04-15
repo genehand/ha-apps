@@ -15,6 +15,7 @@ pub struct MqttBridge {
     config: Config,
     playback_state: Arc<RwLock<PlaybackState>>,
     state_rx: broadcast::Receiver<()>,
+    shutdown: Arc<RwLock<bool>>,
 }
 
 impl MqttBridge {
@@ -27,6 +28,7 @@ impl MqttBridge {
             config,
             playback_state,
             state_rx,
+            shutdown: Arc::new(RwLock::new(false)),
         }
     }
 
@@ -36,6 +38,11 @@ impl MqttBridge {
         loop {
             match self.run_connection().await {
                 Ok(()) => {
+                    // Check if shutdown was requested before attempting reconnect
+                    if *self.shutdown.read().await {
+                        debug!("MQTT bridge shutting down gracefully");
+                        return Ok(());
+                    }
                     warn!("MQTT connection ended cleanly, will reconnect...");
                     consecutive_errors = 0;
                 }
@@ -100,6 +107,7 @@ impl MqttBridge {
                 // Handle graceful shutdown signals
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, shutting down gracefully...");
+                    *self.shutdown.write().await = true;
                     if discovery_published {
                         let _ = client.publish(&avail_topic, QoS::AtLeastOnce, true, "offline").await;
                         let _ = client.disconnect().await;
@@ -108,6 +116,7 @@ impl MqttBridge {
                 }
                 _ = sigint.recv() => {
                     info!("Received SIGINT, shutting down gracefully...");
+                    *self.shutdown.write().await = true;
                     if discovery_published {
                         let _ = client.publish(&avail_topic, QoS::AtLeastOnce, true, "offline").await;
                         let _ = client.disconnect().await;

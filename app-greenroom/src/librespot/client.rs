@@ -62,6 +62,7 @@ pub struct SpotifyClient {
     token_file: PathBuf,
     state_tx: broadcast::Sender<()>,
     token_rx: Option<broadcast::Receiver<()>>,
+    shutdown: Arc<RwLock<bool>>,
 }
 
 impl SpotifyClient {
@@ -78,6 +79,7 @@ impl SpotifyClient {
             token_file,
             state_tx,
             token_rx: Some(token_rx),
+            shutdown: Arc::new(RwLock::new(false)),
         }
     }
 
@@ -174,6 +176,11 @@ impl SpotifyClient {
             
             match self.attempt_connection().await {
                 Ok(()) => {
+                    // Check if shutdown was requested
+                    if *self.shutdown.read().await {
+                        info!("Spotify client shutting down gracefully");
+                        return Ok(());
+                    }
                     warn!("Spotify connection ended cleanly, will reconnect...");
                     // Reset error count on successful connection
                     if consecutive_errors > 0 {
@@ -483,8 +490,24 @@ impl SpotifyClient {
         let mut last_update = Instant::now();
         let mut consecutive_errors = 0u32;
 
+        // Create shutdown signal handlers
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+
         loop {
             tokio::select! {
+                // Handle graceful shutdown signals
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, shutting down Spotify client gracefully...");
+                    *self.shutdown.write().await = true;
+                    return Ok(());
+                }
+                _ = sigint.recv() => {
+                    info!("Received SIGINT, shutting down Spotify client gracefully...");
+                    *self.shutdown.write().await = true;
+                    return Ok(());
+                }
+
                 player_cmd_result = player_commands.next() => {
                     match player_cmd_result {
                         Some(Ok(())) => {
