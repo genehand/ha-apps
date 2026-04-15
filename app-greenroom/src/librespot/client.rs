@@ -1,27 +1,29 @@
-use std::sync::Arc;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
-use tokio::sync::{RwLock, broadcast};
-use tokio::time::sleep;
-use tracing::{info, error, debug, warn};
 use futures::StreamExt;
 use protobuf::{EnumOrUnknown, MessageField};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{broadcast, RwLock};
+use tokio::time::sleep;
+use tracing::{debug, error, info, warn};
 
-use librespot_core::session::Session;
-use librespot_core::config::SessionConfig;
 use librespot_core::authentication::Credentials;
-use librespot_core::spotify_id::SpotifyId;
-use librespot_core::dealer::protocol::Message;
 use librespot_core::config::DeviceType;
+use librespot_core::config::SessionConfig;
+use librespot_core::dealer::protocol::Message;
+use librespot_core::session::Session;
+use librespot_core::spotify_id::SpotifyId;
 use librespot_core::version;
-use librespot_oauth::{OAuthClientBuilder, OAuthToken};
 use librespot_metadata::{Metadata, Track};
-use librespot_protocol::connect::{ClusterUpdate, PutStateRequest, Device, DeviceInfo, Capabilities, MemberType, PutStateReason};
+use librespot_oauth::{OAuthClientBuilder, OAuthToken};
+use librespot_protocol::connect::{
+    Capabilities, ClusterUpdate, Device, DeviceInfo, MemberType, PutStateReason, PutStateRequest,
+};
 use librespot_protocol::media::AudioQuality;
-use librespot_protocol::player::{PlayOrigin, Suppressions, ContextPlayerOptions, PlayerState};
+use librespot_protocol::player::{ContextPlayerOptions, PlayOrigin, PlayerState, Suppressions};
 
-use crate::{Config, PlaybackState};
 use crate::token::{self, Token};
+use crate::{Config, PlaybackState};
 
 /// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
 const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
@@ -32,11 +34,11 @@ const MAX_BACKOFF_SECS: u64 = 300;
 /// Calculate exponential backoff delay for reconnection attempts.
 /// Returns delay in seconds: 5, 5, 10, 20, 40, 80, 160, capped at 300.
 pub fn calculate_backoff(consecutive_errors: u32) -> u64 {
-    let power: u32 = (consecutive_errors as u64).saturating_sub(1).try_into().unwrap_or(0);
-    std::cmp::min(
-        5 * 2u64.saturating_pow(power),
-        MAX_BACKOFF_SECS
-    )
+    let power: u32 = (consecutive_errors as u64)
+        .saturating_sub(1)
+        .try_into()
+        .unwrap_or(0);
+    std::cmp::min(5 * 2u64.saturating_pow(power), MAX_BACKOFF_SECS)
 }
 
 /// Convert librespot's OAuthToken to our shared Token type.
@@ -47,7 +49,7 @@ fn token_from_oauth(token: OAuthToken) -> Token {
         .unwrap()
         .as_secs();
     let expires_at = now + 3600;
-    
+
     Token {
         access_token: token.access_token,
         refresh_token: token.refresh_token,
@@ -104,7 +106,7 @@ impl SpotifyClient {
 
         let client = reqwest::Client::new();
         let url = "http://supervisor/core/api/services/persistent_notification/create";
-        
+
         let body = serde_json::json!({
             "title": title,
             "message": message,
@@ -126,12 +128,12 @@ impl SpotifyClient {
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut consecutive_errors: u32 = 0;
-        
+
         loop {
             // Check for token first - if present, try to connect
             let has_token = self.has_valid_token().await;
             let has_file = self.token_file.exists();
-            
+
             if !has_token && self.config.spotify_username.is_empty() {
                 // Check if we have a file but it's expired (can try refresh)
                 if has_file {
@@ -171,9 +173,9 @@ impl SpotifyClient {
                     continue;
                 }
             }
-            
+
             info!("Attempting to connect to Spotify...");
-            
+
             match self.attempt_connection().await {
                 Ok(()) => {
                     // Check if shutdown was requested
@@ -207,7 +209,8 @@ impl SpotifyClient {
                     if err_msg.contains("Connection to Spotify server closed")
                         || err_msg.contains("WebSocket")
                         || err_msg.contains("timed out")
-                        || err_msg.contains("Session invalidated") {
+                        || err_msg.contains("Session invalidated")
+                    {
                         warn!("Spotify connection lost ({}), will reconnect...", err_msg);
                     } else {
                         error!("Connection error: {}", e);
@@ -217,8 +220,10 @@ impl SpotifyClient {
                     consecutive_errors += 1;
 
                     let backoff_secs = calculate_backoff(consecutive_errors);
-                    warn!("Waiting {} seconds before reconnection attempt (error count: {})...",
-                        backoff_secs, consecutive_errors);
+                    warn!(
+                        "Waiting {} seconds before reconnection attempt (error count: {})...",
+                        backoff_secs, consecutive_errors
+                    );
                     sleep(Duration::from_secs(backoff_secs)).await;
                     continue;
                 }
@@ -288,10 +293,10 @@ impl SpotifyClient {
 
     async fn connect_with_token(&mut self, token: Token) -> anyhow::Result<()> {
         let credentials = Credentials::with_access_token(&token.access_token);
-        
+
         let session_config = SessionConfig::default();
         let session = Session::new(session_config, None);
-        
+
         match session.connect(credentials, false).await {
             Ok(()) => {
                 debug!("Connected to Spotify! Starting media monitoring...");
@@ -306,7 +311,7 @@ impl SpotifyClient {
 
     async fn refresh_token(&mut self, token: Token) -> anyhow::Result<()> {
         info!("Refreshing OAuth token...");
-        
+
         let oauth_client = OAuthClientBuilder::new(
             LIBRESPOT_CLIENT_ID,
             "http://127.0.0.1:5588/login",
@@ -315,10 +320,7 @@ impl SpotifyClient {
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create OAuth client: {}", e))?;
 
-        let new_token = match oauth_client
-            .refresh_token_async(&token.refresh_token)
-            .await
-        {
+        let new_token = match oauth_client.refresh_token_async(&token.refresh_token).await {
             Ok(t) => t,
             Err(e) => {
                 let err_str = format!("{}", e);
@@ -355,10 +357,10 @@ impl SpotifyClient {
         };
 
         debug!("Token refreshed successfully!");
-        
+
         let stored_token = token_from_oauth(new_token);
         self.save_token(&stored_token).await?;
-        
+
         self.connect_with_token(stored_token).await
     }
 
@@ -366,7 +368,7 @@ impl SpotifyClient {
         info!("Starting OAuth authentication...");
         info!("A browser window should open automatically.");
         info!("Please log in to Spotify and authorize Greenroom.");
-        
+
         let oauth_client = OAuthClientBuilder::new(
             LIBRESPOT_CLIENT_ID,
             "http://127.0.0.1:5588/login",
@@ -386,7 +388,7 @@ impl SpotifyClient {
 
         let stored_token = token_from_oauth(token);
         self.save_token(&stored_token).await?;
-        
+
         self.connect_with_token(stored_token).await
     }
 
@@ -399,9 +401,12 @@ impl SpotifyClient {
             .listen_for("hm://connect-state/v1/player/command", log_player_command)
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to player commands: {}", e))?;
 
-        session.dealer().start().await
+        session
+            .dealer()
+            .start()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to start dealer: {}", e))?;
-        
+
         debug!("Dealer connected! Waiting for connection ID...");
 
         let mut connection_id_stream = session
@@ -419,20 +424,24 @@ impl SpotifyClient {
         };
 
         session.set_connection_id(&connection_id);
-        
+
         info!("Registering device in cluster...");
 
         let put_state_request = create_join_cluster_request(&session, &self.config.device_name);
-        session.spclient()
+        session
+            .spclient()
             .put_connect_state_request(&put_state_request)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to register in cluster: {}", e))?;
-        
+
         debug!("Registered in cluster! Subscribing to state updates...");
 
         let mut cluster_updates = session
             .dealer()
-            .listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>)
+            .listen_for(
+                "hm://connect-state/v1/cluster",
+                Message::from_raw::<ClusterUpdate>,
+            )
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to cluster: {}", e))?;
 
         // Also keep the connection_id stream open as a WebSocket health indicator
@@ -491,7 +500,8 @@ impl SpotifyClient {
         let mut consecutive_errors = 0u32;
 
         // Create shutdown signal handlers
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
         loop {
@@ -594,7 +604,7 @@ impl SpotifyClient {
             }
         }
     }
-    
+
     async fn handle_cluster_update(
         &self,
         cluster_update: &ClusterUpdate,
@@ -603,11 +613,11 @@ impl SpotifyClient {
         state_tx: &broadcast::Sender<()>,
     ) {
         debug!("Received cluster update");
-        
+
         if let Some(cluster) = cluster_update.cluster.as_ref() {
             let active_device_id = &cluster.active_device_id;
             debug!("Active device: {}", active_device_id);
-            
+
             {
                 let mut state = playback_state.write().await;
                 state.active_device_id = if active_device_id.is_empty() {
@@ -620,18 +630,24 @@ impl SpotifyClient {
             if let Some(player_state) = cluster.player_state.as_ref() {
                 let is_playing = player_state.is_playing && !player_state.is_paused;
                 let is_paused = player_state.is_paused;
-                let track_uri = player_state.track.as_ref()
+                let track_uri = player_state
+                    .track
+                    .as_ref()
                     .map(|t| t.uri.clone())
                     .unwrap_or_default();
                 let position_ms = player_state.position_as_of_timestamp;
                 let duration_ms = player_state.duration as u32;
-                let media_content_id = Some(player_state.context_uri.clone())
-                    .filter(|s| !s.is_empty());
-                
-                let shuffle = player_state.options.as_ref()
+                let media_content_id =
+                    Some(player_state.context_uri.clone()).filter(|s| !s.is_empty());
+
+                let shuffle = player_state
+                    .options
+                    .as_ref()
                     .map(|o| o.shuffling_context)
                     .unwrap_or(false);
-                let repeat = player_state.options.as_ref()
+                let repeat = player_state
+                    .options
+                    .as_ref()
                     .map(|o| {
                         if o.repeating_track {
                             "track"
@@ -643,11 +659,13 @@ impl SpotifyClient {
                     })
                     .unwrap_or("off")
                     .to_string();
-                
+
                 let is_idle = active_device_id.is_empty();
 
                 let (volume, source, is_volume_muted) = if !is_idle {
-                    cluster.device.get(active_device_id)
+                    cluster
+                        .device
+                        .get(active_device_id)
                         .map(|device_info| {
                             let vol = device_info.volume as f32 / 65535.0;
                             let name = device_info.name.clone();
@@ -658,7 +676,7 @@ impl SpotifyClient {
                 } else {
                     (0.0, None, true)
                 };
-                
+
                 debug!(
                     "Player state: raw_playing={}, raw_paused={}, effective_playing={}, track={}, position={}, volume={}, shuffle={}, repeat={}",
                     player_state.is_playing, is_paused, is_playing, track_uri, position_ms, volume, shuffle, repeat
@@ -666,7 +684,8 @@ impl SpotifyClient {
 
                 let track_uri_obj = if track_uri.starts_with("spotify:track:") {
                     let id_str = &track_uri[14..];
-                    SpotifyId::from_base62(id_str).ok()
+                    SpotifyId::from_base62(id_str)
+                        .ok()
                         .map(|id| librespot_core::SpotifyUri::Track { id })
                 } else {
                     None
@@ -676,19 +695,24 @@ impl SpotifyClient {
                 let artist_name: String;
                 let album_name: Option<String>;
                 let artwork_url: Option<String>;
-                
+
                 if let Some(uri) = track_uri_obj.as_ref() {
                     match Track::get(session, uri).await {
                         Ok(track) => {
                             track_name = track.name.clone();
-                            
-                            artist_name = track.artists.first()
+
+                            artist_name = track
+                                .artists
+                                .first()
                                 .map(|artist| artist.name.clone())
                                 .unwrap_or_else(|| "Unknown Artist".to_string());
 
                             album_name = Some(track.album.name.clone());
 
-                            artwork_url = track.album.covers.first()
+                            artwork_url = track
+                                .album
+                                .covers
+                                .first()
                                 .map(|cover| format!("https://i.scdn.co/image/{}", cover.id));
                         }
                         Err(e) => {
@@ -732,7 +756,7 @@ impl SpotifyClient {
                     state.shuffle = shuffle;
                     state.repeat = repeat;
                 }
-                
+
                 let _ = state_tx.send(());
 
                 debug!(
@@ -744,7 +768,7 @@ impl SpotifyClient {
                 );
             } else {
                 debug!("No player state in cluster update");
-                
+
                 {
                     let mut state = playback_state.write().await;
                     state.is_playing = false;
@@ -770,18 +794,18 @@ impl SpotifyClient {
         let put_state_request = create_join_cluster_request(session, &self.config.device_name);
 
         // Send the request - this should trigger a cluster update response
-        match session.spclient()
+        match session
+            .spclient()
             .put_connect_state_request(&put_state_request)
-            .await {
+            .await
+        {
             Ok(_bytes) => {
                 debug!("Sent state request, waiting for cluster update...");
                 // Give Spotify a moment to respond
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 Ok(())
             }
-            Err(e) => {
-                Err(anyhow::anyhow!("Failed to request current state: {}", e))
-            }
+            Err(e) => Err(anyhow::anyhow!("Failed to request current state: {}", e)),
         }
     }
 
@@ -797,7 +821,9 @@ impl SpotifyClient {
         }
 
         // Take the token receiver so we can listen for notifications
-        let mut token_rx = self.token_rx.take()
+        let mut token_rx = self
+            .token_rx
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Token receiver already consumed"))?;
 
         // Keep running but wait for either token notification or periodic check
@@ -862,10 +888,9 @@ impl SpotifyClient {
 }
 
 fn extract_connection_id(msg: Message) -> Result<String, librespot_core::Error> {
-    let connection_id = msg
-        .headers
-        .get("Spotify-Connection-Id")
-        .ok_or_else(|| librespot_core::Error::invalid_argument("Missing Spotify-Connection-Id header"))?;
+    let connection_id = msg.headers.get("Spotify-Connection-Id").ok_or_else(|| {
+        librespot_core::Error::invalid_argument("Missing Spotify-Connection-Id header")
+    })?;
     Ok(connection_id.to_owned())
 }
 
@@ -893,7 +918,7 @@ fn create_join_cluster_request(session: &Session, device_name: &str) -> PutState
             can_be_player: false,
             needs_full_player_state: true,
             is_observable: true,
-            is_controllable: false,  // Monitor-only: we don't accept control commands
+            is_controllable: false, // Monitor-only: we don't accept control commands
             hidden: false,
             supports_gzip_pushes: true,
             supports_logout: false,
@@ -961,10 +986,10 @@ mod tests {
             .as_secs();
         let token = create_test_token(now + 3600);
         let json = serde_json::to_string(&token).unwrap();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(json.as_bytes()).unwrap();
-        
+
         // Create minimal client to test with
         let config = Config {
             spotify_username: "".to_string(),
@@ -1037,10 +1062,10 @@ mod tests {
             .as_secs();
         let token = create_test_token(now + 120); // 2 minutes
         let json = serde_json::to_string(&token).unwrap();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(json.as_bytes()).unwrap();
-        
+
         let config = Config {
             spotify_username: "".to_string(),
             device_name: "Test".to_string(),
@@ -1101,10 +1126,10 @@ mod tests {
             .as_secs();
         let token = create_test_token(now + 3600);
         let json = serde_json::to_string(&token).unwrap();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(json.as_bytes()).unwrap();
-        
+
         let config = Config {
             spotify_username: "".to_string(),
             device_name: "Test".to_string(),
@@ -1184,7 +1209,7 @@ mod tests {
     async fn test_has_valid_token_with_invalid_json() {
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(b"not valid json").unwrap();
-        
+
         let config = Config {
             spotify_username: "".to_string(),
             device_name: "Test".to_string(),
@@ -1266,16 +1291,16 @@ mod tests {
             token_path.clone(),
             token_rx,
         );
-        
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let token = create_test_token(now + 3600);
-        
+
         // Save the token
         client.save_token(&token).await.unwrap();
-        
+
         // Verify file exists and contains expected data
         assert!(token_path.exists());
         let contents = tokio::fs::read_to_string(&token_path).await.unwrap();
@@ -1302,7 +1327,11 @@ mod tests {
 
         // Create temp directory with nested path
         let temp_dir = tempfile::tempdir().unwrap();
-        let nested_path = temp_dir.path().join("data").join("subdir").join("token.json");
+        let nested_path = temp_dir
+            .path()
+            .join("data")
+            .join("subdir")
+            .join("token.json");
 
         let client = SpotifyClient::new(
             config,
@@ -1342,7 +1371,11 @@ mod tests {
 
         for (consecutive_errors, expected) in test_cases {
             let backoff = super::calculate_backoff(consecutive_errors);
-            assert_eq!(backoff, expected, "Backoff for {} consecutive errors should be {}s", consecutive_errors, expected);
+            assert_eq!(
+                backoff, expected,
+                "Backoff for {} consecutive errors should be {}s",
+                consecutive_errors, expected
+            );
         }
     }
 
@@ -1392,9 +1425,15 @@ mod tests {
 
         // Verify the state was reset
         let state = client.playback_state.read().await;
-        assert!(!state.is_spotify_connected, "Connection flag should be false");
+        assert!(
+            !state.is_spotify_connected,
+            "Connection flag should be false"
+        );
         assert_eq!(state.track, Some("Not Connected".to_string()));
-        assert_eq!(state.artist, Some("Connection lost - reconnecting...".to_string()));
+        assert_eq!(
+            state.artist,
+            Some("Connection lost - reconnecting...".to_string())
+        );
         assert_eq!(state.album, None);
         assert_eq!(state.artwork_url, None);
         assert!(!state.is_playing);
@@ -1403,10 +1442,7 @@ mod tests {
         assert_eq!(state.source, None);
 
         // Verify state change notification was sent
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            state_rx.recv()
-        ).await;
+        let result = tokio::time::timeout(Duration::from_secs(1), state_rx.recv()).await;
         assert!(result.is_ok(), "State change notification should be sent");
         assert!(result.unwrap().is_ok(), "Notification should be Ok");
     }
@@ -1454,15 +1490,18 @@ mod tests {
 
         // Verify it was updated to the reconnection message and flag is false
         let state = client.playback_state.read().await;
-        assert!(!state.is_spotify_connected, "Connection flag should be false");
+        assert!(
+            !state.is_spotify_connected,
+            "Connection flag should be false"
+        );
         assert_eq!(state.track, Some("Not Connected".to_string()));
-        assert_eq!(state.artist, Some("Connection lost - reconnecting...".to_string()));
+        assert_eq!(
+            state.artist,
+            Some("Connection lost - reconnecting...".to_string())
+        );
 
         // Verify notification was sent
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            state_rx.recv()
-        ).await;
+        let result = tokio::time::timeout(Duration::from_secs(1), state_rx.recv()).await;
         assert!(result.is_ok(), "State change notification should be sent");
     }
 }

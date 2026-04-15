@@ -1,11 +1,11 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{debug, info};
 
 /// OAuth token storage structure used across the application.
-/// 
+///
 /// This is the canonical token type used by both the web UI (for PKCE flow)
 /// and the librespot client (for storing/loading tokens).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ impl Token {
 }
 
 /// Save a token to a file, creating parent directories if needed.
-/// 
+///
 /// If a `notify_tx` is provided, sends a notification after successful save.
 pub async fn save_token(
     token_file: &PathBuf,

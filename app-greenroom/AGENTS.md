@@ -61,6 +61,9 @@ app-greenroom/
 ## Build
 
 ```bash
+# Format code
+cargo fmt
+
 # Build locally
 cargo build --release
 

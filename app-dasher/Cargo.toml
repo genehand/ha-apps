@@ -1,6 +1,6 @@
 [package]
 name = "dasher"
-version = "0.6.6"
+version = "0.6.7"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Filter websocket events for dashboard entities"
@@ -30,7 +30,8 @@ serde_yaml = "0.9"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "local-time"] }
+time = { version = "0.3", features = ["macros"] }
 
 # Regex for pattern matching
 regex = "1.10"

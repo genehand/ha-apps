@@ -1,14 +1,14 @@
+use chrono::Utc;
+use rumqttc::{AsyncClient, ConnectReturnCode, Event, MqttOptions, Packet, QoS};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, ConnectReturnCode};
-use tracing::{info, debug, error, warn};
-use serde_json::json;
-use chrono::Utc;
+use tracing::{debug, error, info, warn};
 
+use crate::librespot::calculate_backoff;
 use crate::Config;
 use crate::PlaybackState;
-use crate::librespot::calculate_backoff;
 
 /// MQTT bridge for Home Assistant discovery
 pub struct MqttBridge {
@@ -51,8 +51,10 @@ impl MqttBridge {
                     consecutive_errors += 1;
 
                     let backoff_secs = calculate_backoff(consecutive_errors);
-                    warn!("Waiting {} seconds before MQTT reconnection attempt (error count: {})...",
-                        backoff_secs, consecutive_errors);
+                    warn!(
+                        "Waiting {} seconds before MQTT reconnection attempt (error count: {})...",
+                        backoff_secs, consecutive_errors
+                    );
                     tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                 }
             }
@@ -89,7 +91,8 @@ impl MqttBridge {
         let mut discovery_published = false;
 
         // Create shutdown signal handler
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
         // Handle state updates and MQTT events
@@ -177,7 +180,7 @@ impl MqttBridge {
 
         // Sensor with all playback info as attributes
         let topic = format!("homeassistant/sensor/{}/config", device_id);
-        
+
         let config = json!({
             "name": null,
             "unique_id": unique_id,
@@ -199,22 +202,22 @@ impl MqttBridge {
         });
 
         let payload = serde_json::to_string(&config)?;
-        client.publish(&topic, QoS::AtLeastOnce, true, payload).await?;
+        client
+            .publish(&topic, QoS::AtLeastOnce, true, payload)
+            .await?;
         debug!("Published sensor discovery config to topic: {}", topic);
 
         // Publish online status
         let avail_topic = format!("greenroom/{}/availability", device_id);
-        client.publish(avail_topic, QoS::AtLeastOnce, true, "online").await?;
-        
+        client
+            .publish(avail_topic, QoS::AtLeastOnce, true, "online")
+            .await?;
+
         debug!("Published MQTT discovery config for monitor sensor");
         Ok(())
     }
 
-    async fn publish_state(
-        &self,
-        client: &AsyncClient,
-        device_id: &str,
-    ) -> anyhow::Result<()> {
+    async fn publish_state(&self, client: &AsyncClient, device_id: &str) -> anyhow::Result<()> {
         let state = self.playback_state.read().await;
 
         // Main state is the playback status
@@ -226,7 +229,9 @@ impl MqttBridge {
             "paused"
         };
         let state_topic = format!("greenroom/{}/state", device_id);
-        client.publish(state_topic, QoS::AtLeastOnce, false, status).await?;
+        client
+            .publish(state_topic, QoS::AtLeastOnce, false, status)
+            .await?;
 
         // Get current timestamp for position update
         let now = Utc::now();
@@ -250,9 +255,12 @@ impl MqttBridge {
         });
 
         let attr_topic = format!("greenroom/{}/attributes", device_id);
-        client.publish(attr_topic, QoS::AtLeastOnce, false, attributes.to_string()).await?;
+        client
+            .publish(attr_topic, QoS::AtLeastOnce, false, attributes.to_string())
+            .await?;
 
-        debug!("Published state: {} ({} - {})", 
+        debug!(
+            "Published state: {} ({} - {})",
             status,
             state.track.as_deref().unwrap_or("Unknown"),
             state.artist.as_deref().unwrap_or("Unknown")

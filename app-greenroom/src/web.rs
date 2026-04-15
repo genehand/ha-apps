@@ -10,11 +10,11 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{broadcast, RwLock};
 use tracing::{error, info};
 
-use crate::{Config, PlaybackState};
 use crate::token::{self, Token};
+use crate::{Config, PlaybackState};
 
 /// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
 const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
@@ -185,7 +185,10 @@ fn render_status_content(
                 .unwrap_or_else(|| "Unknown".to_string());
 
             if token.is_valid() {
-                format!("<p class=\"text-sm text-gray-400\">Token expires at: {}</p>", expires_at)
+                format!(
+                    "<p class=\"text-sm text-gray-400\">Token expires at: {}</p>",
+                    expires_at
+                )
             } else {
                 format!(
                     "<p class=\"text-sm text-yellow-400\">Token expired at: {} (connection active)</p>",
@@ -235,9 +238,8 @@ fn render_status_content(
             </form>"#,
             disconnect_url
         );
-        let mut connected_html = String::from(
-            "<div class=\"space-y-4\"><div class=\"flex items-center gap-2\">",
-        );
+        let mut connected_html =
+            String::from("<div class=\"space-y-4\"><div class=\"flex items-center gap-2\">");
         connected_html.push_str("<div class=\"w-3 h-3 rounded-full bg-green-500\"></div>");
         connected_html.push_str("<p class=\"font-medium\">Connected to Spotify</p></div>");
         connected_html.push_str(&account_status);
@@ -285,10 +287,7 @@ fn render_status_content(
 }
 
 /// Main index page - status and auth UI
-async fn index_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Html<String> {
+async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let has_token = state.has_valid_token().await;
     let token_info = if has_token {
         state.load_token().await
@@ -301,7 +300,14 @@ async fn index_handler(
 
     let login_url = build_url(&headers, "auth/login");
     let disconnect_url = build_url(&headers, "auth/disconnect");
-    let status_html = render_status_content(has_token, token_info, playback, &state.config, &login_url, &disconnect_url);
+    let status_html = render_status_content(
+        has_token,
+        token_info,
+        playback,
+        &state.config,
+        &login_url,
+        &disconnect_url,
+    );
 
     Html(format!(
         r#"<!DOCTYPE html>
@@ -327,16 +333,12 @@ async fn index_handler(
     </div>
 </body>
 </html>"#,
-        status_html,
-        state.config.device_name
+        status_html, state.config.device_name
     ))
 }
 
 /// API endpoint for status (used by HTMX polling)
-async fn status_api_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Html<String> {
+async fn status_api_handler(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     // Returns just the inner content for HTMX to swap (not the full page)
     let has_token = state.has_valid_token().await;
     let token_info = if has_token {
@@ -348,14 +350,18 @@ async fn status_api_handler(
 
     let login_url = build_url(&headers, "auth/login");
     let disconnect_url = build_url(&headers, "auth/disconnect");
-    Html(render_status_content(has_token, token_info, playback, &state.config, &login_url, &disconnect_url))
+    Html(render_status_content(
+        has_token,
+        token_info,
+        playback,
+        &state.config,
+        &login_url,
+        &disconnect_url,
+    ))
 }
 
 /// Initiate OAuth login flow - shows instructions page
-async fn auth_login_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Html<String> {
+async fn auth_login_handler(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     // Generate PKCE
     let code_verifier = generate_code_verifier();
     let code_challenge = generate_code_challenge(&code_verifier);
@@ -449,10 +455,7 @@ async fn auth_login_handler(
     </div>
 </body>
 </html>"#,
-        auth_url,
-        manual_url,
-        state_param,
-        home_url
+        auth_url, manual_url, state_param, home_url
     ))
 }
 
@@ -467,7 +470,10 @@ async fn auth_callback_handler(
     // Get the stored verifier and redirect_uri
     let (code_verifier, redirect_uri) = {
         let mut flows = state.oauth_flows.lock().unwrap();
-        flows.remove(&state_param).map(|f| (f.code_verifier, f.redirect_uri)).unzip()
+        flows
+            .remove(&state_param)
+            .map(|f| (f.code_verifier, f.redirect_uri))
+            .unzip()
     };
     let code_verifier = match code_verifier {
         Some(v) => v,
@@ -581,14 +587,18 @@ async fn auth_callback_handler(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
-                        + token_response.expires_in;
+        + token_response.expires_in;
 
     // Save token
     let token = Token {
         access_token: token_response.access_token,
         refresh_token: token_response.refresh_token,
         expires_at,
-        scopes: token_response.scope.split(' ').map(|s| s.to_string()).collect(),
+        scopes: token_response
+            .scope
+            .split(' ')
+            .map(|s| s.to_string())
+            .collect(),
     };
 
     if let Err(e) = state.save_token(&token).await {
@@ -643,7 +653,10 @@ async fn auth_manual_handler(
     // Get the stored verifier and redirect_uri
     let (code_verifier, redirect_uri) = {
         let mut flows = state.oauth_flows.lock().unwrap();
-        flows.remove(&state_param).map(|f| (f.code_verifier, f.redirect_uri)).unzip()
+        flows
+            .remove(&state_param)
+            .map(|f| (f.code_verifier, f.redirect_uri))
+            .unzip()
     };
     let code_verifier = match code_verifier {
         Some(v) => v,
@@ -698,8 +711,7 @@ async fn auth_manual_handler(
     </div>
 </body>
 </html>"#,
-                e,
-                login_url
+                e, login_url
             ));
         }
     };
@@ -722,8 +734,7 @@ async fn auth_manual_handler(
     </div>
 </body>
 </html>"#,
-            error_text,
-            login_url
+            error_text, login_url
         ));
     }
 
@@ -769,7 +780,11 @@ async fn auth_manual_handler(
         access_token: token_response.access_token,
         refresh_token: token_response.refresh_token,
         expires_at,
-        scopes: token_response.scope.split(' ').map(|s| s.to_string()).collect(),
+        scopes: token_response
+            .scope
+            .split(' ')
+            .map(|s| s.to_string())
+            .collect(),
     };
 
     if let Err(e) = state.save_token(&token).await {
@@ -788,8 +803,7 @@ async fn auth_manual_handler(
     </div>
 </body>
 </html>"#,
-            e,
-            home_url
+            e, home_url
         ));
     }
 
@@ -813,8 +827,7 @@ async fn auth_manual_handler(
     </div>
 </body>
 </html>"#,
-        home_url,
-        home_url
+        home_url, home_url
     ))
 }
 
@@ -855,7 +868,7 @@ mod tests {
             mqtt_password: None,
             mqtt_device_id: "test".to_string(),
         };
-        
+
         let (token_tx, _) = broadcast::channel(1);
 
         AppState::new(
@@ -883,10 +896,10 @@ mod tests {
             .as_secs();
         let token = create_test_token(now + 3600);
         let json = serde_json::to_string(&token).unwrap();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(json.as_bytes()).unwrap();
-        
+
         let state = create_test_state(temp_file.path().to_path_buf());
         assert!(state.has_valid_token().await);
     }
@@ -899,10 +912,10 @@ mod tests {
             .as_secs();
         let token = create_test_token(now - 3600); // Expired 1 hour ago
         let json = serde_json::to_string(&token).unwrap();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(json.as_bytes()).unwrap();
-        
+
         let state = create_test_state(temp_file.path().to_path_buf());
         assert!(!state.has_valid_token().await);
     }
@@ -915,10 +928,10 @@ mod tests {
             .as_secs();
         let token = create_test_token(now + 120); // 2 minutes (within 5-min buffer)
         let json = serde_json::to_string(&token).unwrap();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(json.as_bytes()).unwrap();
-        
+
         let state = create_test_state(temp_file.path().to_path_buf());
         assert!(!state.has_valid_token().await);
     }
@@ -933,18 +946,18 @@ mod tests {
     async fn test_save_and_load_token() {
         let temp_dir = tempfile::tempdir().unwrap();
         let token_path = temp_dir.path().join("token.json");
-        
+
         let state = create_test_state(token_path.clone());
-        
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let token = create_test_token(now + 3600);
-        
+
         // Save token
         state.save_token(&token).await.unwrap();
-        
+
         // Load and verify
         let loaded = state.load_token().await;
         assert!(loaded.is_some());
@@ -958,20 +971,20 @@ mod tests {
     async fn test_clear_token() {
         let temp_dir = tempfile::tempdir().unwrap();
         let token_path = temp_dir.path().join("token.json");
-        
+
         let state = create_test_state(token_path.clone());
-        
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let token = create_test_token(now + 3600);
-        
+
         // Save token
         state.save_token(&token).await.unwrap();
         assert!(token_path.exists());
         assert!(state.has_valid_token().await);
-        
+
         // Clear token
         state.clear_token().await.unwrap();
         assert!(!token_path.exists());
@@ -1020,12 +1033,12 @@ mod tests {
         state.save_token(&token).await.unwrap();
 
         // Verify notification was sent
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            token_rx.recv()
-        ).await;
+        let result = tokio::time::timeout(Duration::from_secs(1), token_rx.recv()).await;
 
-        assert!(result.is_ok(), "Should receive notification within 1 second");
+        assert!(
+            result.is_ok(),
+            "Should receive notification within 1 second"
+        );
         assert!(result.unwrap().is_ok(), "Notification should be Ok");
     }
 
@@ -1049,9 +1062,8 @@ mod tests {
 
         // Token should be saved
         assert!(token_path.exists());
-        let loaded: Token = serde_json::from_str(
-            &tokio::fs::read_to_string(&token_path).await.unwrap()
-        ).unwrap();
+        let loaded: Token =
+            serde_json::from_str(&tokio::fs::read_to_string(&token_path).await.unwrap()).unwrap();
         assert_eq!(loaded.access_token, token.access_token);
     }
 
@@ -1067,9 +1079,9 @@ mod tests {
     fn test_is_connected_with_flag_true() {
         // Connection flag takes precedence over track content
         let playback = PlaybackState {
-            track: Some("Not Connected".to_string()),  // Even with this text
+            track: Some("Not Connected".to_string()), // Even with this text
             artist: Some("Connection lost...".to_string()),
-            is_spotify_connected: true,  // Flag says we're connected
+            is_spotify_connected: true, // Flag says we're connected
             ..Default::default()
         };
         assert!(super::is_connected(true, &playback));
@@ -1079,9 +1091,9 @@ mod tests {
     fn test_is_connected_with_flag_false() {
         // Connection flag takes precedence over track content
         let playback = PlaybackState {
-            track: Some("Song Name".to_string()),  // Even with real track data
+            track: Some("Song Name".to_string()), // Even with real track data
             artist: Some("Artist Name".to_string()),
-            is_spotify_connected: false,  // Flag says we're disconnected
+            is_spotify_connected: false, // Flag says we're disconnected
             ..Default::default()
         };
         assert!(!super::is_connected(true, &playback));

@@ -3,11 +3,11 @@ mod mqtt;
 mod token;
 mod web;
 
-use std::sync::Arc;
-use std::path::PathBuf;
 use clap::Parser;
-use tokio::sync::{RwLock, broadcast};
-use tracing::{info, error};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
+use tracing::{error, info};
 
 use crate::librespot::SpotifyClient;
 use crate::mqtt::MqttBridge;
@@ -46,19 +46,39 @@ fn notify_readiness() {
 #[command(version)]
 pub struct Cli {
     /// Spotify username/email (for OAuth login)
-    #[arg(long, env = "SPOTIFY_USERNAME", help = "Spotify account username or email")]
+    #[arg(
+        long,
+        env = "SPOTIFY_USERNAME",
+        help = "Spotify account username or email"
+    )]
     pub spotify_username: Option<String>,
 
     /// Device name shown in Spotify and Home Assistant
-    #[arg(short, long, env = "DEVICE_NAME", default_value = "Greenroom", help = "Name shown in Spotify and Home Assistant")]
+    #[arg(
+        short,
+        long,
+        env = "DEVICE_NAME",
+        default_value = "Greenroom",
+        help = "Name shown in Spotify and Home Assistant"
+    )]
     pub device_name: String,
 
     /// MQTT broker host
-    #[arg(long, env = "MQTT_HOST", default_value = "homeassistant.local", help = "MQTT broker hostname or IP")]
+    #[arg(
+        long,
+        env = "MQTT_HOST",
+        default_value = "homeassistant.local",
+        help = "MQTT broker hostname or IP"
+    )]
     pub mqtt_host: String,
 
     /// MQTT broker port
-    #[arg(long, env = "MQTT_PORT", default_value = "1883", help = "MQTT broker port")]
+    #[arg(
+        long,
+        env = "MQTT_PORT",
+        default_value = "1883",
+        help = "MQTT broker port"
+    )]
     pub mqtt_port: u16,
 
     /// MQTT username (optional)
@@ -70,15 +90,31 @@ pub struct Cli {
     pub mqtt_password: Option<String>,
 
     /// MQTT device ID for unique topics
-    #[arg(long, env = "MQTT_DEVICE_ID", default_value = "greenroom", help = "MQTT device ID (used in topic names)")]
+    #[arg(
+        long,
+        env = "MQTT_DEVICE_ID",
+        default_value = "greenroom",
+        help = "MQTT device ID (used in topic names)"
+    )]
     pub mqtt_device_id: String,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(short, long, env = "RUST_LOG", default_value = "info", help = "Log level: trace, debug, info, warn, error")]
+    #[arg(
+        short,
+        long,
+        env = "RUST_LOG",
+        default_value = "info",
+        help = "Log level: trace, debug, info, warn, error"
+    )]
     pub log_level: String,
 
     /// Web UI port for OAuth flow
-    #[arg(long, env = "GREENROOM_WEB_PORT", default_value = "8099", help = "Port for the web UI (used for OAuth)")]
+    #[arg(
+        long,
+        env = "GREENROOM_WEB_PORT",
+        default_value = "8099",
+        help = "Port for the web UI (used for OAuth)"
+    )]
     pub web_port: u16,
 }
 
@@ -90,17 +126,17 @@ pub struct PlaybackState {
     pub album: Option<String>,
     pub artwork_url: Option<String>,
     pub is_playing: bool,
-    pub is_idle: bool,  // true when Spotify is open but no active playback
-    pub volume: f32,  // 0.0 to 1.0
+    pub is_idle: bool, // true when Spotify is open but no active playback
+    pub volume: f32,   // 0.0 to 1.0
     pub is_volume_muted: bool,
     pub duration_ms: u32,
     pub position_ms: u32,
     pub media_content_id: Option<String>, // Spotify URI (context_uri)
     pub source: Option<String>,           // Current device name
     pub shuffle: bool,
-    pub repeat: String, // "off", "context", "track"
-    pub active_device_id: Option<String>,   // Device ID of the active Spotify device
-    pub is_spotify_connected: bool,  // true when actively connected to Spotify WebSocket
+    pub repeat: String,                   // "off", "context", "track"
+    pub active_device_id: Option<String>, // Device ID of the active Spotify device
+    pub is_spotify_connected: bool,       // true when actively connected to Spotify WebSocket
 }
 
 #[derive(Clone)]
@@ -117,7 +153,7 @@ pub struct Config {
 impl From<Cli> for Config {
     fn from(cli: Cli) -> Self {
         let username = cli.spotify_username.unwrap_or_default();
-        
+
         Self {
             spotify_username: username,
             device_name: cli.device_name,
@@ -137,22 +173,26 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize logging with smart defaults
     // Always suppress noisy librespot internals regardless of RUST_LOG setting
-    let base_filter = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| format!("info,greenroom={}", cli.log_level));
-    
+    let base_filter =
+        std::env::var("RUST_LOG").unwrap_or_else(|_| format!("info,greenroom={}", cli.log_level));
+
     // Append our mandatory filters to suppress mercury noise
     let filter = format!(
         "{},librespot_core::mercury=off,librespot_core::session=info",
         base_filter
     );
-    
+
+    // Use local time for timestamps in format: "2026-04-15 07:58:09"
+    let time_format =
+        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_timer(tracing_subscriber::fmt::time::LocalTime::new(time_format))
         .init();
 
     info!("Starting Greenroom - Spotify Connect for Home Assistant via MQTT");
     info!("Device name: {}", cli.device_name);
-    
+
     if cli.spotify_username.is_none() {
         info!("No Spotify credentials provided - will run in demo mode");
     }
@@ -173,17 +213,23 @@ async fn main() -> anyhow::Result<()> {
         });
 
     // Determine initial state based on whether we have auth credentials
-    let has_token = token_file.exists() && 
-        std::fs::read_to_string(&token_file)
+    let has_token = token_file.exists()
+        && std::fs::read_to_string(&token_file)
             .ok()
             .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
             .map(|v| v.get("access_token").is_some())
             .unwrap_or(false);
 
     let (initial_track, initial_artist) = if has_token {
-        ("Waiting for playback...".to_string(), "Greenroom".to_string())
+        (
+            "Waiting for playback...".to_string(),
+            "Greenroom".to_string(),
+        )
     } else {
-        ("Not Connected".to_string(), "Open the Greenroom web UI to connect Spotify".to_string())
+        (
+            "Not Connected".to_string(),
+            "Open the Greenroom web UI to connect Spotify".to_string(),
+        )
     };
 
     // Shared state - initialize with idle status so sensor shows "idle" not "paused"
@@ -194,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     let playback_state = Arc::new(RwLock::new(initial_state));
-    
+
     // State change notification channel (for pushing updates to MQTT)
     let (state_tx, state_rx) = broadcast::channel(16);
 
@@ -232,11 +278,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Start MQTT bridge
-    let mqtt_bridge = MqttBridge::new(
-        config.clone(),
-        playback_state.clone(),
-        state_rx,
-    );
+    let mqtt_bridge = MqttBridge::new(config.clone(), playback_state.clone(), state_rx);
 
     // Start Spotify client
     let spotify_client = SpotifyClient::new(
