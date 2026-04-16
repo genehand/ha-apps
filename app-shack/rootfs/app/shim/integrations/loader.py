@@ -222,7 +222,17 @@ class IntegrationLoader:
             except Exception as e:
                 import traceback
 
-                _LOGGER.error(f"Error during async_setup_entry for {domain}: {e}")
+                # Handle 503 Service Unavailable errors gracefully
+                # Check for: aiohttp.client_exceptions.ContentTypeError: 503
+                if "ContentTypeError" in str(e.__class__.__name__) and "503" in str(e):
+                    _LOGGER.warning(
+                        f"Integration {domain}: Service returned 503 Service Unavailable. "
+                        f"The upstream service is temporarily unavailable. Will retry later."
+                    )
+                    _LOGGER.debug(f"503 error details: {e}")
+                else:
+                    _LOGGER.error(f"Error during async_setup_entry for {domain}: {e}")
+
                 _LOGGER.debug(f"async_setup_entry traceback:\n{traceback.format_exc()}")
                 result = False
             finally:

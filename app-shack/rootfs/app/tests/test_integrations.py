@@ -501,6 +501,67 @@ class TestIntegrationManagerCallbacks:
         assert len(callback_calls) == 0
 
 
+@pytest.mark.asyncio
+async def test_503_content_type_error_handling():
+    """Test that aiohttp ContentTypeError with 503 status is logged as warning.
+
+    Verifies the generic handling of 503 errors from any integration.
+    These should be logged as warnings (not errors) since they indicate
+    temporary service unavailability rather than bugs.
+    """
+    from unittest.mock import MagicMock, patch, AsyncMock
+    from shim.integrations.loader import IntegrationLoader
+    from shim.core import HomeAssistant, ConfigEntry
+
+    data_dir = Path(__file__).parent.parent / "data"
+
+    hass = HomeAssistant(data_dir)
+    integration_manager = MagicMock()
+    loader = IntegrationLoader(hass, integration_manager)
+
+    # Create a mock ContentTypeError class (simulating aiohttp.client_exceptions.ContentTypeError)
+    class ContentTypeError(Exception):
+        pass
+
+    mock_module = MagicMock()
+    mock_module.async_setup = AsyncMock(return_value=True)
+
+    async def raise_content_type_error(*args, **kwargs):
+        raise ContentTypeError(
+            "503, message='Attempt to decode JSON with unexpected mimetype', "
+            "url='https://example.com/api'"
+        )
+
+    mock_module.async_setup_entry = raise_content_type_error
+
+    test_domain = "test_integration"
+    loader._loaded_integrations[test_domain] = mock_module
+
+    entry = ConfigEntry(
+        entry_id="test_503_entry",
+        version=1,
+        domain=test_domain,
+        title="Test Integration",
+        data={"token": "fake_token"},
+    )
+
+    with patch("shim.integrations.loader._LOGGER") as mock_logger:
+        result = await loader.setup_integration(entry)
+
+        assert result is False
+
+        # Should detect this as a 503 error and log warning, not error
+        warning_calls = [
+            call for call in mock_logger.warning.call_args_list if "503" in str(call)
+        ]
+        assert len(warning_calls) > 0, "Expected warning log for ContentTypeError 503"
+
+        # Verify the warning message contains expected text
+        warning_message = str(warning_calls[0])
+        assert "503 Service Unavailable" in warning_message
+        assert test_domain in warning_message
+
+
 if __name__ == "__main__":
     # Allow running this file directly for quick testing
     pytest.main([__file__, "-v", "-m", "integration"])
