@@ -1210,13 +1210,17 @@ class IntegrationManager:
             installed_version = manifest.get("version", "unknown")
 
             # Check if installed version matches requested version
+            # Normalize versions by stripping 'v' prefix for comparison
             version_mismatch = False
-            if version and installed_version != version:
-                version_mismatch = True
-                _LOGGER.warning(
-                    f"Version mismatch for {actual_domain}: requested {version}, "
-                    f"got {installed_version}"
-                )
+            if version:
+                norm_version = version.lstrip("v")
+                norm_installed = str(installed_version).lstrip("v")
+                if norm_installed != norm_version:
+                    version_mismatch = True
+                    _LOGGER.warning(
+                        f"Version mismatch for {actual_domain}: requested {version}, "
+                        f"got {installed_version}"
+                    )
 
             # Update integration info using actual domain
             info = IntegrationInfo(
