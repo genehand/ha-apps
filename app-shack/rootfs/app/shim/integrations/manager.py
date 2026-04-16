@@ -66,6 +66,7 @@ class IntegrationInfo:
         requirements: Optional[List[str]] = None,
         dependencies: Optional[List[str]] = None,
         full_name: Optional[str] = None,
+        version_mismatch: bool = False,
     ):
         self.domain = domain
         self.name = name
@@ -82,6 +83,9 @@ class IntegrationInfo:
         self.requirements = requirements or []
         self.dependencies = dependencies or []
         self.full_name = full_name  # HACS full_name (owner/repo) for HACS default repos
+        self.version_mismatch = (
+            version_mismatch  # True if installed version != requested
+        )
 
     def to_dict(self) -> dict:
         """Convert to dictionary for templates/API."""
@@ -101,6 +105,7 @@ class IntegrationInfo:
             "requirements": self.requirements,
             "dependencies": self.dependencies,
             "full_name": self.full_name,
+            "version_mismatch": self.version_mismatch,
         }
 
 
@@ -1204,8 +1209,10 @@ class IntegrationManager:
             # Get installed version from manifest
             installed_version = manifest.get("version", "unknown")
 
-            # Warn if installed version doesn't match requested version
+            # Check if installed version matches requested version
+            version_mismatch = False
             if version and installed_version != version:
+                version_mismatch = True
                 _LOGGER.warning(
                     f"Version mismatch for {actual_domain}: requested {version}, "
                     f"got {installed_version}"
@@ -1226,6 +1233,7 @@ class IntegrationManager:
                 requirements=manifest.get("requirements", []),
                 dependencies=manifest.get("dependencies", []),
                 full_name=full_name if source == "hacs_default" else None,
+                version_mismatch=version_mismatch,
             )
 
             self._integrations[actual_domain] = info

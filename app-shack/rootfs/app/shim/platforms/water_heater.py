@@ -194,9 +194,9 @@ class WaterHeaterEntity(Entity):
                 config["modes"] = list(self.operation_list)
 
         # Add command topics for HA to enable features (required for supported_features)
-        config["mode_command_topic"] = f"{base_topic}/mode/set"
+        config["mode_command_topic"] = f"{base_topic}/mode_set"
         config["temperature_state_topic"] = f"{base_topic}/target_temperature"
-        config["temperature_command_topic"] = f"{base_topic}/target_temperature/set"
+        config["temperature_command_topic"] = f"{base_topic}/temperature_set"
         config["current_temperature_topic"] = f"{base_topic}/current_temperature"
 
         if self.icon:

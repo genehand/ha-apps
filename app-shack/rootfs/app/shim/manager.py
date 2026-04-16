@@ -303,6 +303,17 @@ class ShimManager:
                         f"Setting text value for {entity.entity_id} to '{payload}'"
                     )
                     await entity.async_set_value(payload)
+                elif payload.upper() == "PRESS":
+                    # Button press command
+                    _LOGGER.debug(f"Pressing button {entity.entity_id}")
+                    if hasattr(entity, "async_press"):
+                        await entity.async_press()
+                    elif hasattr(entity, "press"):
+                        entity.press()
+                    else:
+                        _LOGGER.warning(
+                            f"Entity {entity.entity_id} has no press method"
+                        )
                 elif payload.upper() == "ON":
                     _LOGGER.debug(f"Turning ON entity {entity.entity_id}")
                     if hasattr(entity, "async_turn_on"):
@@ -365,11 +376,17 @@ class ShimManager:
                     entity.set_temperature(temperature=float(payload))
 
             elif command_type == "mode_set":
-                # Climate HVAC mode
+                # Climate HVAC mode or water heater operation mode
                 if hasattr(entity, "async_set_hvac_mode"):
+                    # Climate entity
                     await entity.async_set_hvac_mode(payload)
                 elif hasattr(entity, "set_hvac_mode"):
                     entity.set_hvac_mode(payload)
+                elif hasattr(entity, "async_set_operation_mode"):
+                    # Water heater entity
+                    await entity.async_set_operation_mode(payload)
+                elif hasattr(entity, "set_operation_mode"):
+                    entity.set_operation_mode(payload)
 
         except Exception as e:
             _LOGGER.error(

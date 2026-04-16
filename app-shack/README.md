@@ -21,7 +21,7 @@ This app creates a shim environment that lets you run [HACS](https://www.hacs.xy
 
 ## Supported Entity Platforms
 
-This aims to support all entity platforms supported by the [Home Assistant MQTT integration](https://www.home-assistant.io/integrations/mqtt/).
+This aims to support all entity platforms supported by the [MQTT integration](https://www.home-assistant.io/integrations/mqtt/), however not all [command topics](TODO.md) are implemented yet.
 
 ## How It Works
 

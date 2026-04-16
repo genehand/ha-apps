@@ -237,6 +237,74 @@ class TestManagerCommandRouting:
         # Verify sync turn_on was called
         entity.turn_on.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_route_command_button_press(self):
+        """Test that button press commands are properly routed to async_press."""
+        manager = self._create_manager()
+
+        # Create a mock button entity with async_press
+        # Use spec to avoid async_set_value being auto-created
+        class MockButton:
+            entity_id = "button.moonraker_firmware_restart"
+
+            async def async_press(self):
+                pass
+
+        entity = Mock(spec=MockButton)
+        entity.entity_id = "button.moonraker_firmware_restart"
+        entity.async_press = AsyncMock()
+
+        # Route a PRESS command (uppercase)
+        await manager._route_command(entity, "set", "PRESS")
+
+        # Verify async_press was called
+        entity.async_press.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_route_command_button_press_lowercase(self):
+        """Test that button press commands work with lowercase payload."""
+        manager = self._create_manager()
+
+        # Create a mock button entity with async_press
+        # Use spec to avoid async_set_value being auto-created
+        class MockButton:
+            entity_id = "button.moonraker_firmware_restart"
+
+            async def async_press(self):
+                pass
+
+        entity = Mock(spec=MockButton)
+        entity.entity_id = "button.moonraker_firmware_restart"
+        entity.async_press = AsyncMock()
+
+        # Route a press command (lowercase)
+        await manager._route_command(entity, "set", "press")
+
+        # Verify async_press was called (case insensitive)
+        entity.async_press.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_route_command_button_press_fallback_to_sync(self):
+        """Test that sync press method is used when async_press doesn't exist."""
+        manager = self._create_manager()
+
+        # Create a mock entity with only sync press (no async_press)
+        class MockButton:
+            entity_id = "button.test_entity"
+
+            def press(self):
+                pass
+
+        entity = Mock(spec=MockButton)
+        entity.entity_id = "button.test_entity"
+        entity.press = Mock()
+
+        # Route a PRESS command
+        await manager._route_command(entity, "set", "PRESS")
+
+        # Verify sync press was called
+        entity.press.assert_called_once()
+
 
 class TestConfig:
     """Tests for Config loading."""
