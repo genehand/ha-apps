@@ -13,11 +13,8 @@ use serde::Deserialize;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{error, info};
 
-use crate::token::{self, AuthCredentials};
+use crate::token::{self, AuthCredentials, SPOTIFY_CLIENT_ID};
 use crate::{Config, PlaybackState};
-
-/// Librespot's OAuth client ID (KEYMASTER_CLIENT_ID)
-const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 
 /// Get the base path for URLs, respecting X-Ingress-Path header
 fn get_base_path(headers: &HeaderMap) -> String {
@@ -199,10 +196,8 @@ fn render_status_content(
 ) -> String {
     let connected = is_connected(has_credentials, &playback);
     if connected {
-        // Session is active - librespot manages tokens internally via WebSocket
-        let account_status = format!(
-            "<p class=\"text-sm text-gray-400\">Session active via WebSocket (librespot manages tokens internally)</p>"
-        );
+        let account_status =
+            format!("<p class=\"text-sm text-gray-400\">Session active via WebSocket</p>");
 
         let playback_html = if playback.track.is_some() {
             format!(
@@ -393,7 +388,7 @@ async fn auth_login_handler(State(state): State<AppState>, headers: HeaderMap) -
     // Build auth URL
     let auth_url = format!(
         "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=streaming&state={}",
-        LIBRESPOT_CLIENT_ID,
+        SPOTIFY_CLIENT_ID,
         urlencoding::encode(&redirect_uri),
         code_challenge,
         state_param
@@ -513,7 +508,7 @@ async fn auth_callback_handler(
         ("grant_type", "authorization_code"),
         ("code", &code),
         ("redirect_uri", &redirect_uri),
-        ("client_id", LIBRESPOT_CLIENT_ID),
+        ("client_id", SPOTIFY_CLIENT_ID),
         ("code_verifier", &code_verifier),
     ];
 
@@ -694,7 +689,7 @@ async fn auth_manual_handler(
         ("grant_type", "authorization_code"),
         ("code", &code),
         ("redirect_uri", &redirect_uri),
-        ("client_id", LIBRESPOT_CLIENT_ID),
+        ("client_id", SPOTIFY_CLIENT_ID),
         ("code_verifier", &code_verifier),
     ];
 

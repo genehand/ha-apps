@@ -34,7 +34,7 @@ Unlike other Spotify integrations, Greenroom uses the **Spotify Connect protocol
   - Receives real-time track/artist/album metadata via Spotify's internal protocol
   - Joins the Spotify Connect cluster to receive playback updates from any device
   - **Does not use the Spotify Web API** - connects as a Connect device instead
-  - **No manual token refresh** - librespot's internal TokenProvider handles token refresh via Mercury keymaster API
+  - **Dual token management**: OAuth tokens (for initial auth) + librespot session credentials (for reconnection)
 
 - **MQTT Bridge**: Publishes discovery configs and state to Home Assistant
   - Main sensor with state (playing/paused) and JSON attributes
@@ -78,36 +78,21 @@ The binary will be at `target/release/greenroom`
 
 ## Configuration
 
-### OAuth Setup (Web UI)
+### Authentication Setup
 
-Due to Spotify's OAuth restrictions on librespot's client ID (which only permits localhost redirects), the web UI uses a manual code exchange flow:
+See [docs/auth.md](docs/auth.md) for detailed OAuth setup instructions. Quick summary:
 
-1. Install and start the Greenroom add-on
-2. Open the Greenroom Web UI (uses ingress)
-3. Click "Connect Spotify" button - opens instructions in a new window
-4. Click "Open Spotify Authorization" to open Spotify in a new tab
-5. Log in to Spotify and authorize Greenroom
-6. The page will redirect to `127.0.0.1:5588` and show an error (expected!)
-7. Copy the **entire URL** from the address bar (or just the code value if you prefer)
-8. Paste into the form on the Greenroom instructions page
-9. Click "Complete Connection" - credentials are saved and the daemon connects
-
-The web UI remains accessible for checking connection status and playback info. Use "Disconnect" to clear stored credentials.
-
-### Legacy OAuth (CLI)
-
-If you prefer not to use the web UI, you can still use librespot's built-in OAuth flow:
-
-1. Set `spotify_username` in add-on configuration
-2. Start the add-on
-3. Check logs for auth URL or use the web UI button
-4. Credentials are saved to `/data/greenroom_token.json`
+1. Open the Greenroom Web UI
+2. Click "Connect Spotify" and follow the PKCE OAuth flow
+3. Copy the URL from the 127.0.0.1 redirect, paste into the form
+4. Credentials saved to `/data/greenroom_token.json`
 
 ### Environment Variables / CLI Options
 
-Configuration is via CLI options or environment variables. See [docs/CLI.md](docs/CLI.md) for the complete reference.
+Configuration is via CLI options or environment variables. See [docs/cli.md](docs/cli.md) for the complete reference.
 
 Key options for development:
+
 - `GREENROOM_WEB_PORT` - Web UI port (default: 8099)
 - `TOKEN_FILE` - Path to credentials file (default: `/data/greenroom_token.json`)
 - `RUST_LOG` - Log level (default: "info")
@@ -121,30 +106,18 @@ Key options for development:
 
 ## How It Works
 
-### Initial Setup
-
-1. **Web UI OAuth**: User opens Greenroom Web UI, clicks "Connect Spotify"
-2. **Instructions Page**: Server shows instructions with "Open Spotify Authorization" button
-3. **PKCE Flow**: User clicks button, Spotify OAuth opens in new tab with PKCE challenge
-4. **Manual Code/URL Entry**: Spotify redirects to localhost (fails in browser), user copies URL or code
-5. **Token Exchange**: User pastes URL or code into form, server extracts code and exchanges for tokens via PKCE
-6. **Credential Storage**: Credentials saved to `/data/greenroom_token.json`
-
 ### Runtime Operation
 
-1. **Credential Detection**: Daemon detects stored credentials and connects to Spotify using librespot
-2. **Spotify Session**: Establishes session with `streaming` OAuth scope (not Web API scopes)
-3. **Token Management**: Once connected, librespot's internal **TokenProvider** automatically manages token refresh via the Mercury keymaster API (`hm://keymaster/token/authenticated`). No manual refresh needed.
-4. **Cluster Join**: Sends `PutStateRequest` with `NEW_DEVICE` to join Spotify's Connect cluster via WebSocket
-5. **WebSocket Monitoring**: Listens to `hm://connect-state/v1/cluster` for real-time playback updates
-6. **Metadata Fetching**: Fetches track/album/artist metadata via librespot's internal Mercury API (not Web API)
-7. **MQTT Publishing**: Publishes to `greenroom/<device_id>/state` via MQTT discovery
-8. **Reconnection**: On WebSocket failures, daemon automatically reconnects with exponential backoff
-9. **Auth Revocation**: If Spotify returns "Bad credentials" or "invalid_grant", credentials are cleared and HA notification is sent
+1. **Authentication**: Establishes Spotify session
+2. **Cluster Join**: Sends `PutStateRequest` with `NEW_DEVICE` to join Spotify's Connect cluster via WebSocket
+3. **WebSocket Monitoring**: Listens to `hm://connect-state/v1/cluster` for real-time playback updates
+4. **Metadata Fetching**: Fetches track/album/artist metadata via librespot's internal Mercury API (not Web API)
+5. **MQTT Publishing**: Publishes to `greenroom/<device_id>/state` via MQTT discovery
 
 ### Demo Mode
 
 If no credentials exist at startup:
+
 - Daemon enters demo mode with "Not Connected" status
 - Web UI shows "Connect Spotify" button
 - Daemon polls every 10 seconds for new credentials
@@ -189,7 +162,7 @@ How Greenroom monitors playback across devices:
    - Contains `active_device_id` showing which device is currently playing
    - Contains player state (track, position, volume, shuffle, repeat, etc.)
 5. **Metadata Fetching**: Mercury API calls to get track/artist/album details
-6. **Token Refresh**: Internal TokenProvider fetches fresh tokens via `hm://keymaster/token/authenticated` when needed
+6. **Session Token Refresh**: librespot's TokenProvider fetches fresh internal session tokens via `hm://keymaster/token/authenticated` when needed (different from OAuth tokens)
 
 This is the same protocol used by official Spotify clients to sync playback across devices.
 
@@ -220,12 +193,6 @@ The web UI uses Home Assistant's ingress feature:
 - `librespot-metadata`: Track/album metadata fetching
 - `librespot-protocol`: Protobuf definitions
 
-### Notable: No Direct librespot-oauth
-
-We don't directly use `librespot-oauth` crate because its `OAuthClientBuilder` is designed for desktop apps with localhost callbacks. Instead, we implement PKCE directly using `reqwest` in `web.rs`, which is more appropriate for the Home Assistant add-on environment (behind ingress with manual code/URL entry flow).
-
-`librespot-oauth` is still pulled in transitively via `librespot-core` but not used directly.
-
 ### Dependency Fix
 
 The vergen crate conflict was resolved by pinning specific versions similar to [spotatui](https://github.com/LargeModGames/spotatui):
@@ -238,49 +205,15 @@ vergen-gitcl = "=1.0.8"
 
 ## Development Notes
 
-### Testing OAuth Flow Locally
-
-The manual code entry flow works without full ingress setup:
-
-1. Run the binary with `GREENROOM_WEB_PORT=8099`
-2. Navigate to `http://localhost:8099/`
-3. Click "Connect Spotify" - opens instructions page
-4. Click "Open Spotify Authorization" - opens Spotify OAuth in a new tab
-5. After Spotify auth, the redirect to `127.0.0.1:5588` will fail (expected)
-6. Copy the **entire URL** from the address bar (or just the code)
-7. Paste into the form - the server will extract the code automatically
-8. The credentials will be saved locally
-
-Note: Without the `X-Ingress-Path` header, navigation links may not work correctly. For full testing with proper URL handling, build the add-on and install in a test HA instance.
-
-### Token File Format
-
-```json
-{
-  "access_token": "...",
-  "refresh_token": "...",
-  "expires_at": 1234567890,
-  "scopes": ["streaming"]
-}
-```
-
-Note: This file stores the initial OAuth credentials. Once a librespot session is established, token refresh is handled internally by librespot's TokenProvider via the Mercury keymaster API - the stored credentials are only used for initial connection.
-
 ## Implementation Details
 
-### TokenProvider Management Strategy
+### Authentication
 
-- Store `AuthCredentials` (initial OAuth tokens) only for session establishment
-- Once `Session::connect()` succeeds, librespot manages tokens internally
-- TokenProvider uses Mercury keymaster API (`hm://keymaster/token/authenticated`) to fetch fresh tokens
-- We only reconnect on actual WebSocket/connection failures, not token expiry
-- Session stays alive as long as WebSocket is connected
+See [docs/auth.md](docs/auth.md) for detailed documentation on:
 
-### Code/URL Parsing
-
-The `extract_oauth_code()` function in `web.rs` accepts:
-- Full URL: `http://127.0.0.1:5588/login?code=AQABC123XYZ&state=...`
-- Just the code: `AQABC123XYZ`
-- Handles trimming and various URL formats
-
-This is more user-friendly than requiring precise extraction of just the code value.
+- OAuth setup instructions and PKCE flow
+- Testing OAuth locally during development
+- Dual token system (OAuth + librespot session credentials)
+- Background token refresh strategy
+- Reconnection flow and error handling
+- Token file format and why we don't use librespot-oauth directly

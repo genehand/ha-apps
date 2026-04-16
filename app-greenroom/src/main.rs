@@ -6,8 +6,9 @@ mod web;
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::librespot::SpotifyClient;
 use crate::mqtt::MqttBridge;
@@ -166,6 +167,63 @@ impl From<Cli> for Config {
     }
 }
 
+/// Spawn a background task to keep OAuth tokens fresh.
+///
+/// This runs continuously (regardless of connection state) to ensure
+/// the OAuth token is always valid for reconnection attempts.
+/// Checks every 5 minutes and refreshes if token expires within 10 minutes.
+fn spawn_oauth_refresh_task(token_file: PathBuf) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60); // 5 minutes
+        const REFRESH_THRESHOLD: Duration = Duration::from_secs(10 * 60); // 10 minutes
+
+        loop {
+            tokio::time::sleep(CHECK_INTERVAL).await;
+
+            // Check if we have credentials and if they need refresh
+            match token::load_credentials(&token_file).await {
+                Some(creds) if creds.exists() => {
+                    if creds.will_expire_within(REFRESH_THRESHOLD) {
+                        debug!(
+                            "OAuth token expires soon (at {}), refreshing...",
+                            creds.expires_at
+                        );
+                        match token::refresh_oauth_token(&creds).await {
+                            Ok(refreshed) => {
+                                // Save refreshed credentials immediately
+                                match token::save_credentials(&token_file, &refreshed, None).await {
+                                    Ok(()) => {
+                                        debug!(
+                                            "Background OAuth refresh successful, new expiry: {}",
+                                            refreshed.expires_at
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to save refreshed OAuth token: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Background OAuth refresh failed: {}", e);
+                                // Continue - will retry next cycle
+                            }
+                        }
+                    } else {
+                        debug!(
+                            "OAuth token still valid (expires at {}), no refresh needed",
+                            creds.expires_at
+                        );
+                    }
+                }
+                _ => {
+                    // No credentials yet, nothing to refresh
+                    debug!("No OAuth credentials found, skipping background refresh");
+                }
+            }
+        }
+    })
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse CLI arguments
@@ -245,14 +303,14 @@ async fn main() -> anyhow::Result<()> {
     let (state_tx, state_rx) = broadcast::channel(16);
 
     // Token notification channel (for notifying daemon of new tokens from web UI)
-    let (token_tx, token_rx) = broadcast::channel(1);
+    let (token_tx, _token_rx) = broadcast::channel(1);
 
     // Start web server for OAuth UI
     let app_state = AppState::new(
         config.clone(),
         playback_state.clone(),
         token_file.clone(),
-        token_tx,
+        token_tx.clone(),
     );
     let web_app = router(app_state);
     let web_port = cli.web_port;
@@ -280,13 +338,16 @@ async fn main() -> anyhow::Result<()> {
     // Start MQTT bridge
     let mqtt_bridge = MqttBridge::new(config.clone(), playback_state.clone(), state_rx);
 
+    // Clone token_file for background refresh task (before it's moved into SpotifyClient)
+    let token_file_for_refresh = token_file.clone();
+
     // Start Spotify client
     let spotify_client = SpotifyClient::new(
         config.clone(),
         playback_state.clone(),
         state_tx,
         token_file,
-        token_rx,
+        token_tx,
     );
 
     // Set up shutdown signal handler
@@ -301,7 +362,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Run all three concurrently, with shutdown signal
+    // Spawn background OAuth refresh task (runs continuously, regardless of connection state)
+    let oauth_refresh_task = spawn_oauth_refresh_task(token_file_for_refresh);
+
+    // Run all components concurrently, with shutdown signal
     tokio::select! {
         _ = shutdown_signal => {
             info!("Shutdown signal received, exiting...");
@@ -320,6 +384,9 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = result {
                 error!("Spotify client error: {}", e);
             }
+        }
+        _ = oauth_refresh_task => {
+            error!("OAuth refresh task unexpectedly exited");
         }
     }
 

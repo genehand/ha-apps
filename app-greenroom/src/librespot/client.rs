@@ -8,6 +8,7 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 use librespot_core::authentication::Credentials;
+use librespot_core::cache::Cache;
 use librespot_core::config::DeviceType;
 use librespot_core::config::SessionConfig;
 use librespot_core::dealer::protocol::Message;
@@ -41,7 +42,7 @@ pub struct SpotifyClient {
     playback_state: Arc<RwLock<PlaybackState>>,
     token_file: PathBuf,
     state_tx: broadcast::Sender<()>,
-    token_rx: Option<broadcast::Receiver<()>>,
+    token_tx: broadcast::Sender<()>,
     shutdown: Arc<RwLock<bool>>,
 }
 
@@ -51,14 +52,14 @@ impl SpotifyClient {
         playback_state: Arc<RwLock<PlaybackState>>,
         state_tx: broadcast::Sender<()>,
         token_file: PathBuf,
-        token_rx: broadcast::Receiver<()>,
+        token_tx: broadcast::Sender<()>,
     ) -> Self {
         Self {
             config,
             playback_state,
             token_file,
             state_tx,
-            token_rx: Some(token_rx),
+            token_tx,
             shutdown: Arc::new(RwLock::new(false)),
         }
     }
@@ -180,9 +181,30 @@ impl SpotifyClient {
     }
 
     async fn attempt_connection(&mut self) -> anyhow::Result<()> {
+        // First try to use cached librespot credentials (reusable auth data from Spotify)
+        // These are more reliable than OAuth tokens for reconnection
+        let cache = self.get_cache()?;
+        if let Some(cached_creds) = cache.credentials() {
+            info!("Using cached librespot credentials for reconnection");
+            match self
+                .connect_with_credentials(cached_creds, Some(cache.clone()), None)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    warn!("Cached credentials failed, falling back to OAuth: {}", e);
+                    // Continue to OAuth fallback
+                }
+            }
+        }
+
+        // Fall back to OAuth credentials from file
         let credentials = match token::load_credentials(&self.token_file).await {
             Some(creds) if creds.exists() => {
-                debug!("Loaded credentials from {}", self.token_file.display());
+                debug!(
+                    "Loaded OAuth credentials from {}",
+                    self.token_file.display()
+                );
                 creds
             }
             _ => {
@@ -190,17 +212,62 @@ impl SpotifyClient {
             }
         };
 
+        // Check if OAuth token needs refresh
+        let credentials = if credentials.is_expired() {
+            info!("OAuth token expired, refreshing...");
+            match token::refresh_oauth_token(&credentials).await {
+                Ok(refreshed) => {
+                    // Save refreshed credentials immediately
+                    if let Err(e) =
+                        token::save_credentials(&self.token_file, &refreshed, Some(&self.token_tx))
+                            .await
+                    {
+                        error!("Failed to save refreshed credentials: {}", e);
+                    }
+                    refreshed
+                }
+                Err(e) => {
+                    warn!("Failed to refresh OAuth token: {}", e);
+                    credentials // Use original credentials, will try reactive refresh on error
+                }
+            }
+        } else {
+            credentials
+        };
+
         // Convert to librespot Credentials and connect
         let librespot_creds = token::to_librespot_credentials(&credentials);
-        self.connect_with_credentials(librespot_creds).await
+        self.connect_with_credentials(librespot_creds, Some(cache), Some(credentials))
+            .await
+    }
+
+    /// Get the cache directory for librespot credentials (same dir as token file)
+    fn get_cache(&self) -> anyhow::Result<Cache> {
+        let cache_dir: PathBuf = self
+            .token_file
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/data"));
+
+        Cache::new(Some(cache_dir), None::<PathBuf>, None::<PathBuf>, None)
+            .map_err(|e| anyhow::anyhow!("Failed to create cache: {}", e))
     }
 
     /// Connect to Spotify with credentials and run the media monitor.
-    async fn connect_with_credentials(&mut self, credentials: Credentials) -> anyhow::Result<()> {
+    async fn connect_with_credentials(
+        &mut self,
+        credentials: Credentials,
+        cache: Option<Cache>,
+        original_oauth: Option<token::AuthCredentials>,
+    ) -> anyhow::Result<()> {
         let session_config = SessionConfig::default();
-        let session = Session::new(session_config, None);
+        let session = Session::new(session_config.clone(), cache.clone());
 
-        match session.connect(credentials, false).await {
+        // Connect and store librespot's reusable session credentials in cache.
+        // Note: This is DIFFERENT from our OAuth file - librespot cache stores
+        // session-specific auth data from Spotify (reusable_auth_credentials),
+        // while our token file stores OAuth access/refresh tokens for re-authentication.
+        match session.connect(credentials, true).await {
             Ok(()) => {
                 debug!("Connected to Spotify! Starting media monitoring...");
                 self.run_media_monitor(session).await
@@ -213,6 +280,42 @@ impl SpotifyClient {
                     || err_str.contains("revoked")
                     || err_str.contains("Bad credentials")
                 {
+                    // Try reactive refresh if we have original OAuth credentials
+                    if let Some(oauth_creds) = original_oauth {
+                        warn!("Auth failed, attempting reactive OAuth refresh...");
+                        match token::refresh_oauth_token(&oauth_creds).await {
+                            Ok(refreshed) => {
+                                // Save refreshed credentials
+                                if let Err(save_err) = token::save_credentials(
+                                    &self.token_file,
+                                    &refreshed,
+                                    Some(&self.token_tx),
+                                )
+                                .await
+                                {
+                                    error!("Failed to save refreshed credentials: {}", save_err);
+                                }
+                                info!("OAuth refresh successful, retrying connection...");
+                                let refreshed_librespot_creds =
+                                    token::to_librespot_credentials(&refreshed);
+                                let retry_session = Session::new(session_config, cache.clone());
+                                match retry_session.connect(refreshed_librespot_creds, true).await {
+                                    Ok(()) => {
+                                        info!("Reconnection with refreshed token successful");
+                                        return self.run_media_monitor(retry_session).await;
+                                    }
+                                    Err(retry_err) => {
+                                        warn!("Retry with refreshed token failed: {}", retry_err);
+                                    }
+                                }
+                            }
+                            Err(refresh_err) => {
+                                warn!("Reactive OAuth refresh failed: {}", refresh_err);
+                            }
+                        }
+                    }
+
+                    // If we get here, refresh didn't work or wasn't available
                     warn!(
                         "Authentication revoked or expired by Spotify, clearing stored credentials"
                     );
@@ -445,6 +548,39 @@ impl SpotifyClient {
                         return Err(anyhow::anyhow!("Session invalidated"));
                     }
                     debug!("Periodic health check: session still valid");
+
+                    // Periodic OAuth token refresh when connected (playing or idle)
+                    // Refresh when token expires within 5 minutes to prevent disruption
+                    if let Some(creds) = token::load_credentials(&self.token_file).await {
+                        let should_refresh = {
+                            let state = self.playback_state.read().await;
+                            // Refresh when connected (playing or idle) and token expires soon
+                            state.is_spotify_connected && creds.will_expire_within(Duration::from_secs(300))
+                        };
+
+                        if should_refresh {
+                            info!("OAuth token expires soon, refreshing proactively");
+                            match token::refresh_oauth_token(&creds).await {
+                                Ok(refreshed) => {
+                                    if let Err(e) = token::save_credentials(
+                                        &self.token_file,
+                                        &refreshed,
+                                        None, // Don't notify - we're already connected
+                                    )
+                                    .await
+                                    {
+                                        warn!("Failed to save refreshed token: {}", e);
+                                    } else {
+                                        info!("Proactive OAuth token refresh successful");
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Proactive OAuth token refresh failed: {}", e);
+                                    // Don't fail here - on-demand refresh will handle it later
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -659,11 +795,9 @@ impl SpotifyClient {
             state.volume = 0.0;
         }
 
-        // Take the token receiver so we can listen for notifications
-        let mut token_rx = self
-            .token_rx
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Token receiver already consumed"))?;
+        // Subscribe to token notifications (creates a new receiver each time
+        // so demo mode can be re-entered after auth revocation)
+        let mut token_rx = self.token_tx.subscribe();
 
         // Keep running but wait for either token notification or periodic check
         loop {
@@ -823,14 +957,14 @@ mod tests {
             mqtt_device_id: "test".to_string(),
         };
         let (state_tx, _) = broadcast::channel(16);
-        let (_, token_rx) = broadcast::channel::<()>(1);
+        let (token_tx, _) = broadcast::channel::<()>(1);
 
         SpotifyClient::new(
             config,
             Arc::new(RwLock::new(PlaybackState::default())),
             state_tx,
             token_file,
-            token_rx,
+            token_tx,
         )
     }
 
