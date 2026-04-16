@@ -190,6 +190,12 @@ class IntegrationLoader:
                         _LOGGER.debug(
                             f"Migration result for {domain}: {migrate_result}"
                         )
+                        # Persist the updated entry version after successful migration
+                        if migrate_result:
+                            await self._save_updated_config_entry(entry)
+                            _LOGGER.debug(
+                                f"Saved migrated config entry {entry.entry_id} with version {entry.version}"
+                            )
                 except Exception as e:
                     _LOGGER.warning(f"Migration check for {domain} raised: {e}")
 

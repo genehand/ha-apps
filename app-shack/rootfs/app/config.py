@@ -67,6 +67,73 @@ def _query_supervisor_api(path: str) -> Optional[dict]:
         return None
 
 
+def send_persistent_notification(
+    message: str, title: Optional[str] = None, notification_id: Optional[str] = None
+) -> bool:
+    """Send a persistent notification to Home Assistant via Supervisor API.
+
+    Args:
+        message: The notification message body.
+        title: Optional notification title.
+        notification_id: Optional unique identifier for the notification.
+                        If provided, existing notification with same ID will be replaced.
+
+    Returns:
+        True if notification was sent successfully, False otherwise.
+    """
+    token = _get_supervisor_token()
+    if not token:
+        logger.debug("SUPERVISOR_TOKEN not set, cannot send persistent notification")
+        return False
+
+    try:
+        import urllib.request
+        import urllib.error
+
+        url = "http://supervisor/core/api/services/persistent_notification/create"
+
+        payload = {"message": message}
+        if title:
+            payload["title"] = title
+        if notification_id:
+            payload["notification_id"] = notification_id
+
+        data = json.dumps(payload).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            # Service calls return empty response on success
+            logger.debug("Persistent notification sent successfully")
+            return True
+
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8")
+        except:
+            pass
+        logger.error(
+            "Failed to send persistent notification: %s %s - %s",
+            e.code,
+            e.reason,
+            error_body,
+        )
+        return False
+    except Exception as e:
+        logger.error("Failed to send persistent notification: %s", e)
+        return False
+
+
 def get_addon_slug() -> Optional[str]:
     """Get the add-on slug from the Supervisor API.
 

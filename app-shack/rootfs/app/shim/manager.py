@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from paho.mqtt.client import Client, MQTTMessage
 
-from config import get_addon_slug
+from config import get_addon_slug, send_persistent_notification
 from .logging import get_logger
 from .core import HomeAssistant, ConfigEntry
 from .storage import Storage
@@ -334,6 +334,8 @@ class ShimManager:
                         _LOGGER.warning(
                             f"Entity {entity.entity_id} has no turn_off method"
                         )
+                # Refresh state after ON/OFF/PRESS/SET_VALUE command
+                await self._refresh_entity_state(entity)
 
             elif command_type == "percentage_set":
                 # Fan speed
@@ -346,6 +348,7 @@ class ShimManager:
                 elif hasattr(entity, "set_percentage"):
                     _LOGGER.debug(f"  Calling set_percentage with {int(payload)}")
                     entity.set_percentage(int(payload))
+                await self._refresh_entity_state(entity)
 
             elif command_type == "preset_mode_set":
                 # Fan preset mode
@@ -353,6 +356,7 @@ class ShimManager:
                     await entity.async_set_preset_mode(payload)
                 elif hasattr(entity, "set_preset_mode"):
                     entity.set_preset_mode(payload)
+                await self._refresh_entity_state(entity)
 
             elif command_type == "oscillation_set":
                 # Fan oscillation
@@ -360,6 +364,7 @@ class ShimManager:
                     await entity.async_oscillate(payload.upper() == "ON")
                 elif hasattr(entity, "oscillate"):
                     entity.oscillate(payload.upper() == "ON")
+                await self._refresh_entity_state(entity)
 
             elif command_type == "brightness_set":
                 # Light brightness
@@ -367,13 +372,16 @@ class ShimManager:
                     await entity.async_turn_on(brightness=int(payload))
                 elif hasattr(entity, "turn_on"):
                     entity.turn_on(brightness=int(payload))
+                await self._refresh_entity_state(entity)
 
             elif command_type == "temperature_set":
-                # Climate temperature
+                # Climate or water heater temperature
                 if hasattr(entity, "async_set_temperature"):
                     await entity.async_set_temperature(temperature=float(payload))
                 elif hasattr(entity, "set_temperature"):
                     entity.set_temperature(temperature=float(payload))
+                # Refresh state after temperature change
+                await self._refresh_entity_state(entity)
 
             elif command_type == "mode_set":
                 # Climate HVAC mode or water heater operation mode
@@ -387,12 +395,31 @@ class ShimManager:
                     await entity.async_set_operation_mode(payload)
                 elif hasattr(entity, "set_operation_mode"):
                     entity.set_operation_mode(payload)
+                # Refresh state after mode change
+                await self._refresh_entity_state(entity)
 
         except Exception as e:
             _LOGGER.error(
                 f"Error routing command to {getattr(entity, 'entity_id', 'unknown')}: {e}"
             )
             _LOGGER.exception("Full traceback:")
+
+    async def _refresh_entity_state(self, entity: Any) -> None:
+        """Refresh entity state after command execution.
+
+        This ensures the new state is published to MQTT after a command changes it.
+        """
+        try:
+            if hasattr(entity, "async_update"):
+                _LOGGER.debug(f"Calling async_update for {entity.entity_id}")
+                await entity.async_update()
+            if hasattr(entity, "async_write_ha_state"):
+                _LOGGER.debug(f"Calling async_write_ha_state for {entity.entity_id}")
+                entity.async_write_ha_state()
+        except Exception as e:
+            _LOGGER.warning(
+                f"Error refreshing state for {getattr(entity, 'entity_id', 'unknown')}: {e}"
+            )
 
     def _find_entity(
         self, entity_id: str, object_id: Optional[str] = None
@@ -612,9 +639,11 @@ class ShimManager:
 
             # Log results
             success_count = 0
+            failures = []
             for (domain, entry_id), result in zip(task_info, results):
                 if isinstance(result, Exception):
                     _LOGGER.error(f"Failed to setup {domain} ({entry_id}): {result}")
+                    failures.append((domain, entry_id, str(result)))
                 elif result:
                     success_count += 1
                     _LOGGER.debug(f"Successfully setup {domain} ({entry_id})")
@@ -622,11 +651,16 @@ class ShimManager:
                     _LOGGER.error(
                         f"Failed to setup {domain} ({entry_id}) - returned False"
                     )
+                    failures.append((domain, entry_id, "Setup returned False"))
 
             _LOGGER.info(
                 f"Integration loading complete: {success_count}/{len(setup_tasks)} "
                 f"config entries loaded successfully"
             )
+
+            # Send persistent notification if there were failures
+            if failures:
+                await self._send_failure_notification(failures)
 
     async def _setup_integration_with_semaphore(self, entry: ConfigEntry) -> bool:
         """Setup an integration with semaphore-controlled concurrency.
@@ -639,6 +673,39 @@ class ShimManager:
         """
         async with self._setup_semaphore:
             return await self._integration_loader.setup_integration(entry)
+
+    async def _send_failure_notification(
+        self, failures: List[tuple[str, str, str]]
+    ) -> None:
+        """Send a persistent notification to HA about integration setup failures.
+
+        Args:
+            failures: List of (domain, entry_id, error_message) tuples.
+        """
+        if not failures:
+            return
+
+        total = len(failures)
+        title = f"Shack: {total} integration setup failure{'s' if total > 1 else ''}"
+
+        # Build message with list of failed integrations
+        lines = []
+        for domain, entry_id, error in failures[:10]:
+            lines.append(f"- **{domain}**: {error}")
+
+        if total > 10:
+            lines.append(f"\n... and {total - 10} more")
+
+        message = "\n".join(lines)
+
+        # Run in executor since send_persistent_notification is synchronous
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            send_persistent_notification,
+            message,
+            title,
+            "shack_setup_failures",  # notification_id - replaces previous notification
+        )
 
     async def _initial_update_check(self) -> None:
         """Check for updates on startup and send notification if any found.
