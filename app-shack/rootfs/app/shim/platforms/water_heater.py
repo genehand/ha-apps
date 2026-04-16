@@ -283,6 +283,44 @@ class WaterHeaterEntity(Entity):
                 )
                 self.hass.async_add_job(self._publish_mqtt_discovery)
 
+    def _mqtt_publish(self) -> None:
+        """Publish state to MQTT.
+
+        Overrides base class to publish water heater-specific topics:
+        - state (operation mode)
+        - current_temperature
+        - target_temperature
+        """
+        if not hasattr(self.hass, "_mqtt_client"):
+            return
+
+        mqtt = self.hass._mqtt_client
+        if not mqtt.is_connected():
+            return
+
+        base_topic = self._get_mqtt_base_topic()
+        if not base_topic:
+            return
+
+        # Publish state (operation mode)
+        state_topic = f"{base_topic}/state"
+        state = self.state
+        if state is not None:
+            mqtt.publish(state_topic, str(state), qos=0, retain=True)
+
+        # Publish current temperature
+        if self.current_temperature is not None:
+            temp_topic = f"{base_topic}/current_temperature"
+            mqtt.publish(temp_topic, str(self.current_temperature), qos=0, retain=True)
+
+        # Publish target temperature
+        if self.target_temperature is not None:
+            target_topic = f"{base_topic}/target_temperature"
+            mqtt.publish(target_topic, str(self.target_temperature), qos=0, retain=True)
+
+        # Publish attributes using base class helper
+        self._publish_mqtt_attributes()
+
     def _publish_mqtt_attributes(self) -> None:
         """Publish extra_state_attributes to MQTT, filtering out inlet/outlet temps.
 

@@ -170,11 +170,20 @@ class IntegrationLoader:
                         config_flow_module = importlib.import_module(
                             f"custom_components.{domain}.config_flow"
                         )
-                        # Common attribute names for config entry version
+                        # Common attribute names for config entry version (module level)
                         for attr_name in ("VERSION", "ENTRIES_VERSION"):
                             if hasattr(config_flow_module, attr_name):
                                 target_version = getattr(config_flow_module, attr_name)
                                 break
+                        # Also check for class-level VERSION in ConfigFlow class
+                        if target_version is None and hasattr(
+                            config_flow_module, "ConfigFlow"
+                        ):
+                            config_flow_class = getattr(
+                                config_flow_module, "ConfigFlow"
+                            )
+                            if hasattr(config_flow_class, "VERSION"):
+                                target_version = getattr(config_flow_class, "VERSION")
                     except ImportError:
                         pass
 

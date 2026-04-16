@@ -631,6 +631,88 @@ class TestEntityClassAttributes:
         assert entity.platform is None
 
 
+class TestEntityCategoryProperty:
+    """Tests for Entity.entity_category property."""
+
+    def test_entity_category_from_description(self):
+        """Test entity_category returns value from entity_description when set."""
+        from shim.entity import Entity, EntityDescription
+
+        class TestEntity(Entity):
+            """Test entity with description."""
+
+            def __init__(self):
+                self.entity_description = EntityDescription(
+                    key="test_key",
+                    entity_category="diagnostic",
+                )
+
+        entity = TestEntity()
+        assert entity.entity_category == "diagnostic"
+
+    def test_entity_category_from_attr_when_description_is_none(self):
+        """Test entity_category falls back to _attr_entity_category."""
+        from shim.entity import Entity
+
+        class TestEntity(Entity):
+            """Test entity with _attr_entity_category set."""
+
+            _attr_entity_category = "diagnostic"
+
+        entity = TestEntity()
+        assert entity.entity_category == "diagnostic"
+
+    def test_entity_category_attr_takes_precedence_when_description_is_none(self):
+        """Test _attr_entity_category is used when entity_description.entity_category is None."""
+        from shim.entity import Entity, EntityDescription
+
+        class TestEntity(Entity):
+            """Test entity with both description (None category) and attr set."""
+
+            _attr_entity_category = "config"
+
+            def __init__(self):
+                # Description has entity_category=None (default)
+                self.entity_description = EntityDescription(key="test_key")
+
+        entity = TestEntity()
+        # Description has None, so should fall back to _attr_entity_category
+        assert entity.entity_category == "config"
+
+    def test_entity_category_description_takes_precedence_over_attr(self):
+        """Test entity_description.entity_category takes precedence over _attr_entity_category."""
+        from shim.entity import Entity, EntityDescription
+
+        class TestEntity(Entity):
+            """Test entity with both description category and attr set."""
+
+            _attr_entity_category = "config"
+
+            def __init__(self):
+                # Description has explicit entity_category
+                self.entity_description = EntityDescription(
+                    key="test_key",
+                    entity_category="diagnostic",
+                )
+
+        entity = TestEntity()
+        # Description has explicit value, takes precedence
+        assert entity.entity_category == "diagnostic"
+
+    def test_entity_category_none_when_both_none(self):
+        """Test entity_category is None when both description and attr are None."""
+        from shim.entity import Entity, EntityDescription
+
+        class TestEntity(Entity):
+            """Test entity with no category set anywhere."""
+
+            def __init__(self):
+                self.entity_description = EntityDescription(key="test_key")
+
+        entity = TestEntity()
+        assert entity.entity_category is None
+
+
 class TestConfigEntryUniqueId:
     """Tests for ConfigEntry.unique_id property."""
 

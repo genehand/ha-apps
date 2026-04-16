@@ -442,7 +442,9 @@ class Entity:
         """Return the category of this entity."""
         # Check entity_description first (integrations may set via entity_description)
         if hasattr(self, "entity_description") and self.entity_description is not None:
-            return getattr(self.entity_description, "entity_category", None)
+            desc_category = getattr(self.entity_description, "entity_category", None)
+            if desc_category is not None:
+                return desc_category
         return self._attr_entity_category
 
     @property
