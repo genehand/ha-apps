@@ -39,6 +39,7 @@ Unlike other Spotify integrations, Greenroom uses the **Spotify Connect protocol
 - **MQTT Bridge**: Publishes discovery configs and state to Home Assistant
   - Main sensor with state (playing/paused) and JSON attributes
   - Auto-discovery via `homeassistant/*/greenroom/config`
+  - **Active switch**: `switch.<device name> Active` to enable/disable the Spotify connection
 
 All three components (web UI, Spotify daemon, MQTT bridge) run concurrently in one binary.
 
@@ -54,6 +55,7 @@ app-greenroom/
     ├── main.rs            # Entry point - spawns web server + daemon + mqtt
     ├── web.rs             # Web UI (OAuth flow, status page)
     ├── mqtt.rs            # MQTT bridge (HA discovery, state publishing)
+    ├── state.rs           # Connection state persistence
     ├── token.rs           # OAuth credentials storage
     └── librespot/         # Spotify client (cluster monitoring, session management)
         ├── mod.rs
@@ -148,6 +150,15 @@ source: "Living Room Speaker"
 shuffle: true
 repeat: "context"
 ```
+
+### Connection Control Switch: `switch.<device name> Active`
+
+Controls whether the Spotify client connection is active:
+
+- **ON**: Greenroom connects to Spotify and monitors playback
+- **OFF**: Connection is disabled, Greenroom waits without connecting
+
+The switch state is persisted across restarts in `greenroom_connection_state.json`.
 
 ## Spotify Cluster Protocol
 

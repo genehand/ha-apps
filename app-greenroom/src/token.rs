@@ -40,15 +40,6 @@ impl AuthCredentials {
             .as_secs();
         now >= self.expires_at
     }
-
-    /// Check if the OAuth access token will expire within the given duration.
-    pub fn will_expire_within(&self, duration: std::time::Duration) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        now + duration.as_secs() >= self.expires_at
-    }
 }
 
 /// Save credentials to a file, creating parent directories if needed.
@@ -124,7 +115,7 @@ struct TokenRefreshResponse {
 /// This calls Spotify's token endpoint to get a new access_token.
 /// The new credentials are returned but NOT saved to file - the caller should save them.
 pub async fn refresh_oauth_token(credentials: &AuthCredentials) -> anyhow::Result<AuthCredentials> {
-    info!("Refreshing OAuth token...");
+    debug!("Refreshing OAuth token...");
 
     let params = [
         ("grant_type", "refresh_token"),

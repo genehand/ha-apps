@@ -9,7 +9,7 @@ Greenroom uses a **dual token system** to manage Spotify authentication:
 
 | Token Type | Lifetime | Purpose | Managed By |
 |---|---|---|---|
-| OAuth `access_token` | 1 hour | Initial auth, reconnection after long disconnections | Greenroom (with background refresh) |
+| OAuth `access_token` | 1 hour | Initial auth, reconnection after long disconnections | Greenroom |
 | librespot `reusable_auth_credentials` | Session lifetime | Fast reconnection to same session | librespot TokenProvider |
 
 ## OAuth Token Flow
@@ -36,26 +36,21 @@ Greenroom uses a **dual token system** to manage Spotify authentication:
 }
 ```
 
-## Background OAuth Refresh
+## OAuth Token Refresh
 
-To ensure seamless reconnection after long disconnections (e.g., overnight), Greenroom spawns a background task that:
+### When OAuth Refresh Happens
 
-- Runs continuously, independent of Spotify connection state
-- Checks OAuth token expiry every 5 minutes
-- Refreshes when token expires within 10 minutes
-- Saves refreshed tokens to the credentials file
-- Operates silently (no notifications to the main daemon)
+1. **During reconnection** - Before using OAuth to connect, check if expired and refresh if needed
+2. **On failure** - If connection fails with "Bad credentials", try refreshing once and retry
 
-This ensures OAuth tokens are always fresh for reconnection attempts, even after 8+ hours of disconnection. When the user starts playing Spotify in the morning, the reconnection attempt uses a valid OAuth token (or falls back to cached librespot session credentials).
+### Token Management Strategy
 
-## Token Management Strategy
-
-### OAuth Tokens (Our Responsibility)
+#### OAuth Tokens (Our Responsibility)
 
 - Stored in `/data/greenroom_token.json` (1-hour lifetime)
-- Used for initial authentication and reconnection after session drops
-- Background task checks expiry every 5 minutes, refreshes when within 10 min of expiry
-- Proactive refresh before expiry + reactive refresh on connection failure
+- Used for initial authentication and fallback when session credentials fail
+- Refreshed when about to use an expired token, or after connection failure
+- May be stale during long connected sessions (this is fine - session credentials are used instead)
 
 ### librespot Session Credentials (librespot's Responsibility)
 
@@ -65,13 +60,30 @@ This ensures OAuth tokens are always fresh for reconnection attempts, even after
 - Managed by TokenProvider via Mercury keymaster API
 - Completely separate from OAuth tokens
 
-## Reconnection Flow
+## Connection Strategy
 
-1. **Try cached librespot session credentials** (fast path)
+### Initial Connection (Startup)
+
+On first connection after Greenroom starts:
+
+1. **Always use OAuth tokens** (never cached credentials)
+   - Cached credentials from previous runs have a ~5 minute session limit
+   - OAuth-based sessions last much longer (30+ minutes typically)
+   - Slight overhead (reading file) is worth avoiding the 5-minute flakiness
+
+2. **Refresh OAuth token if expired**
+   - Check `expires_at` in token file
+   - Refresh proactively before connection if needed
+
+### Reconnection (During Session)
+
+If the connection drops while monitoring:
+
+1. **Try cached librespot session credentials first** (fast path)
    - Uses `reusable_auth_credentials` from librespot's cache
-   - Works if the session is still valid on Spotify's side
+   - These work reliably for reconnections once "primed" by OAuth
 
-2. **Fall back to OAuth tokens from file** (with refresh if needed)
+2. **Fall back to OAuth tokens** (with refresh if needed)
    - Load OAuth credentials from `/data/greenroom_token.json`
    - Check if expired, refresh proactively if needed
    - Use refreshed token for connection
@@ -81,10 +93,11 @@ This ensures OAuth tokens are always fresh for reconnection attempts, even after
    - Retry connection with fresh token
    - Only then clear credentials and notify user
 
-4. **Session maintenance**
-   - Session stays alive via WebSocket keepalives
-   - Reconnect only on connection failures, not token expiry
-   - OAuth tokens kept fresh by background task even when disconnected
+### Session Maintenance
+
+- Session stays alive via WebSocket keepalives
+- Reconnect only on connection failures, not token expiry
+- OAuth tokens refreshed on-demand when needed (may be stale during long sessions)
 
 ## Why Two Token Systems?
 
@@ -99,8 +112,8 @@ This is similar to how web applications work:
 The dual system provides:
 
 - **Fast reconnection** (cached session credentials)
-- **Recovery path** (OAuth refresh when all else fails)
-- **Seamless overnight operation** (background OAuth refresh)
+- **Recovery path** (OAuth refresh when all else fails, on-demand)
+- **No unnecessary API calls** (only refresh when needed)
 
 ## Auth Revocation
 

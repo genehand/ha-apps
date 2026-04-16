@@ -1,17 +1,18 @@
 mod librespot;
 mod mqtt;
+mod state;
 mod token;
 mod web;
 
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 use crate::librespot::SpotifyClient;
 use crate::mqtt::MqttBridge;
+use crate::state::load_connection_state;
 use crate::web::{router, AppState};
 
 /// Notify S6-overlay that the service is ready (only when running as addon).
@@ -119,27 +120,7 @@ pub struct Cli {
     pub web_port: u16,
 }
 
-/// Shared state between Spotify client and MQTT bridge
-#[derive(Debug, Clone, Default)]
-pub struct PlaybackState {
-    pub track: Option<String>,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub artwork_url: Option<String>,
-    pub is_playing: bool,
-    pub is_idle: bool, // true when Spotify is open but no active playback
-    pub volume: f32,   // 0.0 to 1.0
-    pub is_volume_muted: bool,
-    pub duration_ms: u32,
-    pub position_ms: u32,
-    pub media_content_id: Option<String>, // Spotify URI (context_uri)
-    pub source: Option<String>,           // Current device name
-    pub shuffle: bool,
-    pub repeat: String,                   // "off", "context", "track"
-    pub active_device_id: Option<String>, // Device ID of the active Spotify device
-    pub is_spotify_connected: bool,       // true when actively connected to Spotify WebSocket
-}
-
+/// Runtime configuration derived from CLI args
 #[derive(Clone)]
 pub struct Config {
     pub spotify_username: String,
@@ -167,61 +148,28 @@ impl From<Cli> for Config {
     }
 }
 
-/// Spawn a background task to keep OAuth tokens fresh.
-///
-/// This runs continuously (regardless of connection state) to ensure
-/// the OAuth token is always valid for reconnection attempts.
-/// Checks every 5 minutes and refreshes if token expires within 10 minutes.
-fn spawn_oauth_refresh_task(token_file: PathBuf) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60); // 5 minutes
-        const REFRESH_THRESHOLD: Duration = Duration::from_secs(10 * 60); // 10 minutes
-
-        loop {
-            tokio::time::sleep(CHECK_INTERVAL).await;
-
-            // Check if we have credentials and if they need refresh
-            match token::load_credentials(&token_file).await {
-                Some(creds) if creds.exists() => {
-                    if creds.will_expire_within(REFRESH_THRESHOLD) {
-                        debug!(
-                            "OAuth token expires soon (at {}), refreshing...",
-                            creds.expires_at
-                        );
-                        match token::refresh_oauth_token(&creds).await {
-                            Ok(refreshed) => {
-                                // Save refreshed credentials immediately
-                                match token::save_credentials(&token_file, &refreshed, None).await {
-                                    Ok(()) => {
-                                        debug!(
-                                            "Background OAuth refresh successful, new expiry: {}",
-                                            refreshed.expires_at
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to save refreshed OAuth token: {}", e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Background OAuth refresh failed: {}", e);
-                                // Continue - will retry next cycle
-                            }
-                        }
-                    } else {
-                        debug!(
-                            "OAuth token still valid (expires at {}), no refresh needed",
-                            creds.expires_at
-                        );
-                    }
-                }
-                _ => {
-                    // No credentials yet, nothing to refresh
-                    debug!("No OAuth credentials found, skipping background refresh");
-                }
-            }
-        }
-    })
+/// Playback state shared between Spotify client and MQTT bridge
+#[derive(Clone, Default)]
+pub struct PlaybackState {
+    pub track: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub artwork_url: Option<String>,
+    pub is_playing: bool,
+    pub is_idle: bool,
+    pub volume: f64,
+    pub is_spotify_connected: bool,
+    pub media_position: Option<u32>,
+    pub media_duration: Option<u32>,
+    pub media_position_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub media_content_id: Option<String>,
+    pub source: Option<String>,
+    pub shuffle: bool,
+    pub repeat: String,
+    pub is_muted: bool,
+    pub active_device_id: Option<String>,
+    /// Whether the Spotify client connection is enabled (controlled via MQTT switch)
+    pub connection_enabled: bool,
 }
 
 #[tokio::main]
@@ -243,8 +191,10 @@ async fn main() -> anyhow::Result<()> {
     // Use local time for timestamps in format: "2026-04-15 07:58:09"
     let time_format =
         time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+
+    // Initialize tracing subscriber
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_env_filter(filter)
         .with_timer(tracing_subscriber::fmt::time::LocalTime::new(time_format))
         .init();
 
@@ -270,6 +220,12 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
+    // Connection state file (persist the Active switch state)
+    let connection_state_file = token_file
+        .parent()
+        .map(|p| p.join("greenroom_connection_state.json"))
+        .unwrap_or_else(|| PathBuf::from("greenroom_connection_state.json"));
+
     // Determine initial state based on whether we have auth credentials
     let has_token = token_file.exists()
         && std::fs::read_to_string(&token_file)
@@ -290,11 +246,24 @@ async fn main() -> anyhow::Result<()> {
         )
     };
 
+    // Load persisted connection state (default to enabled if not found)
+    let connection_state = load_connection_state(&connection_state_file).await;
+    let connection_enabled = connection_state.map(|s| s.enabled).unwrap_or(true);
+    info!(
+        "Connection state loaded: {}",
+        if connection_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+
     // Shared state - initialize with idle status so sensor shows "idle" not "paused"
     let initial_state = PlaybackState {
         track: Some(initial_track),
         artist: Some(initial_artist),
         is_idle: true,
+        connection_enabled, // Use persisted state
         ..Default::default()
     };
     let playback_state = Arc::new(RwLock::new(initial_state));
@@ -304,6 +273,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Token notification channel (for notifying daemon of new tokens from web UI)
     let (token_tx, _token_rx) = broadcast::channel(1);
+
+    // Connection control channel (for MQTT switch to control Spotify client)
+    let (connection_tx, connection_rx) = broadcast::channel(4);
 
     // Start web server for OAuth UI
     let app_state = AppState::new(
@@ -336,10 +308,13 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Start MQTT bridge
-    let mqtt_bridge = MqttBridge::new(config.clone(), playback_state.clone(), state_rx);
-
-    // Clone token_file for background refresh task (before it's moved into SpotifyClient)
-    let token_file_for_refresh = token_file.clone();
+    let mqtt_bridge = MqttBridge::new(
+        config.clone(),
+        playback_state.clone(),
+        state_rx,
+        connection_tx,
+        connection_state_file,
+    );
 
     // Start Spotify client
     let spotify_client = SpotifyClient::new(
@@ -348,6 +323,7 @@ async fn main() -> anyhow::Result<()> {
         state_tx,
         token_file,
         token_tx,
+        connection_rx,
     );
 
     // Set up shutdown signal handler
@@ -361,9 +337,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
-
-    // Spawn background OAuth refresh task (runs continuously, regardless of connection state)
-    let oauth_refresh_task = spawn_oauth_refresh_task(token_file_for_refresh);
 
     // Run all components concurrently, with shutdown signal
     tokio::select! {
@@ -384,9 +357,6 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = result {
                 error!("Spotify client error: {}", e);
             }
-        }
-        _ = oauth_refresh_task => {
-            error!("OAuth refresh task unexpectedly exited");
         }
     }
 

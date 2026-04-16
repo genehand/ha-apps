@@ -195,7 +195,32 @@ fn render_status_content(
     disconnect_url: &str,
 ) -> String {
     let connected = is_connected(has_credentials, &playback);
-    if connected {
+
+    // Check if connection is disabled via MQTT switch
+    let is_disabled = !playback.connection_enabled;
+
+    if is_disabled {
+        // Connection is disabled via MQTT switch
+        let disconnect_form = format!(
+            r#"<form action="{}" method="post" target="_blank" rel="noopener noreferrer">
+                <button type="submit" class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600">
+                    Disconnect
+                </button>
+            </form>"#,
+            disconnect_url
+        );
+        format!(
+            r#"<div class="space-y-4">
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-gray-500"></div>
+                    <p class="font-medium">Connection Disabled</p>
+                </div>
+                <p class="text-gray-400">The Spotify connection is currently disabled. Enable the "{} Active" switch in Home Assistant to reconnect.</p>
+                {}
+            </div>"#,
+            _config.device_name, disconnect_form
+        )
+    } else if connected {
         let account_status =
             format!("<p class=\"text-sm text-gray-400\">Session active via WebSocket</p>");
 
@@ -1074,6 +1099,68 @@ mod tests {
         // Default state has flag false
         let playback = PlaybackState::default();
         assert!(!super::is_connected(true, &playback));
+    }
+
+    // Tests for disabled state
+
+    #[test]
+    fn test_render_status_content_disabled() {
+        let playback = PlaybackState {
+            connection_enabled: false,
+            is_spotify_connected: false,
+            ..Default::default()
+        };
+        let html = super::render_status_content(
+            true, // has credentials
+            None,
+            playback,
+            &Config {
+                spotify_username: "".to_string(),
+                device_name: "Test".to_string(),
+                mqtt_host: "localhost".to_string(),
+                mqtt_port: 1883,
+                mqtt_username: None,
+                mqtt_password: None,
+                mqtt_device_id: "test".to_string(),
+            },
+            "/auth/login",
+            "/auth/disconnect",
+        );
+        // Should show disabled message with device name
+        assert!(html.contains("Connection Disabled"));
+        assert!(html.contains("Test Active")); // Uses device_name from config
+        assert!(html.contains("gray-500")); // Disabled indicator color
+    }
+
+    #[test]
+    fn test_render_status_content_disabled_takes_precedence() {
+        // Even if "connected" in some way, disabled state should take precedence
+        let playback = PlaybackState {
+            connection_enabled: false,
+            is_spotify_connected: true, // Would normally show as connected
+            track: Some("Some Song".to_string()),
+            artist: Some("Some Artist".to_string()),
+            ..Default::default()
+        };
+        let html = super::render_status_content(
+            true,
+            None,
+            playback,
+            &Config {
+                spotify_username: "".to_string(),
+                device_name: "Test".to_string(),
+                mqtt_host: "localhost".to_string(),
+                mqtt_port: 1883,
+                mqtt_username: None,
+                mqtt_password: None,
+                mqtt_device_id: "test".to_string(),
+            },
+            "/auth/login",
+            "/auth/disconnect",
+        );
+        // Should show disabled, not connected
+        assert!(html.contains("Connection Disabled"));
+        assert!(!html.contains("Connected to Spotify"));
     }
 
     // Tests for extract_oauth_code

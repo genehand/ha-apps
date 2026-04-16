@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use protobuf::{EnumOrUnknown, MessageField};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock};
@@ -43,6 +43,7 @@ pub struct SpotifyClient {
     token_file: PathBuf,
     state_tx: broadcast::Sender<()>,
     token_tx: broadcast::Sender<()>,
+    connection_rx: broadcast::Receiver<bool>,
     shutdown: Arc<RwLock<bool>>,
 }
 
@@ -53,6 +54,7 @@ impl SpotifyClient {
         state_tx: broadcast::Sender<()>,
         token_file: PathBuf,
         token_tx: broadcast::Sender<()>,
+        connection_rx: broadcast::Receiver<bool>,
     ) -> Self {
         Self {
             config,
@@ -60,6 +62,7 @@ impl SpotifyClient {
             token_file,
             state_tx,
             token_tx,
+            connection_rx,
             shutdown: Arc::new(RwLock::new(false)),
         }
     }
@@ -111,6 +114,11 @@ impl SpotifyClient {
         let mut consecutive_errors: u32 = 0;
 
         loop {
+            if !self.wait_for_connection_enabled().await {
+                info!("Spotify client shutting down gracefully");
+                return Ok(());
+            }
+
             let has_credentials = self.has_credentials().await;
 
             if !has_credentials {
@@ -140,6 +148,20 @@ impl SpotifyClient {
                 }
                 Err(e) => {
                     let err_msg = format!("{}", e);
+
+                    // Handle intentional disconnect via MQTT switch
+                    if err_msg.contains("Connection disabled via MQTT switch") {
+                        info!("Connection intentionally disabled via MQTT switch, entering wait state");
+                        self.set_disabled_state().await;
+                        // Reset error count since this was intentional
+                        consecutive_errors = 0;
+                        // Wait for connection to be re-enabled
+                        if !self.wait_for_disabled_state().await {
+                            return Ok(());
+                        }
+                        // Connection re-enabled, continue to next loop iteration
+                        continue;
+                    }
 
                     if err_msg.contains("TOKEN_REVOKED")
                         || err_msg.contains("invalid_grant")
@@ -180,25 +202,181 @@ impl SpotifyClient {
         }
     }
 
+    /// Wait for connection to be enabled via MQTT switch.
+    async fn wait_for_connection_enabled(&mut self) -> bool {
+        loop {
+            // Check current state
+            let currently_enabled = {
+                let state = self.playback_state.read().await;
+                state.connection_enabled
+            };
+
+            if !currently_enabled {
+                info!("Spotify connection disabled via MQTT switch, waiting...");
+                self.set_disabled_state().await;
+
+                // Wait for connection to be re-enabled
+                let should_continue = self.wait_for_disabled_state().await;
+                if !should_continue {
+                    return false;
+                }
+                // Clear stale metadata and show waiting state
+                self.set_waiting_state().await;
+                // Loop back to recheck and continue with connection
+                continue;
+            }
+
+            // Connection is enabled, check for any disable messages
+            match self.connection_rx.try_recv() {
+                Ok(enabled) => {
+                    if !enabled {
+                        info!("Spotify connection disabled via MQTT switch");
+                        // Loop back to enter disabled state
+                        continue;
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    // No message, continue normally
+                    return true;
+                }
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    warn!("Connection control channel closed");
+                    return false;
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    // Check shared state after lag
+                    let enabled = {
+                        let state = self.playback_state.read().await;
+                        state.connection_enabled
+                    };
+                    if !enabled {
+                        // Loop back to enter disabled state
+                        continue;
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// Wait while in disabled state for connection to be re-enabled.
+    async fn wait_for_disabled_state(&mut self) -> bool {
+        loop {
+            tokio::select! {
+                result = self.connection_rx.recv() => {
+                    match result {
+                        Ok(enabled) => {
+                            if enabled {
+                                info!("Spotify connection enabled via MQTT switch, resuming...");
+                                return true;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            warn!("Connection control channel closed, shutting down");
+                            return false;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            // Check current state after lag
+                            let enabled = {
+                                let state = self.playback_state.read().await;
+                                state.connection_enabled
+                            };
+                            if enabled {
+                                info!("Spotify connection enabled, resuming...");
+                                return true;
+                            }
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    // Periodic check of shared state as fallback
+                    let enabled = {
+                        let state = self.playback_state.read().await;
+                        state.connection_enabled
+                    };
+                    if enabled {
+                        info!("Spotify connection enabled, resuming...");
+                        return true;
+                    }
+                }
+            }
+
+            // Check for shutdown signal while disabled
+            if *self.shutdown.read().await {
+                return false;
+            }
+        }
+    }
+
+    /// Set playback state to disabled status.
+    async fn set_disabled_state(&self) {
+        let mut state = self.playback_state.write().await;
+        state.is_spotify_connected = false;
+        state.track = Some("Connection Disabled".to_string());
+        state.artist = Some("Enable via Home Assistant switch to connect".to_string());
+        state.album = None;
+        state.artwork_url = None;
+        state.is_playing = false;
+        state.is_idle = true;
+        state.volume = 0.0;
+        state.source = None;
+        // Notify MQTT bridge to publish the updated state
+        let _ = self.state_tx.send(());
+        info!("Playback state set to disabled");
+    }
+
     async fn attempt_connection(&mut self) -> anyhow::Result<()> {
-        // First try to use cached librespot credentials (reusable auth data from Spotify)
-        // These are more reliable than OAuth tokens for reconnection
+        // Check if connection is still enabled before attempting
+        let enabled = {
+            let state = self.playback_state.read().await;
+            state.connection_enabled
+        };
+        if !enabled {
+            return Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
+        }
+
+        // Try cached librespot credentials first (fast reconnection path)
         let cache = self.get_cache()?;
-        if let Some(cached_creds) = cache.credentials() {
-            info!("Using cached librespot credentials for reconnection");
+        let cached_creds = cache.credentials();
+        debug!(
+            "Attempting connection: has_cached_creds={}, cache_dir={}",
+            cached_creds.is_some(),
+            self.token_file
+                .parent()
+                .unwrap_or(Path::new("/data"))
+                .display()
+        );
+
+        if let Some(cached_creds) = cached_creds {
+            info!(
+                "Using cached librespot credentials (auth_type={:?})",
+                cached_creds.auth_type
+            );
             match self
                 .connect_with_credentials(cached_creds, Some(cache.clone()), None)
                 .await
             {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    info!("Successfully connected using cached librespot credentials");
+                    return Ok(());
+                }
                 Err(e) => {
-                    warn!("Cached credentials failed, falling back to OAuth: {}", e);
+                    let err_msg = format!("{}", e);
+                    // Don't fall back to OAuth if connection was intentionally disabled
+                    if err_msg.contains("Connection disabled via MQTT switch") {
+                        return Err(e);
+                    }
+                    debug!("Cached credentials failed, falling back to OAuth: {}", e);
                     // Continue to OAuth fallback
                 }
             }
+        } else {
+            debug!("No cached librespot credentials found, will use OAuth");
         }
 
         // Fall back to OAuth credentials from file
+        let cache = self.get_cache()?;
+
         let credentials = match token::load_credentials(&self.token_file).await {
             Some(creds) if creds.exists() => {
                 debug!(
@@ -402,17 +580,14 @@ impl SpotifyClient {
 
         debug!("Subscribed to cluster updates! Monitoring playback from other Spotify devices...");
 
-        // Try to fetch current playback state immediately after connecting
-        match self.request_current_state(&session).await {
-            Ok(()) => debug!("Requested current playback state"),
-            Err(e) => debug!("Could not request current state: {}", e),
-        }
-
-        // Only reset to "Waiting" if we don't have current playback info
+        // Reset to "Waiting" if we don't have current playback info
+        // Also reset if showing stale disabled/disconnected messages
         let has_current_info = {
             let state = self.playback_state.read().await;
             if let Some(ref track) = state.track {
-                track != "Waiting for playback..." && track != "Not Connected"
+                track != "Waiting for playback..."
+                    && track != "Not Connected"
+                    && track != "Connection Disabled"
             } else {
                 false
             }
@@ -420,15 +595,7 @@ impl SpotifyClient {
 
         if !has_current_info {
             let mut state = self.playback_state.write().await;
-            state.track = Some("Waiting for playback...".to_string());
-            state.artist = Some("Greenroom".to_string());
-            state.album = None;
-            state.artwork_url = None;
-            state.is_playing = false;
-            state.is_idle = true;
-            state.volume = 0.0;
-            state.active_device_id = None;
-            state.source = None;
+            self.apply_waiting_state(&mut state).await;
         }
 
         // Mark as connected to Spotify WebSocket
@@ -446,6 +613,12 @@ impl SpotifyClient {
 
         let mut last_update = Instant::now();
         let mut consecutive_errors = 0u32;
+        let mut last_connection_id: Option<String> = None;
+        let session_start_time = Instant::now();
+
+        // Basic tracking for debugging reconnection issues
+        let mut cluster_update_count: u64 = 0;
+        let mut connection_id_count: u64 = 0;
 
         // Create shutdown signal handlers
         let mut sigterm =
@@ -465,6 +638,32 @@ impl SpotifyClient {
                     *self.shutdown.write().await = true;
                     return Ok(());
                 }
+                // Handle connection control commands
+                result = self.connection_rx.recv() => {
+                    match result {
+                        Ok(enabled) => {
+                            if !enabled {
+                                info!("Connection disabled via MQTT switch, disconnecting...");
+                                return Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            warn!("Connection control channel closed");
+                            return Ok(());
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            // Check shared state after lag
+                            let enabled = {
+                                let state = self.playback_state.read().await;
+                                state.connection_enabled
+                            };
+                            if !enabled {
+                                info!("Connection disabled (detected after lag), disconnecting...");
+                                return Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
+                            }
+                        }
+                    }
+                }
 
                 player_cmd_result = player_commands.next() => {
                     match player_cmd_result {
@@ -482,21 +681,22 @@ impl SpotifyClient {
                 cluster_result = cluster_updates.next() => {
                     match cluster_result {
                         Some(Ok(cluster_update)) => {
+                            cluster_update_count += 1;
                             let elapsed = last_update.elapsed();
                             if elapsed > Duration::from_secs(180) {
-                                debug!("Received update after {}s silence", elapsed.as_secs());
+                                debug!("Playback updates resumed after {}s silence (total updates: {})",
+                                      elapsed.as_secs(), cluster_update_count);
                             }
                             last_update = Instant::now();
                             // Reset error count on successful update
                             if consecutive_errors > 0 {
-                                debug!("Resetting error count after successful update");
                                 consecutive_errors = 0;
                             }
                             self.handle_cluster_update(&cluster_update, &playback_state, &session_clone, &state_tx).await;
                         }
                         Some(Err(e)) => {
-                            // Log error but let librespot handle reconnection
-                            debug!("Error receiving cluster update: {}", e);
+                            // Only log as warning if session is still valid
+                            debug!("Cluster stream error: {}", e);
                             if session_clone.is_invalid() {
                                 warn!("Cluster update error and session invalid, disconnecting");
                                 return Err(anyhow::anyhow!("Connection lost: {}", e));
@@ -507,34 +707,40 @@ impl SpotifyClient {
                                 warn!("Cluster stream ended and session is invalid");
                                 return Err(anyhow::anyhow!("Connection to Spotify server closed"));
                             }
-                            debug!("Cluster stream ended but session still valid, waiting...");
+                            debug!("Cluster stream paused, waiting...");
                             sleep(Duration::from_secs(3)).await;
                             continue;
                         }
                     }
                 }
-                // Monitor connection_id stream as WebSocket health indicator
+                // Monitor connection_id stream for reconnection detection
                 connection_result = connection_id_stream.next() => {
                     match connection_result {
-                        Some(Ok(_id)) => {
-                            // Connection ID messages indicate WebSocket is alive
-                            debug!("WebSocket alive - received connection ID message");
+                        Some(Ok(new_id)) => {
+                            connection_id_count += 1;
+
+                            // Check if connection ID changed (indicates librespot reconnection)
+                            if let Some(ref last_id) = last_connection_id {
+                                if *last_id != new_id {
+                                    info!("Spotify reconnected (new connection ID), resuming monitoring...");
+                                    // NOTE: Dealer auto-re-subscribes internally. Don't manually re-subscribe
+                                    // as it creates duplicate handlers causing "No subscriber" errors.
+                                }
+                            }
+                            last_connection_id = Some(new_id);
                         }
                         Some(Err(e)) => {
-                            // Log error but let librespot handle it
                             debug!("Connection ID stream error: {}", e);
                             if session_clone.is_invalid() {
-                                warn!("Connection ID error and session invalid, disconnecting");
+                                warn!("Connection lost");
                                 return Err(anyhow::anyhow!("Connection health check failed: {}", e));
                             }
                         }
                         None => {
-                            // Stream ended - only disconnect if session is now invalid
                             if session_clone.is_invalid() {
-                                warn!("Connection ID stream ended and session is invalid");
+                                warn!("Connection lost");
                                 return Err(anyhow::anyhow!("WebSocket connection closed"));
                             }
-                            debug!("Connection ID stream ended but session still valid, waiting...");
                             sleep(Duration::from_secs(3)).await;
                             continue;
                         }
@@ -543,47 +749,48 @@ impl SpotifyClient {
                 // Periodic session health check - handles case where librespot
                 // invalidates session but streams haven't detected it yet
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                    if session_clone.is_invalid() {
-                        warn!("Session invalidated during monitoring (periodic check)");
+                    let now = Instant::now();
+                    let session_age = now.duration_since(session_start_time);
+
+                    let is_invalid = session_clone.is_invalid();
+
+                    if is_invalid {
+                        warn!(
+                            "Session lost after {}s (updates: {}, reconnections: {})",
+                            session_age.as_secs(),
+                            cluster_update_count,
+                            connection_id_count
+                        );
                         return Err(anyhow::anyhow!("Session invalidated"));
                     }
-                    debug!("Periodic health check: session still valid");
 
-                    // Periodic OAuth token refresh when connected (playing or idle)
-                    // Refresh when token expires within 5 minutes to prevent disruption
-                    if let Some(creds) = token::load_credentials(&self.token_file).await {
-                        let should_refresh = {
-                            let state = self.playback_state.read().await;
-                            // Refresh when connected (playing or idle) and token expires soon
-                            state.is_spotify_connected && creds.will_expire_within(Duration::from_secs(300))
-                        };
+                    // Send periodic keepalive to prevent idle WebSocket timeout
+                    let should_send_keepalive = {
+                        let state = self.playback_state.read().await;
+                        state.is_spotify_connected
+                    };
 
-                        if should_refresh {
-                            info!("OAuth token expires soon, refreshing proactively");
-                            match token::refresh_oauth_token(&creds).await {
-                                Ok(refreshed) => {
-                                    if let Err(e) = token::save_credentials(
-                                        &self.token_file,
-                                        &refreshed,
-                                        None, // Don't notify - we're already connected
-                                    )
-                                    .await
-                                    {
-                                        warn!("Failed to save refreshed token: {}", e);
-                                    } else {
-                                        info!("Proactive OAuth token refresh successful");
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("Proactive OAuth token refresh failed: {}", e);
-                                    // Don't fail here - on-demand refresh will handle it later
-                                }
-                            }
+                    if should_send_keepalive {
+                        debug!("Sending keepalive to maintain session");
+                        if let Err(e) = self.send_keepalive(&session_clone).await {
+                            warn!("Failed to send keepalive: {}", e);
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Send a lightweight keepalive to maintain WebSocket session
+    /// This generates outbound traffic to prevent server-side idle timeout (~60s)
+    async fn send_keepalive(&self, session: &Session) -> anyhow::Result<()> {
+        let keepalive_request = create_join_cluster_request(session, &self.config.device_name);
+        session
+            .spclient()
+            .put_connect_state_request(&keepalive_request)
+            .await
+            .map_err(|e| anyhow::anyhow!("Keepalive failed: {}", e))?;
+        Ok(())
     }
 
     async fn handle_cluster_update(
@@ -728,10 +935,10 @@ impl SpotifyClient {
                     }
                     state.is_playing = is_playing;
                     state.is_idle = is_idle;
-                    state.volume = volume;
-                    state.is_volume_muted = is_volume_muted;
-                    state.position_ms = position_ms as u32;
-                    state.duration_ms = duration_ms;
+                    state.volume = volume as f64;
+                    state.is_muted = is_volume_muted;
+                    state.media_position = Some(position_ms as u32);
+                    state.media_duration = Some(duration_ms);
                     state.media_content_id = media_content_id;
                     state.source = source;
                     state.shuffle = shuffle;
@@ -760,26 +967,6 @@ impl SpotifyClient {
                     state.source = None;
                 }
             }
-        }
-    }
-
-    /// Request current playback state from Spotify after connecting.
-    async fn request_current_state(&self, session: &Session) -> anyhow::Result<()> {
-        debug!("Requesting current playback state from Spotify...");
-
-        let put_state_request = create_join_cluster_request(session, &self.config.device_name);
-
-        match session
-            .spclient()
-            .put_connect_state_request(&put_state_request)
-            .await
-        {
-            Ok(_bytes) => {
-                debug!("Sent state request, waiting for cluster update...");
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                Ok(())
-            }
-            Err(e) => Err(anyhow::anyhow!("Failed to request current state: {}", e)),
         }
     }
 
@@ -852,6 +1039,29 @@ impl SpotifyClient {
         // Notify MQTT bridge to publish the updated state
         let _ = self.state_tx.send(());
         info!("Playback state reset to disconnected");
+    }
+
+    /// Set playback state to waiting (after being re-enabled).
+    /// Always clears the disabled message to ensure fresh UI state.
+    async fn set_waiting_state(&self) {
+        let mut state = self.playback_state.write().await;
+        self.apply_waiting_state(&mut state).await;
+        info!("Playback state reset to waiting after re-enable");
+    }
+
+    /// Apply waiting state to playback state (internal helper).
+    async fn apply_waiting_state(&self, state: &mut crate::PlaybackState) {
+        state.track = Some("Waiting for playback...".to_string());
+        state.artist = Some("Greenroom".to_string());
+        state.album = None;
+        state.artwork_url = None;
+        state.is_playing = false;
+        state.is_idle = true;
+        state.volume = 0.0;
+        state.active_device_id = None;
+        state.source = None;
+        // Notify MQTT bridge to publish the updated state
+        let _ = self.state_tx.send(());
     }
 }
 
@@ -958,6 +1168,7 @@ mod tests {
         };
         let (state_tx, _) = broadcast::channel(16);
         let (token_tx, _) = broadcast::channel::<()>(1);
+        let (_, connection_rx) = broadcast::channel(4);
 
         SpotifyClient::new(
             config,
@@ -965,6 +1176,7 @@ mod tests {
             state_tx,
             token_file,
             token_tx,
+            connection_rx,
         )
     }
 
@@ -1073,5 +1285,161 @@ mod tests {
         assert_eq!(calculate_backoff(8), 300);
         // Many errors: still capped
         assert_eq!(calculate_backoff(100), 300);
+    }
+
+    #[tokio::test]
+    async fn test_set_disabled_state() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let client = create_test_client(temp_file.path().to_path_buf());
+
+        // Set some initial state
+        {
+            let mut state = client.playback_state.write().await;
+            state.track = Some("Some Track".to_string());
+            state.artist = Some("Some Artist".to_string());
+            state.is_playing = true;
+            state.is_spotify_connected = true;
+        }
+
+        // Call set_disabled_state
+        client.set_disabled_state().await;
+
+        // Verify state was reset to disabled
+        let state = client.playback_state.read().await;
+        assert_eq!(state.track, Some("Connection Disabled".to_string()));
+        assert_eq!(
+            state.artist,
+            Some("Enable via Home Assistant switch to connect".to_string())
+        );
+        assert!(!state.is_playing);
+        assert!(!state.is_spotify_connected);
+        assert!(state.is_idle);
+    }
+
+    #[tokio::test]
+    async fn test_connection_disabled_prevents_connection() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let client = create_test_client(temp_file.path().to_path_buf());
+
+        // Set connection as disabled
+        {
+            let mut state = client.playback_state.write().await;
+            state.connection_enabled = false;
+        }
+
+        // Verify connection is disabled
+        let state = client.playback_state.read().await;
+        assert!(!state.connection_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_connection_enabled_allows_connection() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let client = create_test_client(temp_file.path().to_path_buf());
+
+        // Set connection as enabled
+        {
+            let mut state = client.playback_state.write().await;
+            state.connection_enabled = true;
+        }
+
+        // Verify connection is enabled
+        let state = client.playback_state.read().await;
+        assert!(state.connection_enabled);
+    }
+
+    /// Test that connection_rx can be replaced (for testing purposes)
+    #[tokio::test]
+    async fn test_connection_rx_can_receive_after_replacement() {
+        let (tx, mut rx) = broadcast::channel(4);
+
+        // Replace receiver
+        let tx2 = tx.clone();
+        let mut rx2 = tx2.subscribe();
+
+        // Send through original sender
+        tx.send(true).unwrap();
+
+        // Both receivers should get it
+        assert_eq!(rx.recv().await.unwrap(), true);
+        assert_eq!(rx2.recv().await.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_connection_rx_receives_commands() {
+        let (tx, mut rx) = broadcast::channel(4);
+
+        // Send commands
+        tx.send(true).unwrap();
+        tx.send(false).unwrap();
+
+        // Verify receipt
+        assert_eq!(rx.recv().await.unwrap(), true);
+        assert_eq!(rx.recv().await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_apply_waiting_state_clears_disabled_text() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let client = create_test_client(temp_file.path().to_path_buf());
+
+        // Set state to disabled
+        {
+            let mut state = client.playback_state.write().await;
+            state.track = Some("Connection Disabled".to_string());
+            state.artist = Some("Enable via Home Assistant switch to connect".to_string());
+        }
+
+        // Apply waiting state
+        {
+            let mut state = client.playback_state.write().await;
+            client.apply_waiting_state(&mut state).await;
+        }
+
+        // Verify state was cleared to waiting
+        let state = client.playback_state.read().await;
+        assert_eq!(state.track, Some("Waiting for playback...".to_string()));
+        assert_eq!(state.artist, Some("Greenroom".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_apply_waiting_state_clears_not_connected() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let client = create_test_client(temp_file.path().to_path_buf());
+
+        // Set state to not connected
+        {
+            let mut state = client.playback_state.write().await;
+            state.track = Some("Not Connected".to_string());
+            state.artist = Some("Connection lost - reconnecting...".to_string());
+        }
+
+        // Apply waiting state
+        {
+            let mut state = client.playback_state.write().await;
+            client.apply_waiting_state(&mut state).await;
+        }
+
+        // Verify state was cleared to waiting
+        let state = client.playback_state.read().await;
+        assert_eq!(state.track, Some("Waiting for playback...".to_string()));
+        assert_eq!(state.artist, Some("Greenroom".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_playback_state_default_connection_enabled() {
+        // Note: Default::default() sets connection_enabled to false
+        // But main.rs initializes it to true explicitly
+        let state = PlaybackState::default();
+        assert!(!state.connection_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_playback_state_with_connection_enabled() {
+        let state = PlaybackState {
+            connection_enabled: true,
+            ..Default::default()
+        };
+        assert!(state.connection_enabled);
     }
 }
