@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 
 from ..logging import get_logger, set_current_integration
-from ..core import HomeAssistant, ConfigEntry
+from ..hass import HomeAssistant
+from ..models import ConfigEntry
 from ..entity import EntityRegistry
 from ..import_patch import setup_import_patching
 from ..options_map import patch_select_descriptions

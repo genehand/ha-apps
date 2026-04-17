@@ -6,13 +6,61 @@ Home Assistant compatibility layer for running integrations outside of HA.
 
 HACS Shack provides a compatibility layer that allows Home Assistant custom integrations to run outside of the HA core environment, enabling standalone MQTT discovery and control.
 
+## Shim Architecture
+
+The compatibility layer is organized into modular components:
+
+```
+shim/
+├── import_patch.py      # Orchestrates import patching (~270 lines)
+├── stubs/               # Home Assistant stub modules
+│   ├── base.py          # Shared utilities (make_module, simple_method)
+│   ├── coordinator.py   # DataUpdateCoordinator, UpdateFailed
+│   ├── util.py          # dt, yaml, color, unit_conversion, percentage
+│   ├── helpers.py       # device_registry, config_validation, storage, etc.
+│   ├── components.py    # alarm_control_panel, cover, mqtt, image, etc.
+│   └── network.py       # Network utilities
+├── entity.py            # Entity base classes and EntityDescription
+├── models.py            # Data classes: ConfigEntry, State, Event, ServiceCall, callback
+├── registries.py        # StateMachine, ServiceRegistry, ConfigEntries, FlowManager
+├── hass.py              # HomeAssistant core orchestrator
+├── mocks.py             # MockConfig, MockUnitSystem, MockEventBus
+├── platforms/           # Platform-specific entity implementations
+│   ├── fan.py
+│   ├── sensor.py
+│   ├── switch.py
+│   └── ...
+├── ha_fetched/          # Upstream HA code (const.py, exceptions.py)
+└── hacs_fetched/        # Upstream HACS utilities
+```
+
+### Adding New Stub Modules
+
+When adding support for new Home Assistant modules:
+
+1. **Determine the namespace**: `homeassistant.util.X` → `stubs/util.py`, `homeassistant.helpers.X` → `stubs/helpers.py`
+2. **Create the stub function**: Add a `create_X_stubs()` function that builds and registers the module
+3. **Call from import_patch.py**: Add the function call in `ImportPatcher.patch()`
+4. **Export from `stubs/__init__.py`**: Add the function to `__all__`
+5. **Write tests**: Verify the stub works with real integration patterns
+
+### Stub Module Guidelines
+
+- Keep implementations minimal but compatible with HA's API
+- Match function signatures exactly (including return types)
+- Include all constants and enums that integrations might import
+- Use `FrozenOrThawed` metaclass for EntityDescription classes
+- Reference `shim/stubs/util.py` for percentage functions as an example of exact HA compatibility
+
 ## Working Directory
 
-**Always run commands from this directory.** Do not run from the repo root.
+**CRITICAL: Always run commands from `app-shack/rootfs/app/`.** The tool calls include `cd app-shack/rootfs/app &&` for a reason - many Python imports and relative paths break if you run from the repo root.
 
 ```bash
 cd app-shack/rootfs/app/
 ```
+
+**When using the Bash tool:** Either use the `workdir` parameter or include the `cd` in the command. The examples throughout this file include the proper `cd` prefix.
 
 ## Upstream Code Reference
 
@@ -49,14 +97,14 @@ The shim layer (in `shim/`) is where we add compatibility code, bridges, and wor
 
 ```bash
 # Fetch latest HA release files
-cd scripts && python3 fetch_ha_files.py
+cd app-shack/rootfs/app && python3 scripts/fetch_ha_files.py
 
 # Fetch latest HACS release files
-cd scripts && python3 fetch_hacs_files.py
+cd app-shack/rootfs/app && python3 scripts/fetch_hacs_files.py
 
 # Preview without downloading
-python3 fetch_ha_files.py --dry-run
-python3 fetch_hacs_files.py --dry-run
+cd app-shack/rootfs/app && python3 scripts/fetch_ha_files.py --dry-run
+cd app-shack/rootfs/app && python3 scripts/fetch_hacs_files.py --dry-run
 ```
 
 Files are written to `shim/ha_fetched/` and `shim/hacs_fetched/` with necessary import path adjustments.
@@ -65,10 +113,10 @@ Files are written to `shim/ha_fetched/` and `shim/hacs_fetched/` with necessary 
 
 ```bash
 # Sync dependencies (install from lock file)
-uv sync
+cd app-shack/rootfs/app && uv sync
 
 # Run the application
-uv run python3 main.py
+cd app-shack/rootfs/app && uv run python3 main.py
 ```
 
 **Important**: Always use `uv sync` and `uv run` to ensure consistent dependencies. The `.venv` is managed by uv.
@@ -84,28 +132,22 @@ uv run python3 main.py
 
 ### Running Tests
 
-**Important:** Always run tests from the app directory:
-
-```bash
-cd app-shack/rootfs/app
-```
-
 ```bash
 # Unit tests only (fast)
-uv run pytest tests/ -v -m "not integration"
+cd app-shack/rootfs/app && uv run pytest tests/ -v -m "not integration"
 
 # All tests including integration tests
-uv run pytest tests/ -v
+cd app-shack/rootfs/app && uv run pytest tests/ -v
 
 # Integration tests only (requires integrations to be installed)
-uv run pytest tests/ -v -m integration
+cd app-shack/rootfs/app && uv run pytest tests/ -v -m integration
 
 # With coverage
-uv run pytest tests/ -v --cov=. --cov-report=term-missing
+cd app-shack/rootfs/app && uv run pytest tests/ -v --cov=. --cov-report=term-missing
 
 # Specific test file or pattern
-uv run pytest tests/test_mqtt_bridge.py -v
-uv run pytest tests/test_entity_utils.py::TestGetMqttEntityId -v
+cd app-shack/rootfs/app && uv run pytest tests/test_mqtt_bridge.py -v
+cd app-shack/rootfs/app && uv run pytest tests/test_entity_utils.py::TestGetMqttEntityId -v
 ```
 
 ### Key Integration Patterns to Test
@@ -117,6 +159,15 @@ When modifying `EntityDescription` or related classes, verify these patterns wor
 3. Custom methods in descriptions (like Dreo's `__repr__`)
 4. Multiple inheritance with mixins
 5. Import patch stub behavior when `homeassistant.components.X` is used
+
+### Testing Stub Modules
+
+When adding or modifying stub modules (especially `stubs/coordinator.py`, `stubs/helpers.py`):
+
+- Test with real integrations that use the module (e.g., Moonraker for `DataUpdateCoordinator`)
+- Verify all exported functions and classes are accessible
+- Check that constants and enums match HA's values exactly
+- Run the full test suite: `uv run pytest tests/ -v -m "not integration"`
 
 ## Code Style Guidelines
 
@@ -267,7 +318,7 @@ class FrozenEntityDescription(EntityDescription):
 # 1. Edit config.yaml and update version: X.Y.Z
 
 # 2. Sync to pyproject.toml (for uv)
-./sync-versions.py
+cd app-shack/rootfs/app && ./sync-versions.py
 ```
 
 **Version locations:**
@@ -277,7 +328,7 @@ class FrozenEntityDescription(EntityDescription):
 
 Keep them in sync for consistency.
 
-**Local Testing**: Run `uv run python3 main.py` (uv will auto-sync dependencies).
+**Local Testing**: Run `cd app-shack/rootfs/app && uv run python3 main.py` (uv will auto-sync dependencies).
 
 ## Web UI and HA Ingress
 
@@ -302,6 +353,7 @@ The Web UI uses **relative paths** for all HTMX redirects to support both direct
 ### Why Context-Aware Redirects?
 
 HTMX resolves `HX-Redirect` relative to the **page URL where the request originated**, not the request URL. This means:
+
 - From index `/`: `./integrations/{domain}` → `/integrations/{domain}` ✓
 - From detail `/integrations/{domain}`: `./integrations/{domain}` → `/integrations/integrations/{domain}` ✗
 

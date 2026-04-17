@@ -283,7 +283,7 @@ class TestServiceCall:
 
     def test_service_call_creation(self):
         """Test creating a ServiceCall."""
-        from shim.core import ServiceCall, Context
+        from shim.models import ServiceCall, Context
 
         context = Context()
         call = ServiceCall(
@@ -302,7 +302,7 @@ class TestServiceCall:
 
     def test_service_call_defaults(self):
         """Test ServiceCall with default values."""
-        from shim.core import ServiceCall
+        from shim.models import ServiceCall
 
         call = ServiceCall(domain="light", service="turn_on")
 
@@ -314,7 +314,7 @@ class TestServiceCall:
 
     def test_service_call_data_access(self):
         """Test accessing service call data."""
-        from shim.core import ServiceCall
+        from shim.models import ServiceCall
 
         call = ServiceCall(
             domain="vacuum",
@@ -329,7 +329,7 @@ class TestServiceCall:
 
     def test_service_call_separate_instances(self):
         """Test that separate instances don't share mutable defaults."""
-        from shim.core import ServiceCall
+        from shim.models import ServiceCall
 
         call1 = ServiceCall(
             domain="switch", service="turn_on", data={"entity_id": "switch.one"}

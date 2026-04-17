@@ -19,7 +19,7 @@ from pathlib import Path
 # Script is in app-shack/rootfs/app/scripts, app code is in app-shack/rootfs/app
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from shim.core import HomeAssistant
+from shim.hass import HomeAssistant
 from shim.import_patch import setup_import_patching
 from shim.integrations.manager import IntegrationManager
 from shim.integrations.loader import IntegrationLoader

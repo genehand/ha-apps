@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, FileSystemLoader
 
 from ..logging import get_logger
-from ..core import ConfigEntry
+from ..models import ConfigEntry
 
 _LOGGER = get_logger(__name__)
 

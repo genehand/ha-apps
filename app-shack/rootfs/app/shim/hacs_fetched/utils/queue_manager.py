@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Coroutine
 import time
 
-from ..core import HomeAssistant
+from ..hass import HomeAssistant
 
 from ..exceptions import HacsExecutionStillInProgress
 from .logger import LOGGER

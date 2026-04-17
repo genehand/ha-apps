@@ -300,7 +300,7 @@ class TestDeviceRegistry:
     async def test_async_get_returns_registry(self):
         """Test that async_get returns a DeviceRegistry instance."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -322,7 +322,7 @@ class TestDeviceRegistry:
     async def test_device_entry_type_enum(self):
         """Test DeviceEntryType enum exists."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -343,7 +343,7 @@ class TestDeviceRegistry:
     async def test_async_get_or_create_creates_device(self):
         """Test async_get_or_create creates a device entry."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
         import asyncio
@@ -376,7 +376,7 @@ class TestDeviceRegistry:
     async def test_async_get_devices_for_config_entry(self):
         """Test async_get_or_create_for_config_entry returns devices for a config entry."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -431,7 +431,7 @@ class TestDeviceRegistry:
     async def test_async_get_devices_for_config_entry_empty(self):
         """Test async_get_or_create_for_config_entry returns empty list for unknown entry."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -461,7 +461,7 @@ class TestMqttStub:
     async def test_mqtt_module_imports(self):
         """Test that homeassistant.components.mqtt can be imported."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -485,7 +485,7 @@ class TestMqttStub:
     async def test_mqtt_async_publish_returns_none(self):
         """Test that mqtt.async_publish returns None (stub behavior)."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -506,7 +506,7 @@ class TestMqttStub:
     async def test_mqtt_async_subscribe_returns_unsubscribe(self):
         """Test that mqtt.async_subscribe returns an unsubscribe function."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -533,7 +533,7 @@ class TestMqttStub:
     async def test_mqtt_receive_message_class(self):
         """Test that mqtt.ReceiveMessage can be instantiated."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -568,7 +568,7 @@ class TestDeviceRegistryConstants:
     async def test_connection_constants_exist(self):
         """Test that device registry connection constants are available."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -593,7 +593,7 @@ class TestDeviceRegistryConstants:
     async def test_async_update_device_exists(self):
         """Test that DeviceRegistry.async_update_device method exists."""
         from shim.import_patch import ImportPatcher
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from pathlib import Path
         import tempfile
 
@@ -718,7 +718,7 @@ class TestConfigEntryUniqueId:
 
     def test_unique_id_from_explicit_field(self):
         """Test unique_id returns explicit field value."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -732,7 +732,7 @@ class TestConfigEntryUniqueId:
 
     def test_unique_id_from_data(self):
         """Test unique_id falls back to data dict."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_456",
@@ -746,7 +746,7 @@ class TestConfigEntryUniqueId:
 
     def test_unique_id_explicit_overrides_data(self):
         """Test explicit unique_id overrides data dict."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_789",
@@ -761,7 +761,7 @@ class TestConfigEntryUniqueId:
 
     def test_unique_id_none_when_not_set(self):
         """Test unique_id is None when not set anywhere."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_000",
@@ -774,7 +774,7 @@ class TestConfigEntryUniqueId:
 
     def test_unique_id_setter(self):
         """Test setting unique_id via setter."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_setter",
@@ -1240,7 +1240,7 @@ class TestAiohttpClientCleanup:
         """Test that aiohttp sessions are properly cleaned up."""
         from pathlib import Path
         from shim.import_patch import setup_import_patching
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
 
         # Create a mock hass instance and set up import patching
         hass = HomeAssistant(Path("./data"))
@@ -1269,7 +1269,7 @@ class TestAiohttpClientCleanup:
         """Test cleanup of multiple cached aiohttp sessions."""
         from pathlib import Path
         from shim.import_patch import setup_import_patching
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
 
         # Create mock hass instances and set up import patching
         hass1 = HomeAssistant(Path("./data"))
@@ -1304,7 +1304,7 @@ class TestAiohttpClientCleanup:
         """Test that async_create_clientsession creates new sessions."""
         from pathlib import Path
         from shim.import_patch import setup_import_patching
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
 
         # Create a mock hass instance and set up import patching
         hass = HomeAssistant(Path("./data"))

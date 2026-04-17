@@ -1,5 +1,5 @@
 name: Shack
-version: 0.6.12
+version: 0.7.0
 slug: shack
 description: HACS Shack - Run HACS integrations outside HA core
 url: https://github.com/genehand/ha-apps

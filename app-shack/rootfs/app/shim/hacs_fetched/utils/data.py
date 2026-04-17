@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from ..core import callback
+from ..models import callback
 from ..exceptions import HomeAssistantError
 
 from ..base import HacsBase

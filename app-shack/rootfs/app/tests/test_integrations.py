@@ -13,7 +13,7 @@ import tempfile
 # Add the app directory to the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from shim.core import HomeAssistant
+from shim.hass import HomeAssistant
 from shim.import_patch import setup_import_patching
 from shim.integrations.loader import IntegrationLoader
 from shim.integrations.manager import IntegrationManager, IntegrationInfo
@@ -511,7 +511,8 @@ async def test_503_content_type_error_handling():
     """
     from unittest.mock import MagicMock, patch, AsyncMock
     from shim.integrations.loader import IntegrationLoader
-    from shim.core import HomeAssistant, ConfigEntry
+    from shim.hass import HomeAssistant
+    from shim.models import ConfigEntry
 
     data_dir = Path(__file__).parent.parent / "data"
 

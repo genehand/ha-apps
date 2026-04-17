@@ -389,7 +389,7 @@ class TestEntityFilters:
 
     def test_config_entry_entity_filters_empty(self):
         """Test that empty filters are returned as empty list."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -402,7 +402,7 @@ class TestEntityFilters:
 
     def test_config_entry_entity_filters_from_options(self):
         """Test that filters are read from options."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -415,7 +415,7 @@ class TestEntityFilters:
 
     def test_config_entry_entity_filters_string_legacy(self):
         """Test that legacy string format is handled."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -428,7 +428,7 @@ class TestEntityFilters:
 
     def test_entity_matches_filter_simple(self):
         """Test simple filter matching."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -442,7 +442,7 @@ class TestEntityFilters:
 
     def test_entity_matches_filter_wildcard_star(self):
         """Test wildcard * matching."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -462,7 +462,7 @@ class TestEntityFilters:
 
     def test_entity_matches_filter_wildcard_question(self):
         """Test wildcard ? matching."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -477,7 +477,7 @@ class TestEntityFilters:
 
     def test_entity_matches_filter_multiple_patterns(self):
         """Test that multiple patterns are checked."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -530,7 +530,7 @@ class TestEntityFilters:
     @pytest.mark.asyncio
     async def test_apply_entity_filters_removes_matching(self):
         """Test that apply_entity_filters removes matching entities."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
         from shim.integrations.loader import IntegrationLoader
 
         # Create mock hass and entry
@@ -585,7 +585,7 @@ class TestEntityFilters:
     @pytest.mark.asyncio
     async def test_apply_entity_filters_no_matches(self):
         """Test that apply_entity_filters handles no matches gracefully."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
         from shim.integrations.loader import IntegrationLoader
 
         mock_hass = MagicMock()
@@ -615,7 +615,7 @@ class TestEntityFilters:
     @pytest.mark.asyncio
     async def test_apply_entity_filters_different_domain(self):
         """Test that entities from other domains are not affected."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
         from shim.integrations.loader import IntegrationLoader
 
         mock_hass = MagicMock()
@@ -644,7 +644,7 @@ class TestEntityFilters:
     @pytest.mark.asyncio
     async def test_register_entity_with_filters(self):
         """Test that register_entity respects filters."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
         from shim.integrations.loader import IntegrationLoader
 
         mock_hass = MagicMock()
@@ -717,7 +717,7 @@ class TestEntityFilters:
 
     def test_config_entry_entity_name_filters_empty(self):
         """Test that empty name filters are returned as empty list."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -730,7 +730,7 @@ class TestEntityFilters:
 
     def test_config_entry_entity_name_filters_from_options(self):
         """Test that name filters are read from options."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -743,7 +743,7 @@ class TestEntityFilters:
 
     def test_entity_matches_filter_by_name(self):
         """Test filtering by entity name."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -765,7 +765,7 @@ class TestEntityFilters:
 
     def test_entity_matches_filter_by_id_or_name(self):
         """Test that OR logic works - matches by entity_id OR name."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -792,7 +792,7 @@ class TestEntityFilters:
 
     def test_entity_matches_filter_name_no_match_without_name(self):
         """Test that name patterns don't match when no name provided."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
 
         entry = ConfigEntry(
             entry_id="test_123",
@@ -808,7 +808,7 @@ class TestEntityFilters:
     @pytest.mark.asyncio
     async def test_register_entity_with_name_filters(self):
         """Test that register_entity respects name filters."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
         from shim.integrations.loader import IntegrationLoader
 
         mock_hass = MagicMock()
@@ -851,7 +851,7 @@ class TestEntityFilters:
     @pytest.mark.asyncio
     async def test_register_entity_with_attr_name_filters(self):
         """Test that register_entity respects name filters using _attr_name."""
-        from shim.core import ConfigEntry
+        from shim.models import ConfigEntry
         from shim.integrations.loader import IntegrationLoader
 
         mock_hass = MagicMock()

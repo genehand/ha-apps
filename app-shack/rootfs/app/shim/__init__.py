@@ -9,7 +9,9 @@ from pathlib import Path
 
 import yaml
 
-from .core import HomeAssistant, State, StateMachine, ConfigEntry, ConfigEntries
+from .hass import HomeAssistant
+from .models import State, ConfigEntry
+from .registries import StateMachine, ConfigEntries
 from .storage import Storage
 from .logging import get_logger, set_current_integration
 from .import_patch import setup_import_patching

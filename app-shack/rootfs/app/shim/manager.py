@@ -12,7 +12,8 @@ from paho.mqtt.client import Client, MQTTMessage
 
 from config import get_addon_slug, send_persistent_notification
 from .logging import get_logger
-from .core import HomeAssistant, ConfigEntry
+from .hass import HomeAssistant
+from .models import ConfigEntry
 from .storage import Storage
 from .import_patch import setup_import_patching
 from .entity import EntityRegistry, get_mqtt_object_id

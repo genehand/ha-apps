@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from contextvars import ContextVar
 
 from shim.ha_fetched.exceptions import HomeAssistantError
-from .core import ConfigEntry
-from .core import callback
+from .models import ConfigEntry, callback
 
 # Context variable to track the current config entry being set up
 current_entry: ContextVar[Optional[ConfigEntry]] = ContextVar(

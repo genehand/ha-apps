@@ -10,13 +10,9 @@ from pathlib import Path
 # Add the app directory to the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from shim.core import (
-    HomeAssistant,
-    StateMachine,
-    ServiceRegistry,
-    State,
-    ConfigEntry,
-)
+from shim.hass import HomeAssistant
+from shim.registries import StateMachine, ServiceRegistry
+from shim.models import State, ConfigEntry
 
 
 class TestState:
@@ -236,7 +232,7 @@ class TestEntityIdGeneration:
         'SENSOR.device_123' instead of 'sensor.device_123'.
         """
         # Set up import patching first so homeassistant namespace is available
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from shim.import_patch import ImportPatcher
 
         hass = HomeAssistant(config_dir=tmp_path)
@@ -281,7 +277,7 @@ class TestEntityIdGeneration:
     async def test_entity_id_generation_lowercase_platform(self, tmp_path):
         """Test that entity IDs are generated with lowercase platform prefixes."""
         # Set up import patching first so homeassistant namespace is available
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
         from shim.import_patch import ImportPatcher
 
         hass = HomeAssistant(config_dir=tmp_path)
@@ -534,7 +530,7 @@ class TestFlowManager:
         returns a form with empty schema that just needs confirmation.
         """
         from shim.config_entries import ConfigFlow
-        from shim.core import FlowManager
+        from shim.registries import FlowManager
         from shim.import_patch import ImportPatcher
         import voluptuous as vol
 
@@ -615,7 +611,7 @@ class TestFlowManager:
         3. Returns a finalize form that should auto-submit
         """
         from shim.config_entries import ConfigFlow
-        from shim.core import FlowManager
+        from shim.registries import FlowManager
         from shim.import_patch import ImportPatcher
         import voluptuous as vol
 
@@ -765,7 +761,8 @@ class TestConfigFlow:
     async def test_async_set_unique_id_returns_existing_entry(self, tmp_path):
         """Test async_set_unique_id returns existing entry if one exists."""
         from shim.config_entries import ConfigFlow
-        from shim.core import HomeAssistant, ConfigEntry
+        from shim.hass import HomeAssistant
+        from shim.models import ConfigEntry
 
         hass = HomeAssistant(config_dir=tmp_path)
 
@@ -883,7 +880,7 @@ class TestDataUpdateCoordinator:
             DataUpdateCoordinator,
             UpdateFailed,
         )
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
 
         hass = HomeAssistant(config_dir=tmp_path)
 
@@ -933,7 +930,7 @@ class TestDataUpdateCoordinator:
             DataUpdateCoordinator,
             UpdateFailed,
         )
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
 
         hass = HomeAssistant(config_dir=tmp_path)
 
@@ -963,7 +960,7 @@ class TestDataUpdateCoordinator:
     ):
         """Test DataUpdateCoordinator re-raises UnboundLocalError that doesn't match pattern."""
         from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-        from shim.core import HomeAssistant
+        from shim.hass import HomeAssistant
 
         hass = HomeAssistant(config_dir=tmp_path)
 
@@ -992,7 +989,7 @@ class TestEvent:
 
     def test_event_creation(self):
         """Test creating an Event object."""
-        from shim.core import Event, Context
+        from shim.models import Event, Context
 
         event = Event(
             event_type="state_changed",
@@ -1007,7 +1004,7 @@ class TestEvent:
 
     def test_event_defaults(self):
         """Test Event creation with default values."""
-        from shim.core import Event
+        from shim.models import Event
 
         event = Event(event_type="test_event")
 
@@ -1019,7 +1016,7 @@ class TestEvent:
 
     def test_event_with_custom_origin(self):
         """Test Event with custom origin."""
-        from shim.core import Event
+        from shim.models import Event
 
         event = Event(event_type="remote_event", origin="REMOTE")
 
