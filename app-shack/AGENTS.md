@@ -12,7 +12,7 @@ The compatibility layer is organized into modular components:
 
 ```
 shim/
-├── import_patch.py      # Orchestrates import patching (~270 lines)
+├── import_patch.py      # Orchestrates import patching (~240 lines)
 ├── stubs/               # Home Assistant stub modules
 │   ├── base.py          # Shared utilities (make_module, simple_method)
 │   ├── coordinator.py   # DataUpdateCoordinator, UpdateFailed
@@ -21,6 +21,7 @@ shim/
 │   ├── components.py    # alarm_control_panel, cover, mqtt, image, etc.
 │   └── network.py       # Network utilities
 ├── entity.py            # Entity base classes and EntityDescription
+├── core.py              # Re-exports from split modules (for integration compatibility)
 ├── models.py            # Data classes: ConfigEntry, State, Event, ServiceCall, callback
 ├── registries.py        # StateMachine, ServiceRegistry, ConfigEntries, FlowManager
 ├── hass.py              # HomeAssistant core orchestrator
@@ -33,6 +34,20 @@ shim/
 ├── ha_fetched/          # Upstream HA code (const.py, exceptions.py)
 └── hacs_fetched/        # Upstream HACS utilities
 ```
+
+### Import patterns
+
+For all code (internal and integrations), use `shim.core`:
+
+- `from shim.core import HomeAssistant, ConfigEntry, State, callback` ✓
+- `from shim.core import StateMachine, ConfigEntries`
+- `from shim.core import MockConfig`
+
+For integrations (they import from `homeassistant.core` which is patched to `shim.core`):
+
+- `from homeassistant.core import HomeAssistant, ConfigEntry, callback` ✓ (patched to `shim.core`)
+
+**We dogfood `shim.core`** - all internal code (tests, scripts) imports from `shim.core` rather than the split modules directly. This ensures the re-export layer is always tested and working for integrations.
 
 ### Adding New Stub Modules
 

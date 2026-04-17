@@ -9,37 +9,9 @@ import types
 from pathlib import Path
 
 from . import config_entries
+from . import core
 from . import entity
 from . import selectors
-from .hass import HomeAssistant as _HomeAssistant
-from .models import (
-    ConfigEntry as _ConfigEntry,
-    State as _State,
-    Event as _Event,
-    ServiceCall as _ServiceCall,
-    ServiceResponse as _ServiceResponse,
-    SupportsResponse as _SupportsResponse,
-    CALLBACK_TYPE as _CALLBACK_TYPE,
-    callback as _callback,
-    Context as _Context,
-)
-from .registries import (
-    ServiceRegistry as _ServiceRegistry,
-    StateMachine as _StateMachine,
-    ConfigEntries as _ConfigEntries,
-)
-
-# Import enum for CoreState
-import enum
-
-class CoreState(enum.Enum):
-    """Represent the current state of Home Assistant."""
-    not_running = "NOT_RUNNING"
-    starting = "STARTING"
-    running = "RUNNING"
-    stopping = "STOPPING"
-    final_write = "FINAL_WRITE"
-    stopped = "STOPPED"
 from .logging import get_logger
 from .stubs import (
     create_coordinator_stubs,
@@ -69,24 +41,6 @@ class ImportPatcher:
         _LOGGER.info("Patching imports for Home Assistant compatibility")
 
         import importlib.util
-
-        # Create a minimal core module early so it's available for homeassistant.core
-        core = types.ModuleType("homeassistant.core")
-        core.HomeAssistant = _HomeAssistant
-        core.ConfigEntry = _ConfigEntry
-        core.ServiceRegistry = _ServiceRegistry
-        core.State = _State
-        core.StateMachine = _StateMachine
-        core.ConfigEntries = _ConfigEntries
-        core.Event = _Event
-        core.ServiceCall = _ServiceCall
-        core.ServiceResponse = _ServiceResponse
-        core.SupportsResponse = _SupportsResponse
-        core.CALLBACK_TYPE = _CALLBACK_TYPE
-        core.callback = _callback
-        core.Context = _Context
-        core.CoreState = CoreState
-        core._shim_instance = self._hass
 
         # STEP 1: Inject stub modules FIRST
         # This prevents ImportError for HA-internal dependencies
@@ -207,14 +161,6 @@ class ImportPatcher:
         create_components_stubs(self._hass, homeassistant, self._get_platforms())
         create_additional_stubs(self._hass, homeassistant)
 
-        # Add core classes
-        homeassistant.HomeAssistant = _HomeAssistant
-        homeassistant.ConfigEntry = _ConfigEntry
-        homeassistant.ServiceRegistry = _ServiceRegistry
-        homeassistant.State = _State
-        homeassistant.StateMachine = _StateMachine
-        homeassistant.ConfigEntries = _ConfigEntries
-
         # Store reference to our hass instance
         homeassistant.core._shim_instance = self._hass
 
@@ -223,16 +169,7 @@ class ImportPatcher:
 
         # Install patched modules
         sys.modules["homeassistant"] = homeassistant
-        # Create a minimal homeassistant.core module for compatibility
-        ha_core_module = types.ModuleType("homeassistant.core")
-        ha_core_module.HomeAssistant = _HomeAssistant
-        ha_core_module.ConfigEntry = _ConfigEntry
-        ha_core_module.ServiceRegistry = _ServiceRegistry
-        ha_core_module.State = _State
-        ha_core_module.StateMachine = _StateMachine
-        ha_core_module.ConfigEntries = _ConfigEntries
-        ha_core_module._shim_instance = self._hass
-        sys.modules["homeassistant.core"] = ha_core_module
+        sys.modules["homeassistant.core"] = core
         sys.modules["homeassistant.const"] = ha_const
         sys.modules["homeassistant.exceptions"] = ha_exceptions
         sys.modules["homeassistant.config_entries"] = config_entries

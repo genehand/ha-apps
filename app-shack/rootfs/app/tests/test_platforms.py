@@ -1,6 +1,7 @@
 """Tests for shim platform additions."""
 
 import dataclasses
+import sys
 
 import pytest
 
@@ -283,7 +284,7 @@ class TestServiceCall:
 
     def test_service_call_creation(self):
         """Test creating a ServiceCall."""
-        from shim.models import ServiceCall, Context
+        from shim.core import ServiceCall, Context
 
         context = Context()
         call = ServiceCall(
@@ -302,7 +303,7 @@ class TestServiceCall:
 
     def test_service_call_defaults(self):
         """Test ServiceCall with default values."""
-        from shim.models import ServiceCall
+        from shim.core import ServiceCall
 
         call = ServiceCall(domain="light", service="turn_on")
 
@@ -314,7 +315,7 @@ class TestServiceCall:
 
     def test_service_call_data_access(self):
         """Test accessing service call data."""
-        from shim.models import ServiceCall
+        from shim.core import ServiceCall
 
         call = ServiceCall(
             domain="vacuum",
@@ -329,7 +330,7 @@ class TestServiceCall:
 
     def test_service_call_separate_instances(self):
         """Test that separate instances don't share mutable defaults."""
-        from shim.models import ServiceCall
+        from shim.core import ServiceCall
 
         call1 = ServiceCall(
             domain="switch", service="turn_on", data={"entity_id": "switch.one"}
@@ -1397,3 +1398,79 @@ class TestHomeAssistantUtilPercentage:
 
         # Test None handling
         assert ranged_value_to_percentage(speed_range, None) is None
+
+
+class TestComponentDomains:
+    """Tests that all homeassistant.components.* modules have DOMAIN constant."""
+
+    def test_platform_domains_exist(self):
+        """Test that all platform modules export DOMAIN constant."""
+        # These are the platforms that integrations commonly import
+        platforms_with_domain = [
+            ("homeassistant.components.fan", "fan"),
+            ("homeassistant.components.sensor", "sensor"),
+            ("homeassistant.components.switch", "switch"),
+            ("homeassistant.components.light", "light"),
+            ("homeassistant.components.climate", "climate"),
+            ("homeassistant.components.binary_sensor", "binary_sensor"),
+            ("homeassistant.components.update", "update"),
+            ("homeassistant.components.select", "select"),
+            ("homeassistant.components.button", "button"),
+            ("homeassistant.components.device_tracker", "device_tracker"),
+            ("homeassistant.components.text", "text"),
+            ("homeassistant.components.vacuum", "vacuum"),
+            ("homeassistant.components.humidifier", "humidifier"),
+            ("homeassistant.components.number", "number"),
+            ("homeassistant.components.lock", "lock"),
+            ("homeassistant.components.water_heater", "water_heater"),
+            ("homeassistant.components.camera", "camera"),
+            ("homeassistant.components.siren", "siren"),
+            ("homeassistant.components.remote", "remote"),
+            ("homeassistant.components.cover", "cover"),
+            ("homeassistant.components.alarm_control_panel", "alarm_control_panel"),
+            ("homeassistant.components.scene", "scene"),
+            ("homeassistant.components.mjpeg.camera", None),  # Doesn't need DOMAIN
+        ]
+
+        for module_name, expected_domain in platforms_with_domain:
+            try:
+                module = sys.modules.get(module_name)
+                if module is None:
+                    # Try importing it
+                    module = __import__(module_name, fromlist=["DOMAIN"])
+
+                if expected_domain is not None:
+                    assert hasattr(module, "DOMAIN"), f"{module_name} missing DOMAIN"
+                    assert module.DOMAIN == expected_domain, (
+                        f"{module_name}.DOMAIN should be {expected_domain}"
+                    )
+            except ImportError:
+                pytest.skip(f"{module_name} not available")
+
+    def test_stub_module_domains_exist(self):
+        """Test that stub modules have DOMAIN constant."""
+        stub_modules = [
+            (
+                "homeassistant.components.persistent_notification",
+                "persistent_notification",
+            ),
+            ("homeassistant.components.diagnostics", "diagnostics"),
+            ("homeassistant.components.zeroconf", "zeroconf"),
+            ("homeassistant.components.cloud", "cloud"),
+            ("homeassistant.components.webhook", "webhook"),
+            ("homeassistant.components.mqtt", "mqtt"),
+            ("homeassistant.components.image", "image"),
+        ]
+
+        for module_name, expected_domain in stub_modules:
+            try:
+                module = sys.modules.get(module_name)
+                if module is None:
+                    module = __import__(module_name, fromlist=["DOMAIN"])
+
+                assert hasattr(module, "DOMAIN"), f"{module_name} missing DOMAIN"
+                assert module.DOMAIN == expected_domain, (
+                    f"{module_name}.DOMAIN should be {expected_domain}"
+                )
+            except ImportError:
+                pytest.skip(f"{module_name} not available")

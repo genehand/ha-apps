@@ -103,6 +103,7 @@ def create_components_stubs(hass, homeassistant, platforms):
 
     # cover
     cover = types.ModuleType("homeassistant.components.cover")
+    cover.DOMAIN = "cover"
     cover.CoverDeviceClass = CoverDeviceClass
     cover.DEVICE_CLASSES_SCHEMA = vol.In([
         "awning", "blind", "curtain", "damper", "door", "garage",
@@ -134,7 +135,8 @@ def create_components_stubs(hass, homeassistant, platforms):
 
     # mjpeg.camera
     mjpeg_camera = types.ModuleType("homeassistant.components.mjpeg.camera")
-    mjpeg_camera.MjpegCamera = type("MjpegCamera", (), {})
+    # MjpegCamera is defined in platforms.camera and handles device_info kwarg
+    mjpeg_camera.MjpegCamera = platforms.camera.MjpegCamera
     homeassistant.components.mjpeg = types.ModuleType("homeassistant.components.mjpeg")
     homeassistant.components.mjpeg.camera = mjpeg_camera
     sys.modules["homeassistant.components.mjpeg"] = homeassistant.components.mjpeg
@@ -224,6 +226,7 @@ def create_components_stubs(hass, homeassistant, platforms):
 
     # persistent_notification
     persistent_notification = types.ModuleType("homeassistant.components.persistent_notification")
+    persistent_notification.DOMAIN = "persistent_notification"
     persistent_notification.async_create = lambda hass, message, title=None, notification_id=None: None
     persistent_notification.async_dismiss = lambda hass, notification_id: None
     homeassistant.components.persistent_notification = persistent_notification
@@ -231,6 +234,7 @@ def create_components_stubs(hass, homeassistant, platforms):
 
     # diagnostics
     diagnostics = types.ModuleType("homeassistant.components.diagnostics")
+    diagnostics.DOMAIN = "diagnostics"
     diagnostics.async_get_config_entry_diagnostics = lambda hass, config_entry: {}
     diagnostics.async_get_device_diagnostics = lambda hass, config_entry, device: {}
     diagnostics.REDACTED = "**REDACTED**"
@@ -270,6 +274,7 @@ def create_additional_stubs(hass, homeassistant):
 
     # zeroconf
     zeroconf_stub = types.ModuleType("homeassistant.components.zeroconf")
+    zeroconf_stub.DOMAIN = "zeroconf"
     zeroconf_stub.Zeroconf = lambda *args, **kwargs: None
     zeroconf_stub.async_get_instance = lambda *args, **kwargs: None
     zeroconf_stub.HaZeroconf = lambda *args, **kwargs: None
@@ -278,6 +283,7 @@ def create_additional_stubs(hass, homeassistant):
 
     # cloud
     cloud_stub = types.ModuleType("homeassistant.components.cloud")
+    cloud_stub.DOMAIN = "cloud"
     cloud_stub.async_active_subscription = lambda hass: False
     cloud_stub.async_migrate_paypal_agreement = lambda hass: None
     cloud_stub.CloudNotAvailable = type("CloudNotAvailable", (Exception,), {})
@@ -286,6 +292,7 @@ def create_additional_stubs(hass, homeassistant):
 
     # webhook
     webhook_stub = types.ModuleType("homeassistant.components.webhook")
+    webhook_stub.DOMAIN = "webhook"
     webhook_stub.async_register = lambda hass, domain, webhook_id, handler: None
     webhook_stub.async_unregister = lambda hass, webhook_id: None
     webhook_stub.async_generate_id = lambda: "stub_webhook_id"
@@ -295,6 +302,7 @@ def create_additional_stubs(hass, homeassistant):
 
     # mqtt
     mqtt_stub = types.ModuleType("homeassistant.components.mqtt")
+    mqtt_stub.DOMAIN = "mqtt"
     mqtt_stub.PublishPayloadType = type("PublishPayloadType", (), {})
     mqtt_stub.CONF_STATE_TOPIC = "state_topic"
     mqtt_stub.CONF_COMMAND_TOPIC = "command_topic"
@@ -338,6 +346,7 @@ def create_additional_stubs(hass, homeassistant):
     from typing import Optional
 
     image_stub = types.ModuleType("homeassistant.components.image")
+    image_stub.DOMAIN = "image"
 
     class ImageEntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
         """Image entity description."""
@@ -415,6 +424,19 @@ def create_additional_stubs(hass, homeassistant):
     number_stub.NumberDeviceClass.BATTERY = "battery"
     number_stub.NumberDeviceClass.APPARENT_POWER = "apparent_power"
     number_stub.NumberDeviceClass.REACTIVE_POWER = "reactive_power"
+    number_stub.NumberDeviceClass.POWER_FACTOR = "power_factor"
+
+    # Add DEVICE_CLASSES_SCHEMA for config validation
+    import voluptuous as vol
+    number_stub.DEVICE_CLASSES_SCHEMA = vol.In([
+        "temperature", "humidity", "power", "current", "voltage", "energy",
+        "duration", "illuminance", "irradiance", "frequency", "pressure",
+        "distance", "speed", "volume", "water", "weight", "wind_speed",
+        "precipitation", "precipitation_intensity", "aqi", "carbon_monoxide",
+        "carbon_dioxide", "pm1", "pm25", "pm10", "volatile_organic_compounds",
+        "nitrogen_dioxide", "nitrogen_monoxide", "ozone", "sulphur_dioxide",
+        "battery", "apparent_power", "reactive_power", "power_factor",
+    ])
 
     # Add NumberMode if not already present
     if not hasattr(number_stub, 'NumberMode'):

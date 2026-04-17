@@ -247,6 +247,10 @@ class MjpegCamera(Camera):
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the camera."""
+        # Handle device_info separately before calling super().__init__()
+        # since Entity.__init__() doesn't accept kwargs
+        if "device_info" in kwargs:
+            self._attr_device_info = kwargs.pop("device_info")
         super().__init__()
         self._attr_name = kwargs.get("name")
         self._attr_unique_id = kwargs.get("unique_id")

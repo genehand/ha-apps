@@ -1418,7 +1418,7 @@ class TestCoordinatorEntityMqttPublishing:
         """Test that CoordinatorEntity has _mqtt_publish method via Entity base class."""
         from shim.entity import Entity
         from shim.import_patch import setup_import_patching
-        from shim.hass import HomeAssistant
+        from shim.core import HomeAssistant
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
