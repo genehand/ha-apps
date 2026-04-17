@@ -1,4 +1,3 @@
-use chrono::Utc;
 use rumqttc::{AsyncClient, ConnectReturnCode, Event, MqttOptions, Packet, QoS};
 use serde_json::json;
 use std::path::PathBuf;
@@ -8,7 +7,7 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::librespot::calculate_backoff;
-use crate::state::{save_connection_state, ConnectionState};
+use crate::mqtt_state::{save_connection_state, ConnectionState};
 use crate::Config;
 use crate::PlaybackState;
 
@@ -357,12 +356,8 @@ impl MqttBridge {
             .publish(state_topic, QoS::AtLeastOnce, false, status)
             .await?;
 
-        // Get current timestamp for position update
-        let now = Utc::now();
-        let media_position_updated_at = now.to_rfc3339();
-
         // All other values as JSON attributes using HA standard media player attribute names
-        let attributes = json!({
+        let mut attributes = serde_json::json!({
             "media_title": state.track.as_deref().unwrap_or("Unknown"),
             "media_artist": state.artist.as_deref().unwrap_or("Unknown"),
             "media_album_name": state.album.as_deref().unwrap_or("Unknown"),
@@ -371,12 +366,18 @@ impl MqttBridge {
             "is_volume_muted": state.is_muted,
             "media_position": state.media_position.map(|v| v / 1000),
             "media_duration": state.media_duration.map(|v| v / 1000),
-            "media_position_updated_at": media_position_updated_at,
             "media_content_id": state.media_content_id.as_deref().unwrap_or(""),
             "source": state.source.as_deref().unwrap_or("Unknown"),
             "shuffle": state.shuffle,
             "repeat": state.repeat,
         });
+
+        // Use Spotify's timestamp for position update when available
+        if let Some(ts_ms) = state.media_position_updated_at_ms {
+            if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts_ms) {
+                attributes["media_position_updated_at"] = serde_json::json!(dt.to_rfc3339());
+            }
+        }
 
         let attr_topic = format!("greenroom/{}/attributes", device_id);
         client

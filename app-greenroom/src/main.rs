@@ -1,6 +1,6 @@
 mod librespot;
 mod mqtt;
-mod state;
+mod mqtt_state;
 mod token;
 mod web;
 
@@ -12,7 +12,7 @@ use tracing::{error, info};
 
 use crate::librespot::SpotifyClient;
 use crate::mqtt::MqttBridge;
-use crate::state::load_connection_state;
+use crate::mqtt_state::load_connection_state;
 use crate::web::{router, AppState};
 
 /// Notify S6-overlay that the service is ready (only when running as addon).
@@ -161,7 +161,7 @@ pub struct PlaybackState {
     pub is_spotify_connected: bool,
     pub media_position: Option<u32>,
     pub media_duration: Option<u32>,
-    pub media_position_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub media_position_updated_at_ms: Option<i64>,
     pub media_content_id: Option<String>,
     pub source: Option<String>,
     pub shuffle: bool,
@@ -248,7 +248,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load persisted connection state (default to enabled if not found)
     let connection_state = load_connection_state(&connection_state_file).await;
-    let connection_enabled = connection_state.map(|s| s.enabled).unwrap_or(true);
+    let connection_enabled = connection_state.enabled;
     info!(
         "Connection state loaded: {}",
         if connection_enabled {

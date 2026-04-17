@@ -7,10 +7,14 @@ This means the standard integrations no longer work even with paid plans like [B
 
 - Monitors playback from any Spotify device on your account
 - Publishes real-time track info (artist, track, album art, etc) to Home Assistant via MQTT
-- **No Web API needed** - uses the Connect protocol
+- **No Web API needed** - uses the Connect protocol with [librespot](https://github.com/librespot-org/librespot)
 - Works with Free, Basic, and Premium Spotify accounts
 
-**Note**: Unfortunately it can't provide any playback control (play/pause/next track).
+### Limitations
+
+- Unfortunately this method doesn't provide playback control (play/pause/next track)
+- Because this isn't a player device, we send keepalives to keep Spotify from disconnecting
+    - An Active switch is included to disconnect when not in use
 
 ## Quick Start
 
@@ -18,11 +22,13 @@ This means the standard integrations no longer work even with paid plans like [B
 2. Install and start the **Greenroom** app (and the Mosquitto MQTT broker)
 3. Open the Greenroom Web UI
 4. Click "Connect Spotify" and authorize your account
-5. A `sensor.greenroom` entity will appear in Home Assistant
+5. New entities available in Home Assistant:
+  - `sensor.greenroom`
+  - `switch.greenroom_active`
 
 ## Media player entity
 
-Media players aren't supported by the MQTT integration, but we can use [Template Media Player](https://github.com/EuleMitKeule/template-media-player) with this sensor:
+Media players aren't supported by the MQTT integration, but you can use [Template Media Player](https://github.com/EuleMitKeule/template-media-player) with this sensor:
 
 ```yaml
 media_player:
@@ -58,4 +64,4 @@ media_player:
 
 ## Alternatives
 
-You can use the Spotify Connect plugin for Music Assistant as the active playing device, then forward that stream to your players.  This works and also supports playback control, but I found it awkward to setup each time.
+You could use the Spotify Connect plugin for Music Assistant as the active playing device, then forward that stream to your players.  This works and supports playback control, but I found it awkward to setup each time.

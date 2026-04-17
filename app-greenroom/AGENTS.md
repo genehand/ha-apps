@@ -55,28 +55,32 @@ app-greenroom/
     ├── main.rs            # Entry point - spawns web server + daemon + mqtt
     ├── web.rs             # Web UI (OAuth flow, status page)
     ├── mqtt.rs            # MQTT bridge (HA discovery, state publishing)
-    ├── state.rs           # Connection state persistence
+    ├── mqtt_state.rs      # Connection state persistence (MQTT switch state)
     ├── token.rs           # OAuth credentials storage
     └── librespot/         # Spotify client (cluster monitoring, session management)
-        ├── mod.rs
-        └── client.rs
-
+        ├── mod.rs         # Module exports
+        ├── client.rs      # Core orchestration
+        ├── cluster.rs     # Cluster update handling (playback metadata extraction)
+        ├── connection.rs  # Connection control
+        ├── demo.rs        # Demo mode (wait for OAuth credentials)
+        ├── helpers.rs     # Protocol helpers
+        └── state.rs       # Playback state helpers
 ```
 
 ## Build
 
 ```bash
 # Format code
-cargo fmt
+cd app-greenroom && cargo fmt
 
 # Build locally
-cargo build --release
+cd app-greenroom && cargo build --release
 
 # Run locally (requires TOKEN_FILE env or creates local file)
-cargo run
+cd app-greenroom && cargo run
 ```
 
-The binary will be at `target/release/greenroom`
+The binary will be at `app-greenroom/target/release/greenroom`
 
 ## Configuration
 

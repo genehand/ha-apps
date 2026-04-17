@@ -12,25 +12,24 @@ pub struct ConnectionState {
 
 /// Load connection state from file.
 ///
-/// Returns None if file doesn't exist or is invalid.
-/// Defaults to enabled=true for backward compatibility.
-pub async fn load_connection_state(state_file: &PathBuf) -> Option<ConnectionState> {
+/// Returns saved state if file exists, otherwise returns default enabled=true.
+pub async fn load_connection_state(state_file: &PathBuf) -> ConnectionState {
     match tokio::fs::read_to_string(state_file).await {
         Ok(contents) => match serde_json::from_str::<ConnectionState>(&contents) {
             Ok(state) => {
                 debug!("Loaded connection state: enabled={}", state.enabled);
-                Some(state)
+                state
             }
             Err(e) => {
                 error!("Failed to parse connection state file: {}", e);
-                None
+                ConnectionState { enabled: true }
             }
         },
         Err(e) => {
             if e.kind() != std::io::ErrorKind::NotFound {
                 error!("Failed to read connection state file: {}", e);
             }
-            None
+            ConnectionState { enabled: true }
         }
     }
 }
@@ -67,8 +66,6 @@ mod tests {
 
         // Load and verify
         let loaded = load_connection_state(&state_file).await;
-        assert!(loaded.is_some());
-        let loaded = loaded.unwrap();
         assert!(loaded.enabled);
     }
 
@@ -83,8 +80,6 @@ mod tests {
 
         // Load and verify
         let loaded = load_connection_state(&state_file).await;
-        assert!(loaded.is_some());
-        let loaded = loaded.unwrap();
         assert!(!loaded.enabled);
     }
 
@@ -93,9 +88,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let state_file = temp_dir.path().join("nonexistent.json");
 
-        // Should return None for missing file
+        // Should return default enabled=true for missing file
         let loaded = load_connection_state(&state_file).await;
-        assert!(loaded.is_none());
+        assert!(loaded.enabled);
     }
 
     #[tokio::test]
@@ -108,9 +103,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Should return None for invalid JSON
+        // Should return default enabled=true for invalid JSON
         let loaded = load_connection_state(&state_file).await;
-        assert!(loaded.is_none());
+        assert!(loaded.enabled);
     }
 
     #[test]
@@ -138,7 +133,7 @@ mod tests {
 
         // Verify contents
         let loaded = load_connection_state(&state_file).await;
-        assert!(loaded.unwrap().enabled);
+        assert!(loaded.enabled);
     }
 
     #[tokio::test]
@@ -151,7 +146,7 @@ mod tests {
             let state = ConnectionState { enabled };
             save_connection_state(&state_file, &state).await.unwrap();
 
-            let loaded = load_connection_state(&state_file).await.unwrap();
+            let loaded = load_connection_state(&state_file).await;
             assert_eq!(loaded.enabled, enabled);
         }
     }

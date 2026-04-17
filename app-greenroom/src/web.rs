@@ -176,15 +176,6 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Check if we have actual connection
-/// Prioritize the connection flag - if WebSocket is active, we're connected
-/// even if token shows as expired (librespot sessions stay alive via WebSocket)
-fn is_connected(_has_token: bool, playback: &PlaybackState) -> bool {
-    // Use the explicit connection flag - this is set to true when WebSocket is active
-    // and false when connection closes (regardless of token expiry)
-    playback.is_spotify_connected
-}
-
 /// Render just the status content (inner HTML for the content div)
 fn render_status_content(
     has_credentials: bool,
@@ -194,7 +185,7 @@ fn render_status_content(
     login_url: &str,
     disconnect_url: &str,
 ) -> String {
-    let connected = is_connected(has_credentials, &playback);
+    let connected = playback.is_spotify_connected;
 
     // Check if connection is disabled via MQTT switch
     let is_disabled = !playback.connection_enabled;
@@ -1060,45 +1051,6 @@ mod tests {
         let loaded: AuthCredentials =
             serde_json::from_str(&tokio::fs::read_to_string(&creds_path).await.unwrap()).unwrap();
         assert_eq!(loaded.access_token, credentials.access_token);
-    }
-
-    // Tests for is_connected helper
-
-    #[test]
-    fn test_is_connected_no_credentials() {
-        let playback = PlaybackState::default();
-        assert!(!super::is_connected(false, &playback));
-    }
-
-    #[test]
-    fn test_is_connected_with_flag_true() {
-        // Connection flag takes precedence over track content
-        let playback = PlaybackState {
-            track: Some("Not Connected".to_string()), // Even with this text
-            artist: Some("Connection lost...".to_string()),
-            is_spotify_connected: true, // Flag says we're connected
-            ..Default::default()
-        };
-        assert!(super::is_connected(true, &playback));
-    }
-
-    #[test]
-    fn test_is_connected_with_flag_false() {
-        // Connection flag takes precedence over track content
-        let playback = PlaybackState {
-            track: Some("Song Name".to_string()), // Even with real track data
-            artist: Some("Artist Name".to_string()),
-            is_spotify_connected: false, // Flag says we're disconnected
-            ..Default::default()
-        };
-        assert!(!super::is_connected(true, &playback));
-    }
-
-    #[test]
-    fn test_is_connected_default_flag_false() {
-        // Default state has flag false
-        let playback = PlaybackState::default();
-        assert!(!super::is_connected(true, &playback));
     }
 
     // Tests for disabled state
