@@ -452,6 +452,8 @@ def create_additional_stubs(hass, homeassistant):
     typing_stub = types.ModuleType("homeassistant.helpers.typing")
     typing_stub.ConfigType = dict
     typing_stub.DiscoveryInfoType = dict
+    # StateType is used by integrations for sensor state values
+    typing_stub.StateType = str | int | float | None
 
     class EventType:
         def __init__(self, event_type, event_data_type):

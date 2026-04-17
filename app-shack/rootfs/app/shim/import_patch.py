@@ -12,8 +12,34 @@ from . import config_entries
 from . import entity
 from . import selectors
 from .hass import HomeAssistant as _HomeAssistant
-from .models import ConfigEntry as _ConfigEntry, State as _State
-from .registries import ServiceRegistry as _ServiceRegistry, StateMachine as _StateMachine, ConfigEntries as _ConfigEntries
+from .models import (
+    ConfigEntry as _ConfigEntry,
+    State as _State,
+    Event as _Event,
+    ServiceCall as _ServiceCall,
+    ServiceResponse as _ServiceResponse,
+    SupportsResponse as _SupportsResponse,
+    CALLBACK_TYPE as _CALLBACK_TYPE,
+    callback as _callback,
+    Context as _Context,
+)
+from .registries import (
+    ServiceRegistry as _ServiceRegistry,
+    StateMachine as _StateMachine,
+    ConfigEntries as _ConfigEntries,
+)
+
+# Import enum for CoreState
+import enum
+
+class CoreState(enum.Enum):
+    """Represent the current state of Home Assistant."""
+    not_running = "NOT_RUNNING"
+    starting = "STARTING"
+    running = "RUNNING"
+    stopping = "STOPPING"
+    final_write = "FINAL_WRITE"
+    stopped = "STOPPED"
 from .logging import get_logger
 from .stubs import (
     create_coordinator_stubs,
@@ -52,6 +78,14 @@ class ImportPatcher:
         core.State = _State
         core.StateMachine = _StateMachine
         core.ConfigEntries = _ConfigEntries
+        core.Event = _Event
+        core.ServiceCall = _ServiceCall
+        core.ServiceResponse = _ServiceResponse
+        core.SupportsResponse = _SupportsResponse
+        core.CALLBACK_TYPE = _CALLBACK_TYPE
+        core.callback = _callback
+        core.Context = _Context
+        core.CoreState = CoreState
         core._shim_instance = self._hass
 
         # STEP 1: Inject stub modules FIRST
