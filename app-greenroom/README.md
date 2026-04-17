@@ -22,25 +22,38 @@ This means the standard integrations no longer work even with paid plans like [B
 
 ## Media player entity
 
-Media players aren't supported by the MQTT integration, but we can use [`media_player.template`](https://github.com/sennevds/media_player.template) with this sensor:
+Media players aren't supported by the MQTT integration, but we can use [Template Media Player](https://github.com/EuleMitKeule/template-media-player) with this sensor:
 
 ```yaml
 media_player:
-  - platform: media_player_template
+  - platform: template_media_player
     media_players:
       greenroom:
-        friendly_name: Greenroom
+        # required field
+        global_template: "{# #}"
+
+        name: Greenroom
+        unique_id: greenroom
+
         device_class: speaker
-        media_content_type_template: music
-        value_template: "{{ iif(has_value('sensor.greenroom'), states('sensor.greenroom'), 'idle') }}"
-        current_source_template: "{{ state_attr('sensor.greenroom', 'source') }}"
-        current_position_template: "{{ state_attr('sensor.greenroom', 'media_position') }}"
-        media_duration_template: "{{ state_attr('sensor.greenroom', 'media_duration') }}"
-        title_template: "{{ state_attr('sensor.greenroom', 'media_title') }}"
-        album_template: "{{ state_attr('sensor.greenroom', 'media_album_name') }}"
-        artist_template: "{{ state_attr('sensor.greenroom', 'media_artist') }}"
-        media_image_url_template: "{{ state_attr('sensor.greenroom', 'media_image_url') }}"
-        media_image_url_remotely_accessible: true
+        state: "{{ iif(has_value('sensor.greenroom'), states('sensor.greenroom'), 'idle') }}"
+        attributes:
+          source: "{{ state_attr('sensor.greenroom', 'source') }}"
+          entity_picture: "{{ state_attr('sensor.greenroom', 'media_image_url') }}"
+
+          media_content_type: music
+          media_title: "{{ state_attr('sensor.greenroom', 'media_title') }}"
+          media_album_name: "{{ state_attr('sensor.greenroom', 'media_album_name') }}"
+          media_artist: "{{ state_attr('sensor.greenroom', 'media_artist') }}"
+          media_content_id: "{{ state_attr('sensor.greenroom', 'media_content_id') }}"
+          media_position: "{{ state_attr('sensor.greenroom', 'media_position') }}"
+          media_position_updated_at: "{{ state_attr('sensor.greenroom', 'media_position_updated_at') }}"
+          media_duration: "{{ state_attr('sensor.greenroom', 'media_duration') }}"
+
+          volume_level: "{{ state_attr('sensor.greenroom', 'volume') }}"
+          is_volume_muted: "{{ state_attr('sensor.greenroom', 'is_volume_muted') }}"
+          shuffle: "{{ state_attr('sensor.greenroom', 'shuffle') }}"
+          repeat: "{{ state_attr('sensor.greenroom', 'repeat') }}"
 ```
 
 ## Alternatives
