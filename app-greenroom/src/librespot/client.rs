@@ -555,7 +555,8 @@ impl SpotifyClient {
 
         info!("Registering device in cluster...");
 
-        let put_state_request = create_join_cluster_request(&session, &self.config.device_name);
+        let put_state_request =
+            create_join_cluster_request(&session, &self.config.device_name, PutStateReason::NEW_DEVICE);
         session
             .spclient()
             .put_connect_state_request(&put_state_request)
@@ -784,7 +785,8 @@ impl SpotifyClient {
     /// Send a lightweight keepalive to maintain WebSocket session
     /// This generates outbound traffic to prevent server-side idle timeout (~60s)
     async fn send_keepalive(&self, session: &Session) -> anyhow::Result<()> {
-        let keepalive_request = create_join_cluster_request(session, &self.config.device_name);
+        let keepalive_request =
+            create_join_cluster_request(session, &self.config.device_name, PutStateReason::NEW_CONNECTION);
         session
             .spclient()
             .put_connect_state_request(&keepalive_request)
@@ -1078,7 +1080,11 @@ fn log_player_command(_msg: Message) -> Result<(), librespot_core::Error> {
     Ok(())
 }
 
-fn create_join_cluster_request(session: &Session, device_name: &str) -> PutStateRequest {
+fn create_join_cluster_request(
+    session: &Session,
+    device_name: &str,
+    reason: PutStateReason,
+) -> PutStateRequest {
     let device_info = DeviceInfo {
         can_play: true,
         volume: 32767,
@@ -1122,7 +1128,7 @@ fn create_join_cluster_request(session: &Session, device_name: &str) -> PutState
 
     PutStateRequest {
         member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
-        put_state_reason: EnumOrUnknown::new(PutStateReason::NEW_DEVICE),
+        put_state_reason: EnumOrUnknown::new(reason),
         device: MessageField::some(Device {
             device_info: MessageField::some(device_info),
             player_state: MessageField::some(PlayerState {
