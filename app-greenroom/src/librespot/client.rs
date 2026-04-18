@@ -146,7 +146,7 @@ impl SpotifyClient {
 
                     // Handle intentional disconnect via MQTT switch
                     if err_msg.contains("Connection disabled via MQTT switch") {
-                        info!("Connection intentionally disabled via MQTT switch, entering wait state");
+                        debug!("Connection intentionally disabled via MQTT switch, entering wait state");
                         set_disabled_state(&self.playback_state, &self.state_tx).await;
                         // Reset error count since this was intentional
                         consecutive_errors = 0;
@@ -178,6 +178,8 @@ impl SpotifyClient {
 
                     if err_msg.contains("Connection to Spotify server closed")
                         || err_msg.contains("WebSocket")
+                        || err_msg.contains("Connection reset")
+                        || err_msg.contains("closing handshake")
                         || err_msg.contains("timed out")
                         || err_msg.contains("Session invalidated")
                     {
@@ -194,13 +196,85 @@ impl SpotifyClient {
                         "Waiting {} seconds before reconnection attempt (error count: {})...",
                         backoff_secs, consecutive_errors
                     );
-                    sleep(Duration::from_secs(backoff_secs)).await;
+
+                    // Interruptible backoff - check for disable signal during sleep
+                    tokio::select! {
+                        _ = sleep(Duration::from_secs(backoff_secs)) => {
+                            // Normal backoff completed, continue to next attempt
+                        }
+                        result = self.connection_rx.recv() => {
+                            match result {
+                                Ok(enabled) if !enabled => {
+                                    info!("Connection disabled via MQTT switch during backoff");
+                                    set_disabled_state(&self.playback_state, &self.state_tx).await;
+                                    consecutive_errors = 0;
+                                    // Wait for re-enable
+                                    if !wait_for_disabled_state(
+                                        &self.playback_state,
+                                        &mut self.connection_rx,
+                                        &self.shutdown,
+                                    )
+                                    .await
+                                    {
+                                        return Ok(());
+                                    }
+                                }
+                                Ok(_) => {
+                                    // Enabled signal, just continue to next attempt
+                                }
+                                Err(broadcast::error::RecvError::Closed) => {
+                                    warn!("Connection control channel closed during backoff");
+                                    return Ok(());
+                                }
+                                Err(broadcast::error::RecvError::Lagged(_)) => {
+                                    // Check shared state after lag
+                                    let enabled = {
+                                        let state = self.playback_state.read().await;
+                                        state.connection_enabled
+                                    };
+                                    if !enabled {
+                                        info!("Connection disabled (detected after lag), entering wait state");
+                                        set_disabled_state(&self.playback_state, &self.state_tx).await;
+                                        consecutive_errors = 0;
+                                        if !wait_for_disabled_state(
+                                            &self.playback_state,
+                                            &mut self.connection_rx,
+                                            &self.shutdown,
+                                        )
+                                        .await
+                                        {
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     continue;
                 }
             }
 
-            // Standard reconnection delay after clean connection
-            sleep(Duration::from_secs(5)).await;
+            // Standard reconnection delay after clean connection - also interruptible
+            tokio::select! {
+                _ = sleep(Duration::from_secs(5)) => {}
+                result = self.connection_rx.recv() => {
+                    if let Ok(enabled) = result {
+                        if !enabled {
+                            info!("Connection disabled via MQTT switch during reconnection delay");
+                            set_disabled_state(&self.playback_state, &self.state_tx).await;
+                            if !wait_for_disabled_state(
+                                &self.playback_state,
+                                &mut self.connection_rx,
+                                &self.shutdown,
+                            )
+                            .await
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -578,21 +652,14 @@ impl SpotifyClient {
                             handle_cluster_update(&cluster_update, &playback_state, &session_clone, &state_tx).await;
                         }
                         Some(Err(e)) => {
-                            // Only log as warning if session is still valid
-                            debug!("Cluster stream error: {}", e);
-                            if session_clone.is_invalid() {
-                                warn!("Cluster update error and session invalid, disconnecting");
-                                return Err(anyhow::anyhow!("Connection lost: {}", e));
-                            }
+                            // Stream errors indicate WebSocket connection issues - reconnect immediately
+                            warn!("Cluster stream error (WebSocket connection issue): {}", e);
+                            return Err(anyhow::anyhow!("Connection lost: {}", e));
                         }
                         None => {
-                            if session_clone.is_invalid() {
-                                warn!("Cluster stream ended and session is invalid");
-                                return Err(anyhow::anyhow!("Connection to Spotify server closed"));
-                            }
-                            debug!("Cluster stream paused, waiting...");
-                            sleep(Duration::from_secs(3)).await;
-                            continue;
+                            // Stream ended - WebSocket closed
+                            warn!("Cluster stream ended (WebSocket connection closed)");
+                            return Err(anyhow::anyhow!("Connection to Spotify server closed"));
                         }
                     }
                 }
@@ -613,19 +680,14 @@ impl SpotifyClient {
                             last_connection_id = Some(new_id);
                         }
                         Some(Err(e)) => {
-                            debug!("Connection ID stream error: {}", e);
-                            if session_clone.is_invalid() {
-                                warn!("Connection lost");
-                                return Err(anyhow::anyhow!("Connection health check failed: {}", e));
-                            }
+                            // Stream errors indicate WebSocket connection issues - reconnect immediately
+                            warn!("Connection ID stream error (WebSocket connection issue): {}", e);
+                            return Err(anyhow::anyhow!("Connection health check failed: {}", e));
                         }
                         None => {
-                            if session_clone.is_invalid() {
-                                warn!("Connection lost");
-                                return Err(anyhow::anyhow!("WebSocket connection closed"));
-                            }
-                            sleep(Duration::from_secs(3)).await;
-                            continue;
+                            // Stream ended - WebSocket closed
+                            warn!("Connection ID stream ended (WebSocket connection closed)");
+                            return Err(anyhow::anyhow!("WebSocket connection closed"));
                         }
                     }
                 }

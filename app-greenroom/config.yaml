@@ -1,6 +1,6 @@
 slug: app-greenroom
 name: Greenroom
-version: 0.4.4
+version: 0.4.5
 url: https://github.com/genehand/ha-apps/blob/main/app-greenroom/README.md
 
 #image: "ghcr.io/genehand/greenroom-{arch}"
