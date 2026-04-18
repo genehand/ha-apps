@@ -27,6 +27,7 @@ class Storage:
         self._entities_file = self._shim_dir / "entities.json"
         self._integrations_file = self._shim_dir / "integrations.json"
         self._custom_repos_file = self._shim_dir / "custom_repos.json"
+        self._entity_states_file = self._shim_dir / "entity_states.json"
 
         # Static repository status file (read-only)
         # Located at /app/metadata/repository_status.json in the container
@@ -152,6 +153,53 @@ class Storage:
             if entity.get("unique_id") == unique_id:
                 return entity
         return None
+
+    # Entity State Storage (for RestoreEntity)
+    def load_entity_states(self) -> Dict[str, dict]:
+        """Load saved entity states from storage."""
+        return self._load_json(self._entity_states_file)
+
+    def save_entity_states(self, states: Dict[str, dict]) -> None:
+        """Save entity states to storage."""
+        self._save_json(self._entity_states_file, states)
+        _LOGGER.debug(f"Saved {len(states)} entity states")
+
+    def save_entity_state(self, entity_id: str, state: str, attributes: Optional[dict] = None) -> None:
+        """Save the state of a single entity.
+
+        Args:
+            entity_id: The entity ID (e.g., 'text.flightradar24_airport_track')
+            state: The state value to save
+            attributes: Optional attributes dict to save with the state
+        """
+        states = self.load_entity_states()
+        states[entity_id] = {
+            "state": state,
+            "attributes": attributes or {},
+            "last_updated": datetime.now().isoformat(),
+        }
+        self.save_entity_states(states)
+        _LOGGER.debug(f"Saved state for {entity_id}: {state}")
+
+    def load_entity_state(self, entity_id: str) -> Optional[dict]:
+        """Load the saved state for a specific entity.
+
+        Args:
+            entity_id: The entity ID to look up
+
+        Returns:
+            Dict with 'state', 'attributes', and 'last_updated' keys, or None if not found
+        """
+        states = self.load_entity_states()
+        return states.get(entity_id)
+
+    def remove_entity_state(self, entity_id: str) -> None:
+        """Remove a saved entity state."""
+        states = self.load_entity_states()
+        if entity_id in states:
+            del states[entity_id]
+            self.save_entity_states(states)
+            _LOGGER.debug(f"Removed saved state for {entity_id}")
 
     # Integration Registry
     def load_integrations(self) -> Dict[str, dict]:

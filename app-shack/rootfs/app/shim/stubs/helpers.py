@@ -289,11 +289,69 @@ class LocalOAuth2Implementation(AbstractOAuth2Implementation):
 
 
 class RestoreEntity:
-    """Stub for RestoreEntity that supports async_get_last_state."""
+    """Stub for RestoreEntity that supports async_get_last_state.
+
+    Saves entity state to persistent storage and restores it when
+    the entity is re-added to Home Assistant after a restart.
+    """
 
     async def async_get_last_state(self):
-        """Return the last state for this entity."""
-        return None
+        """Return last state from storage.
+
+        Returns a State-like object with a 'state' attribute, or None if
+        no previous state is found.
+        """
+        # Get entity_id and hass from the instance
+        entity_id = getattr(self, 'entity_id', None)
+        hass = getattr(self, 'hass', None)
+
+        if not hass or not entity_id:
+            return None
+
+        from ..storage import Storage
+        from ..models import State
+
+        # Get the shim directory from hass
+        shim_dir = getattr(hass, 'shim_dir', None)
+        if not shim_dir:
+            return None
+
+        storage = Storage(shim_dir)
+        saved = storage.load_entity_state(entity_id)
+
+        if saved is None:
+            return None
+
+        # Return a State object with the saved state
+        return State(
+            entity_id=entity_id,
+            state=saved.get("state", ""),
+            attributes=saved.get("attributes", {}),
+        )
+
+    def _save_state_for_restore(self) -> None:
+        """Save the current entity state to storage for later restoration.
+
+        This should be called when the entity state changes to ensure
+        the latest state is available after a restart.
+        """
+        entity_id = getattr(self, 'entity_id', None)
+        hass = getattr(self, 'hass', None)
+
+        if not hass or not entity_id:
+            return
+
+        from ..storage import Storage
+
+        # Get the shim directory from hass
+        shim_dir = getattr(hass, 'shim_dir', None)
+        if not shim_dir:
+            return
+
+        storage = Storage(shim_dir)
+        state_value = getattr(self, 'state', None)
+        if state_value is not None:
+            storage.save_entity_state(entity_id, str(state_value))
 
 
 # Store for signal callbacks: {signal: [callbacks]}

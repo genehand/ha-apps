@@ -1,6 +1,6 @@
 """Auto-fetched Home Assistant compatibility files.
 
-This package contains files fetched from Home Assistant 2026.4.2.
+This package contains files fetched from Home Assistant 2026.4.3.
 
 Files fetched:
 - const.py: Core constants
@@ -33,4 +33,4 @@ def __getattr__(name):
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
-__version__ = "2026.4.2"
+__version__ = "2026.4.3"

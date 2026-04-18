@@ -139,8 +139,8 @@ STATE_CLASS_TOTAL_INCREASING = "total_increasing"
 class RestoreSensor:
     """Mixin class for restoring sensor state after restart.
 
-    This is a stub implementation - state restoration is not implemented
-    in the shim but the class is provided for compatibility.
+    Saves sensor state to persistent storage and restores it when
+    the entity is re-added to Home Assistant after a restart.
     """
 
     @property
@@ -149,12 +149,89 @@ class RestoreSensor:
         return None
 
     async def async_get_last_sensor_data(self):
-        """Return last sensor data from restore."""
-        return None
+        """Return last sensor data from restore.
+
+        Returns a SensorData-like object with native_value and native_unit_of_measurement,
+        or None if no previous data is found.
+        """
+        last_state = await self.async_get_last_state()
+        if last_state is None:
+            return None
+
+        # Create a simple object with native_value and native_unit_of_measurement
+        class SensorData:
+            def __init__(self, native_value, native_unit_of_measurement=None):
+                self.native_value = native_value
+                self.native_unit_of_measurement = native_unit_of_measurement
+
+        return SensorData(
+            native_value=last_state.state,
+            native_unit_of_measurement=last_state.attributes.get("unit_of_measurement"),
+        )
 
     async def async_get_last_state(self):
-        """Return last state from restore."""
-        return None
+        """Return last state from storage.
+
+        Returns a State-like object with a 'state' attribute, or None if
+        no previous state is found.
+        """
+        # Get entity_id and hass from the instance
+        entity_id = getattr(self, 'entity_id', None)
+        hass = getattr(self, 'hass', None)
+
+        if not hass or not entity_id:
+            return None
+
+        from ..storage import Storage
+        from ..models import State
+
+        # Get the shim directory from hass
+        shim_dir = getattr(hass, 'shim_dir', None)
+        if not shim_dir:
+            return None
+
+        storage = Storage(shim_dir)
+        saved = storage.load_entity_state(entity_id)
+
+        if saved is None:
+            return None
+
+        # Return a State object with the saved state
+        return State(
+            entity_id=entity_id,
+            state=saved.get("state", ""),
+            attributes=saved.get("attributes", {}),
+        )
+
+    def _save_state_for_restore(self) -> None:
+        """Save the current sensor state to storage for later restoration.
+
+        This should be called when the sensor state changes to ensure
+        the latest state is available after a restart.
+        """
+        entity_id = getattr(self, 'entity_id', None)
+        hass = getattr(self, 'hass', None)
+
+        if not hass or not entity_id:
+            return
+
+        from ..storage import Storage
+
+        # Get the shim directory from hass
+        shim_dir = getattr(hass, 'shim_dir', None)
+        if not shim_dir:
+            return
+
+        storage = Storage(shim_dir)
+        state_value = getattr(self, 'state', None)
+        if state_value is not None:
+            # Build attributes dict for restoration
+            attributes = {}
+            # Save unit_of_measurement if available (for sensor restoration)
+            native_unit = getattr(self, 'native_unit_of_measurement', None)
+            if native_unit:
+                attributes['unit_of_measurement'] = native_unit
+            storage.save_entity_state(entity_id, str(state_value), attributes)
 
 
 class SensorEntityDescription(
@@ -331,6 +408,19 @@ class SensorEntity(Entity):
         self._check_and_publish_discovery_update(
             ["device_class", "state_class", "icon", "native_unit_of_measurement"]
         )
+
+    def async_write_ha_state(self) -> None:
+        """Write state to the state machine and save for restoration.
+
+        If this entity is a RestoreSensor, also saves the state to persistent
+        storage so it can be restored after a restart.
+        """
+        # Call the parent implementation
+        super().async_write_ha_state()
+
+        # Save state for restoration if this is a RestoreSensor
+        if isinstance(self, RestoreSensor):
+            self._save_state_for_restore()
 
     async def _publish_mqtt_discovery(self) -> None:
         """Publish MQTT discovery when added."""
