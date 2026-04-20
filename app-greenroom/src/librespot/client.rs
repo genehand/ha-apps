@@ -20,8 +20,8 @@ use super::cluster::handle_cluster_update;
 use super::connection::{wait_for_connection_enabled, wait_for_disabled_state};
 use super::demo::run_demo_mode;
 use super::helpers::{
-    calculate_backoff, create_join_cluster_request, extract_connection_id, log_player_command,
-    send_keepalive,
+    calculate_backoff, close_websocket, create_join_cluster_request, extract_connection_id,
+    log_player_command, send_keepalive,
 };
 use super::state::{apply_waiting_state, set_disabled_state, set_disconnected_state};
 
@@ -587,11 +587,13 @@ impl SpotifyClient {
                 // Handle graceful shutdown signals
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, shutting down Spotify client gracefully...");
+                    close_websocket(&session_clone).await;
                     *self.shutdown.write().await = true;
                     return Ok(());
                 }
                 _ = sigint.recv() => {
                     info!("Received SIGINT, shutting down Spotify client gracefully...");
+                    close_websocket(&session_clone).await;
                     *self.shutdown.write().await = true;
                     return Ok(());
                 }
@@ -601,6 +603,7 @@ impl SpotifyClient {
                         Ok(enabled) => {
                             if !enabled {
                                 info!("Connection disabled via MQTT switch, disconnecting...");
+                                close_websocket(&session_clone).await;
                                 return Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
                             }
                         }
@@ -616,6 +619,7 @@ impl SpotifyClient {
                             };
                             if !enabled {
                                 info!("Connection disabled (detected after lag), disconnecting...");
+                                close_websocket(&session_clone).await;
                                 return Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
                             }
                         }

@@ -49,6 +49,12 @@ pub async fn send_keepalive(session: &Session, device_name: &str) -> anyhow::Res
     Ok(())
 }
 
+/// Close the WebSocket connection to remove device from Spotify's device list.
+/// Called before intentional disconnections to properly clean up.
+pub async fn close_websocket(session: &Session) {
+    session.dealer().close().await;
+}
+
 /// Create a PutStateRequest for joining the Spotify Connect cluster.
 pub fn create_join_cluster_request(
     session: &Session,
