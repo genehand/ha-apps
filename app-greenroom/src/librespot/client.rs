@@ -529,12 +529,6 @@ impl SpotifyClient {
             )
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to cluster: {}", e))?;
 
-        // Also keep the connection_id stream open as a WebSocket health indicator
-        let mut connection_id_stream = session
-            .dealer()
-            .listen_for("hm://pusher/v1/connections/", extract_connection_id)
-            .map_err(|e| anyhow::anyhow!("Failed to re-subscribe to connection_id: {}", e))?;
-
         debug!("Subscribed to cluster updates! Monitoring playback from other Spotify devices...");
 
         // Reset to "Waiting" if we don't have current playback info
@@ -658,11 +652,13 @@ impl SpotifyClient {
                         Some(Err(e)) => {
                             // Stream errors indicate WebSocket connection issues - reconnect immediately
                             warn!("Cluster stream error (WebSocket connection issue): {}", e);
+                            close_websocket(&session_clone).await;
                             return Err(anyhow::anyhow!("Connection lost: {}", e));
                         }
                         None => {
                             // Stream ended - WebSocket closed
                             warn!("Cluster stream ended (WebSocket connection closed)");
+                            close_websocket(&session_clone).await;
                             return Err(anyhow::anyhow!("Connection to Spotify server closed"));
                         }
                     }
@@ -677,8 +673,7 @@ impl SpotifyClient {
                             if let Some(ref last_id) = last_connection_id {
                                 if *last_id != new_id {
                                     info!("Spotify reconnected (new connection ID), resuming monitoring...");
-                                    // NOTE: Dealer auto-re-subscribes internally. Don't manually re-subscribe
-                                    // as it creates duplicate handlers causing "No subscriber" errors.
+                                    session_clone.set_connection_id(&new_id);
                                 }
                             }
                             last_connection_id = Some(new_id);
@@ -686,11 +681,13 @@ impl SpotifyClient {
                         Some(Err(e)) => {
                             // Stream errors indicate WebSocket connection issues - reconnect immediately
                             warn!("Connection ID stream error (WebSocket connection issue): {}", e);
+                            close_websocket(&session_clone).await;
                             return Err(anyhow::anyhow!("Connection health check failed: {}", e));
                         }
                         None => {
                             // Stream ended - WebSocket closed
                             warn!("Connection ID stream ended (WebSocket connection closed)");
+                            close_websocket(&session_clone).await;
                             return Err(anyhow::anyhow!("WebSocket connection closed"));
                         }
                     }
@@ -710,6 +707,7 @@ impl SpotifyClient {
                             cluster_update_count,
                             connection_id_count
                         );
+                        close_websocket(&session_clone).await;
                         return Err(anyhow::anyhow!("Session invalidated"));
                     }
 
