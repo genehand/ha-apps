@@ -67,6 +67,7 @@ class IntegrationInfo:
         dependencies: Optional[List[str]] = None,
         full_name: Optional[str] = None,
         version_mismatch: bool = False,
+        _release_notes_cache: Optional[List[Dict[str, Any]]] = None,
     ):
         self.domain = domain
         self.name = name
@@ -86,6 +87,8 @@ class IntegrationInfo:
         self.version_mismatch = (
             version_mismatch  # True if installed version != requested
         )
+        # Volatile cache for fetched release notes (not persisted to storage)
+        self._release_notes_cache: Optional[List[Dict[str, Any]]] = _release_notes_cache
 
     def to_dict(self) -> dict:
         """Convert to dictionary for templates/API."""
@@ -843,6 +846,7 @@ class IntegrationManager:
                         if info.update_available:
                             info.update_available = False
                             info.latest_version = None
+                            info._release_notes_cache = None
                             _LOGGER.debug(
                                 f"Cleared update flag for {domain} - now up to date"
                             )
@@ -863,6 +867,7 @@ class IntegrationManager:
                         if info.update_available:
                             info.update_available = False
                             info.latest_version = None
+                            info._release_notes_cache = None
                             _LOGGER.debug(
                                 f"Cleared update flag for {domain} - now up to date"
                             )
@@ -1077,6 +1082,96 @@ class IntegrationManager:
             _LOGGER.debug(f"Error fetching latest version: {e}")
 
         return None
+
+    async def _fetch_releases_from_github(
+        self, repo_url: str, current_version: str
+    ) -> List[Dict[str, Any]]:
+        """Fetch releases newer than current_version from GitHub.
+
+        Returns a list of release dicts sorted newest-first, excluding prereleases.
+        Each dict has keys: version, body, published_at, url.
+        """
+        if "github.com" not in repo_url:
+            return []
+
+        match = re.match(r"https?://github\.com/([^/]+)/([^/]+)", repo_url)
+        if not match:
+            return []
+
+        owner, repo = match.groups()
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=30"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    api_url, timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if not isinstance(data, list):
+                            return []
+
+                        newer_releases = []
+                        for rel in data:
+                            if rel.get("prerelease"):
+                                continue
+                            tag = rel.get("tag_name", "").lstrip("v")
+                            if not tag:
+                                continue
+                            try:
+                                tag_ver = AwesomeVersion(tag)
+                                cur_ver = AwesomeVersion(current_version)
+                                if tag_ver > cur_ver:
+                                    newer_releases.append(
+                                        {
+                                            "version": tag,
+                                            "body": rel.get("body") or "",
+                                            "published_at": rel.get("published_at", ""),
+                                            "url": rel.get("html_url", ""),
+                                        }
+                                    )
+                            except AwesomeVersionException:
+                                continue
+
+                        newer_releases.sort(
+                            key=lambda r: AwesomeVersion(r["version"]), reverse=True
+                        )
+                        return newer_releases
+                    elif response.status in (403, 429):
+                        _LOGGER.warning(
+                            f"GitHub API rate limited for {owner}/{repo}"
+                        )
+                    else:
+                        _LOGGER.debug(
+                            f"GitHub releases API returned {response.status} for {owner}/{repo}"
+                        )
+        except Exception as e:
+            _LOGGER.warning(f"Error fetching releases from GitHub: {e}")
+
+        return []
+
+    async def get_release_notes(
+        self, domain: str
+    ) -> List[Dict[str, Any]]:
+        """Get release notes for an integration, using cache if available.
+
+        Returns a list of release dicts sorted newest-first.
+        """
+        info = self._integrations.get(domain)
+        if not info:
+            return []
+
+        if info._release_notes_cache is not None:
+            return info._release_notes_cache
+
+        if not info.update_available or not info.repository_url:
+            return []
+
+        releases = await self._fetch_releases_from_github(
+            info.repository_url, info.version
+        )
+        info._release_notes_cache = releases
+        return releases
 
     async def install_integration(
         self,

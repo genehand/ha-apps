@@ -9,6 +9,7 @@ import asyncio
 import sys
 from pathlib import Path
 import tempfile
+from unittest.mock import MagicMock, AsyncMock, patch
 
 # Add the app directory to the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -559,6 +560,164 @@ async def test_503_content_type_error_handling():
         warning_message = str(warning_calls[0])
         assert "503 Service Unavailable" in warning_message
         assert test_domain in warning_message
+
+
+class TestReleaseNotes:
+    """Tests for release notes fetching functionality."""
+
+    @pytest.fixture
+    def integration_manager(self, temp_data_dir):
+        """Create an IntegrationManager with mocked storage."""
+        mock_storage = MagicMock()
+        mock_storage.load_integrations.return_value = {}
+        manager = IntegrationManager(mock_storage, temp_data_dir / "shim")
+        return manager
+
+    def _mock_aiohttp_session(self, response_data, status=200):
+        """Build a mock aiohttp ClientSession that works as an async context manager."""
+
+        class MockResponse:
+            def __init__(self, data, status_code):
+                self._data = data
+                self.status = status_code
+
+            async def json(self):
+                return self._data
+
+        class MockClientResponse:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, *args):
+                return False
+
+        class MockSession:
+            def __init__(self, response):
+                self._response = response
+                self.get_calls = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def get(self, *args, **kwargs):
+                self.get_calls.append((args, kwargs))
+                return MockClientResponse(self._response)
+
+        return MockSession(MockResponse(response_data, status))
+
+    @pytest.mark.asyncio
+    async def test_fetch_releases_filters_and_sorts(self, integration_manager):
+        """Test that releases are filtered (newer, non-prerelease) and sorted newest-first."""
+        mock_session = self._mock_aiohttp_session([
+            {
+                "tag_name": "v1.0.0",
+                "body": "Initial release",
+                "published_at": "2024-01-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.0.0",
+                "prerelease": False,
+            },
+            {
+                "tag_name": "v1.2.0",
+                "body": "Second release",
+                "published_at": "2024-02-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.2.0",
+                "prerelease": False,
+            },
+            {
+                "tag_name": "v1.1.0",
+                "body": "Middle release",
+                "published_at": "2024-01-15T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.1.0",
+                "prerelease": False,
+            },
+            {
+                "tag_name": "v2.0.0-beta",
+                "body": "Beta release",
+                "published_at": "2024-03-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v2.0.0-beta",
+                "prerelease": True,
+            },
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            releases = await integration_manager._fetch_releases_from_github(
+                "https://github.com/owner/repo", "1.0.0"
+            )
+
+        assert len(releases) == 2
+        assert releases[0]["version"] == "1.2.0"
+        assert releases[1]["version"] == "1.1.0"
+
+    @pytest.mark.asyncio
+    async def test_get_release_notes_uses_cache(self, integration_manager):
+        """Test that get_release_notes uses cached data on subsequent calls."""
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.0.0",
+            description="Test",
+            source="custom",
+            repository_url="https://github.com/owner/repo",
+            enabled=True,
+            update_available=True,
+            latest_version="1.1.0",
+        )
+        integration_manager._integrations["test_integration"] = info
+
+        mock_session = self._mock_aiohttp_session([
+            {
+                "tag_name": "v1.1.0",
+                "body": "New features",
+                "published_at": "2024-01-15T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.1.0",
+                "prerelease": False,
+            }
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result1 = await integration_manager.get_release_notes("test_integration")
+            result2 = await integration_manager.get_release_notes("test_integration")
+
+        assert len(result1) == 1
+        assert result1 == result2
+        # Should only fetch once
+        assert len(mock_session.get_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_release_notes_skips_when_no_update(self, integration_manager):
+        """Test that get_release_notes returns empty when no update is available."""
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.0.0",
+            description="Test",
+            source="custom",
+            repository_url="https://github.com/owner/repo",
+            enabled=True,
+            update_available=False,
+        )
+        integration_manager._integrations["test_integration"] = info
+
+        result = await integration_manager.get_release_notes("test_integration")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_releases_returns_empty_on_api_error(self, integration_manager):
+        """Test that API errors gracefully return empty list."""
+        mock_session = self._mock_aiohttp_session([], status=404)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            releases = await integration_manager._fetch_releases_from_github(
+                "https://github.com/owner/repo", "1.0.0"
+            )
+
+        assert releases == []
 
 
 if __name__ == "__main__":

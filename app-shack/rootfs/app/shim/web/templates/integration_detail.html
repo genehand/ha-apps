@@ -41,6 +41,10 @@
             max-width: 150px;
         }
     }
+    .release-notes-content h1 { font-size: 1.3rem; }
+    .release-notes-content h2 { font-size: 1.15rem; }
+    .release-notes-content h3 { font-size: 1rem; }
+    .release-notes-content img { max-width: 100%; }
 </style>
 {% if version_warning %}
 <article class="version-warning-banner" style="border-color: var(--pico-color-amber-500); background: var(--pico-color-amber-50); color: var(--pico-color-amber-900);">
@@ -146,6 +150,28 @@
         </button>
     </div>
 </article>
+
+{% if releases %}
+<article>
+    <h2>Release Notes</h2>
+    <div style="display: flex; flex-direction: column; gap: 1rem;">
+        {% for release in releases %}
+        <div style="border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius);">
+            <div style="padding: 0.75rem 1rem; background: var(--pico-card-background-color); border-bottom: 1px solid var(--pico-form-element-border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+                <strong style="font-size: 1rem;">{{ release.version }}</strong>
+                {% if release.published_at %}
+                <span style="font-size: 0.8rem; color: var(--pico-muted-color);">{{ release.published_at }}</span>
+                {% endif %}
+                <a href="{{ release.url }}" target="_blank" style="font-size: 0.8rem;">View on GitHub →</a>
+            </div>
+            <div class="release-notes-content" style="padding: 1rem; max-height: 300px; overflow-y: auto;">
+                {{ release.body_html | safe }}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</article>
+{% endif %}
 
 {% if entries %}
 <article>

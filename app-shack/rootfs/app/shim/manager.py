@@ -569,6 +569,7 @@ class ShimManager:
             # Clear update status for this integration
             info.update_available = False
             info.latest_version = None
+            info._release_notes_cache = None
             self._integration_manager._save_integrations()
 
             # Reload
@@ -773,6 +774,9 @@ class ShimManager:
         This creates one native HA update entity that shows in Settings > Updates
         with information about all available Shack integration updates combined.
         """
+        # Local import to avoid circular dependency at module load time
+        from . import __version__ as SHACK_VERSION
+
         if not self._mqtt_client:
             return
 
@@ -784,6 +788,10 @@ class ShimManager:
         update_count = len(updates)
         has_updates = update_count > 0
 
+        # Get add-on slug for ingress URL (falls back to hardcoded if not available)
+        addon_slug = get_addon_slug()
+        ingress_path = f"/app/{addon_slug}" if addon_slug else "/app/df3bd192_shack"
+
         # Build release summary listing all updates
         if has_updates:
             integration_list = "\n\n".join(
@@ -791,20 +799,16 @@ class ShimManager:
             )
             if update_count > 10:
                 integration_list += f"\n\n... and {update_count - 10} more"
-            release_summary = integration_list
+            release_summary = f"[Open Shack UI]({ingress_path})\n\n{integration_list}"
             title = f"Shack: {update_count} update{'s' if update_count > 1 else ''} available"
         else:
-            release_summary = "All Shack integrations are up to date"
+            release_summary = f"All Shack integrations are up to date\n\n[Open Shack UI]({ingress_path})"
             title = "Shack"
 
         entity_id = "shack_updates"
         discovery_topic = f"homeassistant/update/{entity_id}/config"
         state_topic = f"homeassistant/update/{entity_id}/state"
         command_topic = f"{self._mqtt_base_topic}/updates/install"
-
-        # Get add-on slug for ingress URL (falls back to hardcoded if not available)
-        addon_slug = get_addon_slug()
-        ingress_path = f"/app/{addon_slug}" if addon_slug else "/app/df3bd192_shack"
 
         # Discovery config for MQTT update platform
         # Use single state_topic with JSON payload - HA auto-parses JSON
@@ -815,12 +819,11 @@ class ShimManager:
             "state_topic": state_topic,
             "command_topic": command_topic,
             "payload_install": "install",
-            "release_url": ingress_path,
             "force_update": True,
             "enabled_by_default": True,
             "origin": {
                 "name": "Shack",
-                "sw_version": "0.5.20",
+                "sw_version": SHACK_VERSION,
                 "support_url": "https://github.com/genehand/ha-apps",
             },
             "device": {
@@ -829,6 +832,7 @@ class ShimManager:
                 "manufacturer": "Custom",
                 "model": "Integration Bridge",
                 "suggested_area": "None",
+                "configuration_url": f"homeassistant://app/{addon_slug}" if addon_slug else "homeassistant://app/df3bd192_shack",
             },
         }
 

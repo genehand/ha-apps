@@ -9,6 +9,13 @@ This app creates a shim environment that lets you run [HACS](https://www.hacs.xy
 - **Config Flow Support**: Guided setup for integrations that require configuration
 - **Auto-Updates**: Automatic update checking for installed integrations
 
+### Why?
+
+- Mainly to minimize full HA restarts
+- Core restarts are faster as well with less dependencies to manage
+- Probably minor, but splitting out python threads allows them to run on another core
+
+
 ## Installation
 
 ### Home Assistant app

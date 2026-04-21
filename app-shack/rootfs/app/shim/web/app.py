@@ -14,6 +14,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 # from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
+import markdown
+
 from ..logging import get_logger
 from ..models import ConfigEntry
 
@@ -242,6 +244,34 @@ class WebUI:
                 for e in entities
             ]
 
+            # Fetch and render release notes if an update is available
+            releases = []
+            if info.update_available and info.repository_url:
+                try:
+                    raw_releases = (
+                        await self._shim_manager.get_integration_manager().get_release_notes(
+                            domain
+                        )
+                    )
+                    for rel in raw_releases:
+                        body = rel.get("body") or ""
+                        releases.append(
+                            {
+                                "version": rel["version"],
+                                "body_html": markdown.markdown(body)
+                                if body
+                                else "<em>No release notes provided.</em>",
+                                "url": rel.get("url", ""),
+                                "published_at": (
+                                    rel.get("published_at", "")[:10]
+                                    if rel.get("published_at")
+                                    else ""
+                                ),
+                            }
+                        )
+                except Exception as e:
+                    _LOGGER.warning(f"Failed to fetch release notes for {domain}: {e}")
+
             html = self._render_template(
                 "integration_detail.html",
                 request=request,
@@ -250,6 +280,7 @@ class WebUI:
                 entities=entities_dicts,
                 devices=devices,
                 version_warning=version_warning,
+                releases=releases,
             )
             return HTMLResponse(content=html)
 

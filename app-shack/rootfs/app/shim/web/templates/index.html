@@ -37,6 +37,17 @@
         border-color: var(--pico-primary-inverse);
         border-top-color: transparent;
     }
+    .integration-list article {
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
+    }
+    .integration-list article h3,
+    .integration-list article h5 {
+        margin-bottom: 0.25rem;
+    }
+    .integration-list article p {
+        margin-bottom: 0.25rem;
+    }
 </style>
 
 {% if is_loading %}
@@ -60,14 +71,14 @@
             <article class="integration-item {{ 'enabled' if integration.enabled else 'disabled' }}">
                 <div class="integration-row" style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="flex: 1; min-width: 0;">
-                        <h5 style="margin-bottom: 0.5rem;">
+                        <h5 style="margin-bottom: 0.25rem;">
                             <span class="status-indicator {{ 'status-enabled' if integration.enabled else 'status-disabled' }}"></span>
                             {{ integration.name }}
                             {% if integration.update_available %}
                             <span class="update-badge">Update: {{ integration.latest_version }}</span>
                             {% endif %}
                         </h5>
-                        <p class="pico-color-muted" style="margin-bottom: 0.5rem;">{{ integration.description or 'No description' }}</p>
+                        <p class="pico-color-muted" style="margin-bottom: 0.25rem;">{{ integration.description or 'No description' }}</p>
                         <div class="integration-meta">
                             Version: {{ integration.version }}
                             {% if integration.source != 'hacs_default' %}
@@ -123,10 +134,10 @@
         {% if available %}
         <div class="integration-list">
             {% for item in available %}
-            <article style="margin-bottom: 0;">
+            <article>
                 <div class="integration-row" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
                     <div style="flex: 1; min-width: 0;">
-                        <h5 style="margin-bottom: 0.5rem;">
+                        <h5 style="margin-bottom: 0.25rem;">
                             {{ item.name }}
                             {% if item.verified %}
                             <span class="verified-badge" title="Verified compatible (v{{ item.verified_version }})">Verified</span>
@@ -137,7 +148,7 @@
                             {% if item.stars %}<span>⭐ {{ item.stars }}</span>{% endif %}
                             {% if item.downloads %}<span>⬇️ {{ item.downloads }}</span>{% endif %}
                         </div>
-                        <p class="pico-color-muted" style="margin-bottom: 0.75rem;">{{ item.description or 'No description' }}</p>
+                        <p class="pico-color-muted" style="margin-bottom: 0.25rem;">{{ item.description or 'No description' }}</p>
                         {% if item.source == 'custom' %}
                         <div class="pico-color-amber-500" style="font-size: 12px; margin-top: 5px;">
                             Custom Repository
@@ -175,12 +186,12 @@
     </div>
 
     <div id="custom" class="tab-content">
-        <p class="pico-color-muted" style="margin-bottom: 20px;">
+        <p class="pico-color-muted" style="margin-bottom: 12px;">
             Add GitHub repositories that contain Home Assistant custom integrations.
             These integrations will appear in the Available tab.
         </p>
 
-        <article class="pico-border-primary-500" style="margin-bottom: 20px;">
+        <article class="pico-border-primary-500" style="margin-bottom: 16px;">
             <h3 class="pico-color-primary" style="margin-top: 0;">Add Repository</h3>
             <form hx-post="custom-repos"
                   hx-target="#custom-repos-list"
@@ -205,7 +216,7 @@
                         <div style="flex: 1; min-width: 0;">
                             <h3>{{ repo.name }}</h3>
                             <p class="pico-color-muted">{{ repo.description or 'No description' }}</p>
-                            <div style="font-size: 12px; margin-top: 5px;">
+                            <div style="font-size: 12px; margin-top: 0.25rem;">
                                 <a href="{{ repo.repository_url }}" target="_blank">
                                     {{ repo.full_name or repo.repository_url }}
                                 </a>

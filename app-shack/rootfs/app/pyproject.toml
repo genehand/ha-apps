@@ -1,6 +1,6 @@
 [project]
 name = "app-shack"
-version = "0.7.6"
+version = "0.7.8"
 description = "Home Assistant compatibility layer for running integrations outside of HA"
 requires-python = ">=3.14"
 dependencies = [
@@ -21,7 +21,10 @@ dependencies = [
     "awesomeversion>=22.9.0",
 
     # Workaround for FlightRadarAPI
-    "beautifulsoup4"
+    "beautifulsoup4",
+
+    # Release notes rendering
+    "markdown>=3.6",
 ]
 
 [dependency-groups]
