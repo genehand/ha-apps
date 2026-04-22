@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 # from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
+import colorlog
 import markdown
 
 from ..logging import get_logger
@@ -2292,7 +2293,7 @@ class WebUI:
         import uvicorn
 
         # Custom formatter that cleans up uvicorn logger names for display
-        class UvicornFormatter(logging.Formatter):
+        class UvicornFormatter(colorlog.ColoredFormatter):
             def format(self, record):
                 # Show uvicorn.error as just uvicorn for cleaner logs
                 if record.name == "uvicorn.error":
@@ -2300,8 +2301,15 @@ class WebUI:
                 return super().format(record)
 
         # Custom logging config to match main app format
-        log_format = "%(asctime)s %(levelname)s: %(name)s - %(message)s"
+        log_format = "%(asctime)s %(log_color)s%(levelname)s%(reset)s: %(name)s - %(message)s"
         date_format = "%Y-%m-%d %H:%M:%S"
+        log_colors = {
+            "DEBUG": "cyan",
+            "INFO": "green",
+            "WARNING": "\x1b[38;5;208m",
+            "ERROR": "red",
+            "CRITICAL": "red,bg_white",
+        }
 
         log_config = {
             "version": 1,
@@ -2311,11 +2319,13 @@ class WebUI:
                     "()": UvicornFormatter,
                     "format": log_format,
                     "datefmt": date_format,
+                    "log_colors": log_colors,
                 },
                 "access": {
                     "()": UvicornFormatter,
                     "format": log_format,
                     "datefmt": date_format,
+                    "log_colors": log_colors,
                 },
             },
             "handlers": {
