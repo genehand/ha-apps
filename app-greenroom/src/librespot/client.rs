@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
@@ -562,34 +562,25 @@ impl SpotifyClient {
 
         info!("Greenroom monitor active - tracking Spotify playback");
 
-        let mut last_update = Instant::now();
-        let mut consecutive_errors = 0u32;
         let mut last_connection_id: Option<String> = None;
-        let session_start_time = Instant::now();
-
-        // Basic tracking for debugging reconnection issues
-        let mut cluster_update_count: u64 = 0;
-        let mut connection_id_count: u64 = 0;
 
         // Create shutdown signal handlers
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
-        loop {
+        let monitor_result: anyhow::Result<()> = 'monitor: loop {
             tokio::select! {
                 // Handle graceful shutdown signals
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, shutting down Spotify client gracefully...");
-                    close_websocket(&session_clone).await;
                     *self.shutdown.write().await = true;
-                    return Ok(());
+                    break 'monitor Ok(());
                 }
                 _ = sigint.recv() => {
                     info!("Received SIGINT, shutting down Spotify client gracefully...");
-                    close_websocket(&session_clone).await;
                     *self.shutdown.write().await = true;
-                    return Ok(());
+                    break 'monitor Ok(());
                 }
                 // Handle connection control commands
                 result = self.connection_rx.recv() => {
@@ -597,13 +588,12 @@ impl SpotifyClient {
                         Ok(enabled) => {
                             if !enabled {
                                 info!("Connection disabled via MQTT switch, disconnecting...");
-                                close_websocket(&session_clone).await;
-                                return Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
+                                break 'monitor Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             warn!("Connection control channel closed");
-                            return Ok(());
+                            break 'monitor Ok(());
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             // Check shared state after lag
@@ -613,8 +603,7 @@ impl SpotifyClient {
                             };
                             if !enabled {
                                 info!("Connection disabled (detected after lag), disconnecting...");
-                                close_websocket(&session_clone).await;
-                                return Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
+                                break 'monitor Err(anyhow::anyhow!("Connection disabled via MQTT switch"));
                             }
                         }
                     }
@@ -636,30 +625,17 @@ impl SpotifyClient {
                 cluster_result = cluster_updates.next() => {
                     match cluster_result {
                         Some(Ok(cluster_update)) => {
-                            cluster_update_count += 1;
-                            let elapsed = last_update.elapsed();
-                            if elapsed > Duration::from_secs(180) {
-                                debug!("Playback updates resumed after {}s silence (total updates: {})",
-                                      elapsed.as_secs(), cluster_update_count);
-                            }
-                            last_update = Instant::now();
-                            // Reset error count on successful update
-                            if consecutive_errors > 0 {
-                                consecutive_errors = 0;
-                            }
                             handle_cluster_update(&cluster_update, &playback_state, &session_clone, &state_tx).await;
                         }
                         Some(Err(e)) => {
                             // Stream errors indicate WebSocket connection issues - reconnect immediately
                             warn!("Cluster stream error (WebSocket connection issue): {}", e);
-                            close_websocket(&session_clone).await;
-                            return Err(anyhow::anyhow!("Connection lost: {}", e));
+                            break 'monitor Err(anyhow::anyhow!("Connection lost: {}", e));
                         }
                         None => {
                             // Stream ended - WebSocket closed
                             warn!("Cluster stream ended (WebSocket connection closed)");
-                            close_websocket(&session_clone).await;
-                            return Err(anyhow::anyhow!("Connection to Spotify server closed"));
+                            break 'monitor Err(anyhow::anyhow!("Connection to Spotify server closed"));
                         }
                     }
                 }
@@ -667,8 +643,6 @@ impl SpotifyClient {
                 connection_result = connection_id_stream.next() => {
                     match connection_result {
                         Some(Ok(new_id)) => {
-                            connection_id_count += 1;
-
                             // Check if connection ID changed (indicates librespot reconnection)
                             if let Some(ref last_id) = last_connection_id {
                                 if *last_id != new_id {
@@ -681,34 +655,21 @@ impl SpotifyClient {
                         Some(Err(e)) => {
                             // Stream errors indicate WebSocket connection issues - reconnect immediately
                             warn!("Connection ID stream error (WebSocket connection issue): {}", e);
-                            close_websocket(&session_clone).await;
-                            return Err(anyhow::anyhow!("Connection health check failed: {}", e));
+                            break 'monitor Err(anyhow::anyhow!("Connection health check failed: {}", e));
                         }
                         None => {
                             // Stream ended - WebSocket closed
                             warn!("Connection ID stream ended (WebSocket connection closed)");
-                            close_websocket(&session_clone).await;
-                            return Err(anyhow::anyhow!("WebSocket connection closed"));
+                            break 'monitor Err(anyhow::anyhow!("WebSocket connection closed"));
                         }
                     }
                 }
                 // Periodic session health check - handles case where librespot
                 // invalidates session but streams haven't detected it yet
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                    let now = Instant::now();
-                    let session_age = now.duration_since(session_start_time);
-
-                    let is_invalid = session_clone.is_invalid();
-
-                    if is_invalid {
-                        warn!(
-                            "Session lost after {}s (updates: {}, reconnections: {})",
-                            session_age.as_secs(),
-                            cluster_update_count,
-                            connection_id_count
-                        );
-                        close_websocket(&session_clone).await;
-                        return Err(anyhow::anyhow!("Session invalidated"));
+                    if session_clone.is_invalid() {
+                        warn!("Session invalidated by Spotify");
+                        break 'monitor Err(anyhow::anyhow!("Session invalidated"));
                     }
 
                     // Send periodic keepalive to prevent idle WebSocket timeout
@@ -725,6 +686,9 @@ impl SpotifyClient {
                     }
                 }
             }
-        }
+        };
+
+        close_websocket(&session_clone).await;
+        monitor_result
     }
 }
