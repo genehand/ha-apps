@@ -1337,6 +1337,90 @@ class TestAiohttpClientCleanup:
         assert session1.closed
         assert session2.closed
 
+    @pytest.mark.asyncio
+    async def test_aiohttp_json_patch_parses_text_plain_json(self):
+        """Test that json() parses text/plain body as JSON on error responses."""
+        from shim.import_patch import _create_patched_json
+        import aiohttp
+
+        async def fake_original_json(self, *args, **kwargs):
+            raise aiohttp.ContentTypeError(
+                None, (), status=self.status, message='unexpected mimetype'
+            )
+
+        patched = _create_patched_json(fake_original_json)
+
+        class FakeResponse:
+            status = 400
+            content_type = 'text/plain'
+
+            async def text(self, encoding=None):
+                return '{"error": "bad request"}'
+
+        fake = FakeResponse()
+        result = await patched(fake)
+        assert result == {'error': 'bad request'}
+
+    @pytest.mark.asyncio
+    async def test_aiohttp_json_patch_raises_empty_response_exception(self):
+        """Test that json() raises EmptyResponseException for empty text/plain."""
+        from shim.import_patch import _create_patched_json
+        import aiohttp
+        import sys
+
+        # Inject a fake EmptyResponseException module
+        class FakeEmptyResponseException(Exception):
+            pass
+
+        fake_module = type(sys)('fake_pynest_exceptions')
+        fake_module.EmptyResponseException = FakeEmptyResponseException
+        sys.modules['custom_components.nest_protect.pynest.exceptions'] = fake_module
+
+        try:
+            async def fake_original_json(self, *args, **kwargs):
+                raise aiohttp.ContentTypeError(
+                    None, (), status=self.status, message='unexpected mimetype'
+                )
+
+            patched = _create_patched_json(fake_original_json)
+
+            class FakeResponse:
+                status = 400
+                content_type = 'text/plain'
+
+                async def text(self, encoding=None):
+                    return ''
+
+            fake = FakeResponse()
+            with pytest.raises(FakeEmptyResponseException):
+                await patched(fake)
+        finally:
+            del sys.modules['custom_components.nest_protect.pynest.exceptions']
+
+    @pytest.mark.asyncio
+    async def test_aiohttp_json_patch_re_raises_content_type_error(self):
+        """Test that json() re-raises ContentTypeError for non-error responses."""
+        from shim.import_patch import _create_patched_json
+        import aiohttp
+
+        async def fake_original_json(self, *args, **kwargs):
+            raise aiohttp.ContentTypeError(
+                None, (), status=self.status, message='unexpected mimetype'
+            )
+
+        patched = _create_patched_json(fake_original_json)
+
+        class FakeResponse:
+            status = 200
+            content_type = 'text/plain'
+
+            async def text(self, encoding=None):
+                return ''
+
+        fake = FakeResponse()
+        with pytest.raises(aiohttp.ContentTypeError):
+            await patched(fake)
+
 
 class TestSelectOptionDict:
     """Tests for SelectOptionDict TypedDict."""

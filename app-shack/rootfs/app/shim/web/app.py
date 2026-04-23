@@ -2306,7 +2306,7 @@ class WebUI:
         log_colors = {
             "DEBUG": "cyan",
             "INFO": "green",
-            "WARNING": "\x1b[38;5;208m",
+            "WARNING": "yellow",
             "ERROR": "red",
             "CRITICAL": "red,bg_white",
         }

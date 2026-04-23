@@ -25,6 +25,44 @@ from .stubs import (
 _LOGGER = get_logger(__name__)
 
 
+def _find_empty_response_exception():
+    """Search loaded modules for any EmptyResponseException class."""
+    for mod in sys.modules.values():
+        if mod is not None and hasattr(mod, 'EmptyResponseException'):
+            return mod.EmptyResponseException
+    return None
+
+
+def _create_patched_json(original_json):
+    """Create a patched version of aiohttp.ClientResponse.json.
+
+    For HTTP error responses with non-JSON content-type, attempts to parse
+    the body as JSON anyway. For empty text/plain bodies, raises the
+    integration's EmptyResponseException if available.
+    """
+    import aiohttp
+
+    _empty_response_exc = _find_empty_response_exception()
+
+    async def _patched_json(self, *args, **kwargs):
+        try:
+            return await original_json(self, *args, **kwargs)
+        except aiohttp.ContentTypeError:
+            if self.status >= 400:
+                text = await self.text()
+                if not text and _empty_response_exc is not None:
+                    raise _empty_response_exc(text)
+                if text:
+                    try:
+                        import json
+                        return json.loads(text)
+                    except Exception:
+                        pass
+            raise
+
+    return _patched_json
+
+
 class ImportPatcher:
     """Manages import patching for HA compatibility."""
 
@@ -180,6 +218,9 @@ class ImportPatcher:
         sys.modules["homeassistant.util"] = homeassistant.util
         sys.modules["homeassistant.components"] = homeassistant.components
 
+        # Patch aiohttp response json for lenient parsing of error responses
+        self._patch_aiohttp_response_json()
+
         # Patch asyncio socket options for macOS compatibility
         self._patch_asyncio_socket_options()
 
@@ -190,6 +231,23 @@ class ImportPatcher:
         """Import and return platform modules."""
         from . import platforms
         return platforms
+
+    def _patch_aiohttp_response_json(self) -> None:
+        """Patch aiohttp.ClientResponse.json for lenient parsing of error responses.
+
+        Some integrations (e.g. nest_protect) receive HTTP error responses with
+        text/plain content-type and empty body. aiohttp's json() raises
+        ContentTypeError, which integrations often catch and re-raise as their own
+        exception with a poor message. This patch attempts to parse the body as JSON
+        for error responses, and for empty text/plain bodies it raises
+        EmptyResponseException if the integration defines it, allowing clean handling.
+        """
+        import aiohttp
+
+        aiohttp.ClientResponse.json = _create_patched_json(aiohttp.ClientResponse.json)
+        _LOGGER.debug(
+            'Patched aiohttp.ClientResponse.json for lenient error response parsing'
+        )
 
     def _patch_asyncio_socket_options(self) -> None:
         """Patch asyncio socket options for macOS compatibility."""

@@ -917,12 +917,10 @@ class TestDataUpdateCoordinator:
             update_interval=None,
         )
 
-        # The coordinator should convert UnboundLocalError to UpdateFailed
-        with pytest.raises(UpdateFailed) as exc_info:
-            await coordinator.async_refresh()
-
-        assert "Integration bug" in str(exc_info.value)
-        assert "undefined error variable" in str(exc_info.value)
+        # The coordinator should catch UnboundLocalError and set failure state
+        await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+        assert isinstance(coordinator.last_exception, UnboundLocalError)
 
     @pytest.mark.asyncio
     async def test_coordinator_handles_nameerror_from_undefined_error_var(
@@ -930,10 +928,7 @@ class TestDataUpdateCoordinator:
         tmp_path,
     ):
         """Test DataUpdateCoordinator catches NameError from buggy integrations."""
-        from homeassistant.helpers.update_coordinator import (
-            DataUpdateCoordinator,
-            UpdateFailed,
-        )
+        from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
         from shim.core import HomeAssistant
 
         hass = HomeAssistant(config_dir=tmp_path)
@@ -951,18 +946,17 @@ class TestDataUpdateCoordinator:
             update_interval=None,
         )
 
-        # The coordinator should convert NameError to UpdateFailed
-        with pytest.raises(UpdateFailed) as exc_info:
-            await coordinator.async_refresh()
-
-        assert "Integration bug" in str(exc_info.value)
+        # The coordinator should catch NameError and set failure state
+        await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+        assert isinstance(coordinator.last_exception, NameError)
 
     @pytest.mark.asyncio
     async def test_coordinator_re_raises_other_unboundlocalerrors(
         self,
         tmp_path,
     ):
-        """Test DataUpdateCoordinator re-raises UnboundLocalError that doesn't match pattern."""
+        """Test DataUpdateCoordinator catches UnboundLocalError that doesn't match pattern."""
         from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
         from shim.core import HomeAssistant
 
@@ -981,11 +975,11 @@ class TestDataUpdateCoordinator:
             update_interval=None,
         )
 
-        # Should re-raise as-is since it doesn't match the pattern
-        with pytest.raises(UnboundLocalError) as exc_info:
-            await coordinator.async_refresh()
-
-        assert "some other unbound local issue" in str(exc_info.value)
+        # Should catch the exception and set failure state
+        await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+        assert isinstance(coordinator.last_exception, UnboundLocalError)
+        assert "some other unbound local issue" in str(coordinator.last_exception)
 
 
 class TestEvent:

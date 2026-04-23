@@ -93,6 +93,7 @@ class DataUpdateCoordinator(Generic[T]):
         self.data = {}
         self._shutdown_requested = False
         self._last_update_success = True
+        self.last_exception = None
         self._listeners = {}
         self._last_listener_id = 0
         self._unsub_refresh = None
@@ -115,7 +116,14 @@ class DataUpdateCoordinator(Generic[T]):
         async def _refresh():
             await asyncio.sleep(self.update_interval.total_seconds())
             if not self._shutdown_requested:
-                await self.async_refresh()
+                try:
+                    await self.async_refresh()
+                except Exception as e:
+                    # Errors are already logged by async_refresh;
+                    # swallow here to avoid unhandled task exception noise.
+                    _LOGGER.debug(
+                        f"Coordinator '{self.name}' scheduled refresh failed: {e}"
+                    )
                 self._schedule_refresh()
 
         self._unsub_refresh = self.hass.async_create_task(_refresh())
@@ -178,14 +186,16 @@ class DataUpdateCoordinator(Generic[T]):
             )
             return
 
+        previous_update_success = self._last_update_success
+
         try:
             _LOGGER.debug(f"Coordinator '{self.name}' fetching data...")
             self.data = await self._async_update_data()
             self._last_update_success = True
+            self.last_exception = None
             _LOGGER.debug(
                 f"Coordinator '{self.name}' data fetched successfully: {self.data}"
             )
-            self.async_update_listeners()
         except (UnboundLocalError, NameError) as e:
             # Handle buggy integrations that use 'raise X from error' where
             # 'error' variable doesn't exist
@@ -196,15 +206,19 @@ class DataUpdateCoordinator(Generic[T]):
                 msg = f"Integration bug: tried to chain from undefined error variable in {self.name}"
                 self.logger.error(f"Error fetching {self.name} data: {msg}")
                 self._last_update_success = False
-                raise UpdateFailed(msg) from e
-            # Re-raise if it's not the specific pattern we're handling
-            self.logger.error(f"Error fetching {self.name} data: {e}")
-            self._last_update_success = False
-            raise
+                self.last_exception = e
+            else:
+                self.logger.error(f"Error fetching {self.name} data: {e}")
+                self._last_update_success = False
+                self.last_exception = e
         except Exception as e:
             self.logger.error(f"Error fetching {self.name} data: {e}")
             self._last_update_success = False
-            raise
+            self.last_exception = e
+
+        # Notify listeners on success or on transition from success to failure
+        if self._last_update_success or previous_update_success:
+            self.async_update_listeners()
 
     async def async_request_refresh(self):
         """Request a refresh."""
