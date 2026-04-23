@@ -1,3 +1,4 @@
+use dashmap::DashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
@@ -60,12 +61,17 @@ async fn main() -> anyhow::Result<()> {
         http_client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?,
+        panel_updates: Arc::new(DashMap::new()),
     };
 
     let app = Router::new()
         .route(
             "/api/websocket",
             axum::routing::get(websocket::filtered::handler),
+        )
+        .route(
+            "/dasher/panel",
+            axum::routing::post(http::panel_tracker::panel_handler),
         )
         .route("/", axum::routing::any(catchall_handler))
         .route("/{*path}", axum::routing::any(catchall_handler))

@@ -145,6 +145,14 @@ pub async fn handler(
         path, client_ip
     );
 
+    // Extract tab_id from query string for per-tab filtering
+    let tab_id = req.uri().query().and_then(|q| {
+        q.split('&')
+            .find(|p| p.starts_with("dasher_tab="))
+            .map(|p| &p["dasher_tab=".len()..])
+            .map(|v| v.to_string())
+    });
+
     // Check if client requested compression via Sec-WebSocket-Extensions header
     let client_requested_compression = req
         .headers()
@@ -170,7 +178,7 @@ pub async fn handler(
     tokio::spawn(async move {
         match ws_future.await {
             Ok(socket) => {
-                handle(socket, state, client_ip, compression_negotiated).await;
+                handle(socket, state, client_ip, compression_negotiated, tab_id).await;
             }
             Err(e) => {
                 error!("WebSocket upgrade failed for {}: {}", client_ip, e);
@@ -186,15 +194,34 @@ pub async fn handle(
     state: crate::AppState,
     client_ip: String,
     use_compression: bool,
+    tab_id: Option<String>,
 ) {
     let config = state.config;
     let client_states = state.client_states;
+    let panel_updates = state.panel_updates;
     let conn_id = format!("{:p}", &client_socket);
 
     // Create client state
     {
         let mut client_state = client_states.get_or_insert(conn_id.clone(), client_ip.clone());
         client_state.client_ip = client_ip.clone();
+        client_state.tab_id = tab_id.clone();
+
+        // Check for cached panel update from before websocket connected
+        if let Some(ref tab_id_str) = tab_id {
+            let now = std::time::Instant::now();
+            panel_updates.retain(|_, v| {
+                now.duration_since(v.timestamp) < std::time::Duration::from_secs(30)
+            });
+
+            if let Some((_, update)) = panel_updates.remove(tab_id_str) {
+                client_state.filtering_active = update.filtering_active;
+                debug!(
+                    "Applied cached panel update for tab {}: filtering={}",
+                    tab_id_str, update.filtering_active
+                );
+            }
+        }
     }
 
     let ha_url_str = format!("ws://{}/api/websocket", config.ha_host);
@@ -402,8 +429,6 @@ async fn process_server_message(
                 }
             }
 
-            // Note: subscribe_entities updates with field 'c' are handled by the
-            // generic event handler below, which also handles state_changed events
             return Some(data);
         }
     }
@@ -411,14 +436,7 @@ async fn process_server_message(
     // Handle event messages (non-subscribe_entities)
     if data.get("type").and_then(|v| v.as_str()) == Some("event") {
         if let Some(event) = data.get("event") {
-            let event_type = event.get("event_type").and_then(|v| v.as_str());
-
-            if !client_state.lovelace_entities.is_empty() {
-                // Skip state_changed events (they duplicate compressed updates)
-                if event_type == Some("state_changed") {
-                    return None;
-                }
-
+            if client_state.filtering_active && !client_state.lovelace_entities.is_empty() {
                 // Filter compressed updates
                 if let Some(updates) = event.get("c").and_then(|v| v.as_object()) {
                     use regex::Regex;
@@ -638,10 +656,11 @@ mod tests {
         let conn_id = "test-filter-batched";
         let client_ip = "127.0.0.1";
 
-        // Setup: configure only kitchen entity
+        // Setup: configure only kitchen entity and enable filtering
         {
             let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
             state.lovelace_entities.insert("light.kitchen".to_string());
+            state.filtering_active = true;
         }
 
         // Send batched array with kitchen (tracked) and bedroom (not tracked)
@@ -671,10 +690,11 @@ mod tests {
         let conn_id = "test-filter-all";
         let client_ip = "127.0.0.1";
 
-        // Setup: configure only kitchen entity
+        // Setup: configure only kitchen entity and enable filtering
         {
             let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
             state.lovelace_entities.insert("light.kitchen".to_string());
+            state.filtering_active = true;
         }
 
         // Send batched array with only untracked entities
@@ -690,6 +710,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_forward_ha_to_client_no_filtering_when_inactive() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-no-filter";
+        let client_ip = "127.0.0.1";
+
+        // Setup: configure entities but leave filtering_active=false
+        {
+            let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+            state.lovelace_entities.insert("light.kitchen".to_string());
+            // filtering_active defaults to false
+        }
+
+        // Send batched array with only untracked entities
+        let batched = r#"[{"type":"event","event":{"c":{"light.bedroom":{"s":"off"},"light.office":{"s":"on"}}}}]"#;
+        tx.send(Frame::text(batched)).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Should receive everything since filtering is inactive
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let text = received.unwrap().as_str().to_string();
+        assert!(text.contains("light.bedroom"));
+        assert!(text.contains("light.office"));
+    }
+
+    #[tokio::test]
     async fn test_forward_ha_to_client_mixed_batched_and_individual() {
         let (mut tx, rx) = mpsc::channel::<Frame>(10);
         let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
@@ -698,10 +749,11 @@ mod tests {
         let conn_id = "test-mixed";
         let client_ip = "127.0.0.1";
 
-        // Setup: configure entities
+        // Setup: configure entities and enable filtering
         {
             let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
             state.lovelace_entities.insert("light.kitchen".to_string());
+            state.filtering_active = true;
         }
 
         // Send batched array

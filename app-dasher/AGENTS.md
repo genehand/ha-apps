@@ -162,6 +162,61 @@ struct WsMessage {
 - WebSocket protocol follows Home Assistant's format
 - Entity IDs follow pattern: `domain.object_id` (e.g., `light.kitchen`)
 
+## Dashboard Filtering Architecture
+
+Dasher filters WebSocket events based on which dashboard entities are visible to the user. Filtering is gated per browser tab so that dashboard pages receive only relevant entity updates, while settings and other pages receive all events.
+
+### How It Works
+
+1. **HTML Injection** (`src/http/inject.rs`):
+   - The proxy intercepts all `text/html` responses from Home Assistant
+   - Decompresses if `Content-Encoding: deflate` or `gzip`
+   - Injects a small tracking `<script>` at the top of `<head>`
+   - Recompresses if needed; skips if already injected
+
+2. **In-browser Script** (injected into HTML):
+   - Generates a unique `tab_id` per browser tab via `crypto.randomUUID()`
+   - Patches `window.WebSocket` so every `/api/websocket` connection appends `?dasher_tab=<id>`
+   - Sends `POST /dasher/panel` with `{tab_id, url_path}` on page load and every SPA navigation (`history.pushState`, `replaceState`, `popstate`)
+
+3. **Panel Tracker** (`src/http/panel_tracker.rs`):
+   - Receives `POST /dasher/panel` with the tab's current URL path
+   - Looks up the active WebSocket connection by `tab_id`
+   - Sets `filtering_active = true` for dashboard paths (`/lovelace*`, `/home`, `/dashboard*`)
+   - Sets `filtering_active = false` for all other paths
+   - Caches panel updates for 30 seconds if the websocket hasn't connected yet (handles the race where the POST arrives before the websocket upgrade)
+
+4. **WebSocket Filtering Gate** (`src/websocket/filtered.rs`):
+   - Reads `?dasher_tab` from the WebSocket upgrade URL and stores it in `ClientState`
+   - Checks the panel update cache on connection (handles early POSTs)
+   - Only filters when `filtering_active == true`
+   - All other messages pass through regardless of filtering state
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `src/http/inject.rs` | HTML decompression, script injection, recompression |
+| `src/http/panel_tracker.rs` | Receives `POST /dasher/panel`, toggles filtering per tab |
+| `src/http/proxy.rs` | Routes HTML responses through injection, proxies everything else |
+| `src/websocket/filtered.rs` | Reads `tab_id` from query params, gates filtering on `filtering_active` |
+| `src/state.rs` | Stores `tab_id`, `filtering_active`, and cached panel updates |
+
+### Targeted Logging
+
+Use `EnvFilter` syntax for targeted debugging:
+
+```bash
+# Debug HTML injection and panel tracking
+RUST_LOG=warn,dasher::http=debug cargo run
+
+# Debug websocket filtering decisions
+RUST_LOG=warn,dasher::websocket::filtered=debug cargo run
+
+# Debug everything in dasher, deps at warn
+RUST_LOG=warn,dasher=debug cargo run
+```
+
 ## Docker/Container Guidelines
 
 - Base image: Multi-stage build with `rust:trixie` and `base-debian:trixie`

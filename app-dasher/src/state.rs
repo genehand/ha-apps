@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use dashmap::DashMap;
 
@@ -13,6 +14,8 @@ pub struct ClientState {
     pub lovelace_config_id: Option<u64>,
     pub subscribe_entities_id: Option<u64>,
     pub all_states: Option<serde_json::Value>,
+    pub tab_id: Option<String>,
+    pub filtering_active: bool,
 }
 
 impl ClientState {
@@ -24,6 +27,8 @@ impl ClientState {
             lovelace_config_id: None,
             subscribe_entities_id: None,
             all_states: None,
+            tab_id: None,
+            filtering_active: false,
         }
     }
 }
@@ -57,6 +62,22 @@ impl ClientStates {
     pub fn len(&self) -> usize {
         self.states.len()
     }
+
+    pub fn set_filtering_by_tab_id(&self, tab_id: &str, filtering_active: bool) -> bool {
+        for mut entry in self.states.iter_mut() {
+            if entry.tab_id.as_deref() == Some(tab_id) {
+                entry.filtering_active = filtering_active;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+#[derive(Clone)]
+pub struct PanelUpdate {
+    pub filtering_active: bool,
+    pub timestamp: Instant,
 }
 
 #[derive(Clone)]
@@ -64,6 +85,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub client_states: ClientStates,
     pub http_client: reqwest::Client,
+    pub panel_updates: Arc<DashMap<String, PanelUpdate>>,
 }
 
 #[cfg(test)]
@@ -79,6 +101,8 @@ mod tests {
         assert!(client.lovelace_config_id.is_none());
         assert!(client.subscribe_entities_id.is_none());
         assert!(client.all_states.is_none());
+        assert!(client.tab_id.is_none());
+        assert!(!client.filtering_active);
     }
 
     #[test]
@@ -154,5 +178,25 @@ mod tests {
             assert!(state2.lovelace_entities.contains("light.bedroom"));
             assert!(!state2.lovelace_entities.contains("light.kitchen"));
         }
+    }
+
+    #[test]
+    fn test_set_filtering_by_tab_id() {
+        let states = ClientStates::new();
+
+        {
+            let mut state = states.get_or_insert("conn1".to_string(), "192.168.1.100".to_string());
+            state.tab_id = Some("tab-abc".to_string());
+            state.filtering_active = false;
+        }
+
+        assert!(states.set_filtering_by_tab_id("tab-abc", true));
+
+        {
+            let state = states.get_or_insert("conn1".to_string(), "".to_string());
+            assert!(state.filtering_active);
+        }
+
+        assert!(!states.set_filtering_by_tab_id("tab-unknown", true));
     }
 }

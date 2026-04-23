@@ -14,7 +14,7 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
     let client = state.http_client;
 
     let method = req.method().clone();
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
     let query = req
         .uri()
         .query()
@@ -22,7 +22,7 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
         .unwrap_or_default();
     let url = format!("http://{}{}{}", config.ha_host, path, query);
 
-    let timeout = get_timeout_for_path(path);
+    let timeout = get_timeout_for_path(&path);
     if timeout != Some(5) {
         debug!("Timeout set to {:?} for {}", timeout, path);
     }
@@ -109,7 +109,20 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
     let status =
         StatusCode::from_u16(upstream_response.status().as_u16()).unwrap_or(StatusCode::OK);
 
-    // Extract response headers
+    // Check if this is an HTML response that needs script injection
+    let content_type = upstream_response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    let is_html = content_type
+        .map(|ct| ct.starts_with("text/html"))
+        .unwrap_or(false);
+
+    if is_html {
+        return build_html_response(upstream_response, status).await;
+    }
+
+    // Extract response headers for non-HTML
     let mut response_builder = axum::response::Response::builder().status(status);
     for (key, value) in upstream_response.headers() {
         if let Ok(name) = axum::http::HeaderName::from_bytes(key.as_ref()) {
@@ -122,6 +135,58 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
     // Stream the response body
     let stream = upstream_response.bytes_stream();
     let body = Body::from_stream(stream);
+
+    match response_builder.body(body) {
+        Ok(response) => response,
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Response Error").into_response(),
+    }
+}
+
+async fn build_html_response(upstream_response: reqwest::Response, status: StatusCode) -> Response {
+    // Clone headers before consuming the response body
+    let headers = upstream_response.headers().clone();
+
+    let content_encoding = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok());
+
+    let body_bytes = match upstream_response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!("Failed to read HTML response body: {}", e);
+            return (StatusCode::BAD_GATEWAY, "Proxy Error").into_response();
+        }
+    };
+
+    let (injected_bytes, new_encoding) =
+        crate::http::inject::process_html_response(&body_bytes, content_encoding);
+
+    // Build response headers, removing content-length/transfer-encoding/content-encoding
+    // since body changed and we may have recompressed
+    let mut response_builder = axum::response::Response::builder().status(status);
+    for (key, value) in headers.iter() {
+        let key_lower = key.as_str().to_lowercase();
+        if key_lower == "content-length"
+            || key_lower == "transfer-encoding"
+            || key_lower == "content-encoding"
+        {
+            continue;
+        }
+        if let Ok(name) = axum::http::HeaderName::from_bytes(key.as_ref()) {
+            if let Ok(val) = axum::http::HeaderValue::from_bytes(value.as_bytes()) {
+                response_builder = response_builder.header(name, val);
+            }
+        }
+    }
+
+    // Set new content-encoding if we recompressed
+    if let Some(enc) = new_encoding {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&enc) {
+            response_builder = response_builder.header("content-encoding", val);
+        }
+    }
+
+    let body = Body::from(injected_bytes);
 
     match response_builder.body(body) {
         Ok(response) => response,
@@ -151,6 +216,7 @@ mod tests {
 
     use crate::config::Config;
     use crate::state::ClientStates;
+    use dashmap::DashMap;
     use std::sync::Arc;
 
     fn create_test_config(ha_host: String) -> Arc<Config> {
@@ -172,6 +238,7 @@ mod tests {
             config,
             client_states: ClientStates::new(),
             http_client,
+            panel_updates: Arc::new(DashMap::new()),
         }
     }
 
