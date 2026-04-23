@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     logging::init();
 
     let config = Arc::new(Config::load()?);
-    info!("Starting Dasher proxy");
+    info!("Starting Dasher proxy v{}", env!("CARGO_PKG_VERSION"));
     info!("Proxy port: {} -> {}", config.proxy_port, config.ha_host);
 
     let app_state = AppState {

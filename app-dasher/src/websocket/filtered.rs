@@ -323,9 +323,8 @@ async fn process_client_message(
 ) {
     if let Some(msg_type) = data.get("type").and_then(|v| v.as_str()) {
         if msg_type == "lovelace/config" {
-            // Only track lovelace/config if url_path field exists (even if null), otherwise the requested
-            // page isn't a dashboard so we don't want to filter
-            if data.get("url_path").is_some() {
+            // Only track lovelace/config if url_path is a non-null string
+            if data.get("url_path").map_or(false, |v| !v.is_null()) {
                 if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
                     let mut state =
                         client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
@@ -805,7 +804,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_forward_client_to_ha_tracks_lovelace_config_with_null_url_path() {
+    async fn test_forward_client_to_ha_skips_lovelace_config_with_null_url_path() {
         let (mut tx, rx) = mpsc::channel::<Frame>(10);
         let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
 
@@ -824,9 +823,9 @@ mod tests {
         let received = sink_rx.next().await;
         assert!(received.is_some());
 
-        // Verify state was updated - ID should be tracked even with null url_path
+        // Verify state was NOT updated - ID should not be tracked with null url_path
         let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
-        assert_eq!(state.lovelace_config_id, Some(101));
+        assert_eq!(state.lovelace_config_id, None);
     }
 
     #[tokio::test]

@@ -208,13 +208,13 @@ Use `EnvFilter` syntax for targeted debugging:
 
 ```bash
 # Debug HTML injection and panel tracking
-RUST_LOG=warn,dasher::http=debug cargo run
+RUST_LOG=info,dasher::http=debug cargo run
 
 # Debug websocket filtering decisions
-RUST_LOG=warn,dasher::websocket::filtered=debug cargo run
+RUST_LOG=info,dasher::websocket::filtered=debug cargo run
 
 # Debug everything in dasher, deps at warn
-RUST_LOG=warn,dasher=debug cargo run
+RUST_LOG=info,dasher=debug cargo run
 ```
 
 ## Docker/Container Guidelines
