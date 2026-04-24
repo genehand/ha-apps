@@ -6,7 +6,10 @@ use tracing::debug;
 lazy_static::lazy_static! {
     static ref ENTITY_PATTERN: Regex = Regex::new(r"^[\w]+\.[\w]+$").unwrap();
     static ref TEMPLATE_PATTERN: Regex = Regex::new(r#"states\[(?:'|")([\w]+\.[\w]+)(?:'|")\]"#).unwrap();
-    static ref BUBBLE_CARD_PATTERN: Regex = Regex::new(r"^\d+_entity$").unwrap();
+    static ref SUFFIX_ENTITY_PATTERN: Regex = Regex::new(r"^[\w]+_entity$").unwrap();
+    static ref WALLPANEL_PLACEHOLDER_PATTERN: Regex = Regex::new(
+        r#"\$\{entity:([\w]+\.[\w]+)\}"#
+    ).unwrap();
 }
 
 pub fn parse_lovelace_entities(
@@ -94,15 +97,21 @@ pub fn parse_lovelace_entities(
                         }
                     }
                 }
-                // Check for custom:bubble-card background color pattern
-                else if BUBBLE_CARD_PATTERN.is_match(key) {
+                // Check for any key ending in _entity (e.g. bubble-card colors,
+                // wallpanel configs, and other card types that use this pattern)
+                else if SUFFIX_ENTITY_PATTERN.is_match(key) {
                     if let Some(s) = value.as_str() {
                         validate_and_add(s, entities);
                     }
                 }
-                // Check for template patterns in string values
+                // Check for template patterns and wallpanel placeholders in string values
                 else if let Some(s) = value.as_str() {
                     for cap in TEMPLATE_PATTERN.captures_iter(s) {
+                        if let Some(entity_id) = cap.get(1) {
+                            validate_and_add(entity_id.as_str(), entities);
+                        }
+                    }
+                    for cap in WALLPANEL_PLACEHOLDER_PATTERN.captures_iter(s) {
                         if let Some(entity_id) = cap.get(1) {
                             validate_and_add(entity_id.as_str(), entities);
                         }
@@ -514,5 +523,67 @@ mod tests {
         assert!(entities.contains("light.living_room_main"));
         assert!(entities.contains("light.living_room_side"));
         assert!(!entities.contains("light.kitchen"));
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_wallpanel_entity_keys() {
+        let data = json!({
+            "wallpanel": {
+                "enabled": true,
+                "screensaver_entity": "input_boolean.wallpanel_screensaver",
+                "image_url_entity": "input_text.wallpanel_image_url",
+                "profile_entity": "input_text.wallpanel_profile",
+                "camera_motion_detection_set_entity": "input_boolean.motion_detected"
+            }
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("input_boolean.wallpanel_screensaver"));
+        assert!(entities.contains("input_text.wallpanel_image_url"));
+        assert!(entities.contains("input_text.wallpanel_profile"));
+        assert!(entities.contains("input_boolean.motion_detected"));
+        assert_eq!(entities.len(), 4);
+        assert!(filter_rules.is_empty());
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_wallpanel_placeholders() {
+        let data = json!({
+            "wallpanel": {
+                "image_url": "${entity:input_select.wallpanel_image_url}",
+                "screensaver_entity": "input_boolean.${browser_id}_wallpanel_screensaver"
+            }
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("input_select.wallpanel_image_url"));
+        assert_eq!(entities.len(), 1);
+        assert!(filter_rules.is_empty());
+    }
+
+    #[test]
+    fn test_parse_lovelace_entities_wallpanel_in_profile() {
+        let data = json!({
+            "wallpanel": {
+                "profiles": {
+                    "night": {
+                        "screensaver_entity": "input_boolean.night_screensaver"
+                    }
+                }
+            }
+        });
+        let mut entities = HashSet::new();
+        let mut filter_rules = Vec::new();
+
+        parse_lovelace_entities(&data, &mut entities, &mut filter_rules);
+
+        assert!(entities.contains("input_boolean.night_screensaver"));
+        assert_eq!(entities.len(), 1);
     }
 }

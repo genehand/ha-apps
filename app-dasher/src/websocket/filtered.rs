@@ -324,7 +324,7 @@ async fn process_client_message(
     if let Some(msg_type) = data.get("type").and_then(|v| v.as_str()) {
         if msg_type == "lovelace/config" {
             // Only track lovelace/config if url_path is a non-null string
-            if data.get("url_path").map_or(false, |v| !v.is_null()) {
+            if data.get("url_path").is_some_and(|v| !v.is_null()) {
                 if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
                     let mut state =
                         client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
