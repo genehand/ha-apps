@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 import time
 import random
@@ -122,6 +123,7 @@ class MqttBridge:
 
         def on_disconnect(client, userdata, disconnect_flags, rc, properties):
             self._connected = False
+            self._last_connected_time = time.time()
             if rc != 0:
                 error_msg = str(rc)
                 self._last_disconnect_error = f"MQTT disconnect ({rc}): {error_msg}"
@@ -181,6 +183,9 @@ class MqttBridge:
         while True:
             await asyncio.sleep(RECONNECT_CHECK_INTERVAL)
 
+            if self._shutdown:
+                return
+
             if not self._connected and self._initial_connect_complete:
                 disconnected_duration = time.time() - self._last_connected_time
 
@@ -189,8 +194,8 @@ class MqttBridge:
                         f"MQTT connection lost for {disconnected_duration:.0f}s, "
                         f"exceeding timeout of {RECONNECT_TIMEOUT_SECONDS}s. Exiting."
                     )
-                    # Exit the application - container/supervisor will restart us
-                    sys.exit(1)
+                    # Hard exit without traceback - container/supervisor will restart us
+                    os._exit(1)
                 elif disconnected_duration > 30:
                     # Warn every 30 seconds
                     logger.warning(
