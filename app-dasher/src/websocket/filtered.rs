@@ -326,9 +326,11 @@ async fn process_client_message(
             // Only track lovelace/config if url_path is a non-null string
             if data.get("url_path").is_some_and(|v| !v.is_null()) {
                 if let Some(id) = data.get("id").and_then(|v| v.as_u64()) {
+                    let url_path = data.get("url_path").and_then(|v| v.as_str()).unwrap_or("");
                     let mut state =
                         client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
                     state.lovelace_config_id = Some(id);
+                    state.pending_configs.insert(id, url_path.to_string());
                     debug!("lovelace/config request with ID: {} for {}", id, client_ip);
                 }
             }
@@ -337,7 +339,6 @@ async fn process_client_message(
                 let mut state =
                     client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
                 state.subscribe_entities_id = Some(id);
-                state.lovelace_entities.clear();
                 debug!(
                     "subscribe_entities request with ID: {} for {}",
                     id, client_ip
@@ -382,6 +383,10 @@ async fn process_server_message(
                             client_state.lovelace_entities = entities.clone();
                         }
                     }
+
+                    // Save config for this dashboard so it can be restored on navigation
+                    let url_path = client_state.pending_configs.remove(&id).unwrap_or_default();
+                    client_state.save_dashboard_config(&url_path);
 
                     info!(
                         "{} entities with {} auto-entities rules tracked for {}, conn_id={}",
@@ -851,5 +856,75 @@ mod tests {
         // Verify state was NOT updated - ID should not be tracked without url_path
         let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
         assert_eq!(state.lovelace_config_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_process_server_message_saves_dashboard_config() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-save-dash";
+        let client_ip = "127.0.0.1";
+
+        // Setup: send lovelace/config request to track pending config
+        {
+            let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+            state
+                .pending_configs
+                .insert(200, "my-dashboard".to_string());
+            state.lovelace_config_id = Some(200);
+        }
+
+        // Send lovelace/config response with entities
+        let config_response = r#"{"id":200,"type":"result","success":true,"result":{"views":[{"cards":[{"type":"entities","entities":["light.kitchen","switch.living_room"]}]}]}}"#;
+        tx.send(Frame::text(config_response)).await.unwrap();
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Verify message was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+
+        // Verify config was saved under the dashboard key
+        let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+        assert!(state.lovelace_entities.contains("light.kitchen"));
+        assert!(state.lovelace_entities.contains("switch.living_room"));
+        let config = state.dashboard_configs.get("my-dashboard").unwrap();
+        assert!(config.lovelace_entities.contains("light.kitchen"));
+        assert!(config.lovelace_entities.contains("switch.living_room"));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_entities_does_not_clear_entities() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+        let conn_id = "test-no-clear";
+        let client_ip = "127.0.0.1";
+
+        // Pre-populate entities (as if from a cached config)
+        {
+            let mut state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+            state.lovelace_entities.insert("light.kitchen".to_string());
+        }
+
+        // Send subscribe_entities message
+        let subscribe_msg = r#"{"type":"subscribe_entities","id":42}"#;
+        tx.send(Frame::text(subscribe_msg)).await.unwrap();
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, conn_id, &client_states, client_ip).await;
+
+        // Verify message was forwarded
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+
+        // Verify entities were NOT cleared
+        let state = client_states.get_or_insert(conn_id.to_string(), client_ip.to_string());
+        assert!(state.lovelace_entities.contains("light.kitchen"));
+        assert_eq!(state.subscribe_entities_id, Some(42));
     }
 }

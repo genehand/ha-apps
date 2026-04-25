@@ -12,7 +12,7 @@ pub fn init() {
     let time_format =
         time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
     let fmt_layer = fmt::layer()
-        .with_target(false)
+        .with_target(true)
         .with_level(true)
         .with_ansi(true)
         .with_span_events(FmtSpan::CLOSE)

@@ -184,11 +184,15 @@ Dasher filters WebSocket events based on which dashboard entities are visible to
    - Looks up the active WebSocket connection by `tab_id`
    - Sets `filtering_active = true` for dashboard paths (`/lovelace*`, `/home`, `/dashboard*`)
    - Sets `filtering_active = false` for all other paths
+   - **Restores the cached entity set** for the dashboard from `dashboard_configs` so navigation back to a previously viewed dashboard resumes correct filtering immediately
    - Caches panel updates for 30 seconds if the websocket hasn't connected yet (handles the race where the POST arrives before the websocket upgrade)
 
 4. **WebSocket Filtering Gate** (`src/websocket/filtered.rs`):
    - Reads `?dasher_tab` from the WebSocket upgrade URL and stores it in `ClientState`
    - Checks the panel update cache on connection (handles early POSTs)
+   - Tracks `lovelace/config` requests that have a non-null string `url_path` by mapping `request_id → url_path` in `pending_configs`
+   - On `lovelace/config` response, parses entities/rules and saves them into `dashboard_configs` keyed by dashboard URL path
+   - On `subscribe_entities`, tracks the subscription ID
    - Only filters when `filtering_active == true`
    - All other messages pass through regardless of filtering state
 
@@ -200,7 +204,7 @@ Dasher filters WebSocket events based on which dashboard entities are visible to
 | `src/http/panel_tracker.rs` | Receives `POST /dasher/panel`, toggles filtering per tab |
 | `src/http/proxy.rs` | Routes HTML responses through injection, proxies everything else |
 | `src/websocket/filtered.rs` | Reads `tab_id` from query params, gates filtering on `filtering_active` |
-| `src/state.rs` | Stores `tab_id`, `filtering_active`, and cached panel updates |
+| `src/state.rs` | Stores `tab_id`, `filtering_active`, per-dashboard `dashboard_configs`, in-flight `pending_configs`, and cached panel updates |
 
 ### Targeted Logging
 

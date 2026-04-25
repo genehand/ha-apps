@@ -1,7 +1,7 @@
+use crate::state::AppState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 use tracing::debug;
-use crate::state::AppState;
 #[derive(Debug, Deserialize)]
 pub struct PanelRequest {
     tab_id: String,
@@ -14,7 +14,7 @@ pub async fn panel_handler(
     let filtering = should_filter(&req.url_path);
     let updated = state
         .client_states
-        .set_filtering_by_tab_id(&req.tab_id, filtering);
+        .set_panel_by_tab_id(&req.tab_id, filtering, &req.url_path);
     if !updated {
         state.panel_updates.insert(
             req.tab_id.clone(),
@@ -36,9 +36,7 @@ pub async fn panel_handler(
     StatusCode::OK
 }
 fn should_filter(url_path: &str) -> bool {
-    url_path.starts_with("/lovelace")
-        || url_path == "/home"
-        || url_path.starts_with("/dashboard")
+    url_path.starts_with("/lovelace") || url_path == "/home" || url_path.starts_with("/dashboard")
 }
 #[cfg(test)]
 mod tests {
@@ -47,6 +45,7 @@ mod tests {
     fn test_should_filter_dashboard_paths() {
         assert!(should_filter("/lovelace"));
         assert!(should_filter("/lovelace/main"));
+        assert!(should_filter("/lovelace/0"));
         assert!(should_filter("/home"));
         assert!(should_filter("/dashboard"));
         assert!(should_filter("/dashboard/my-dash"));
