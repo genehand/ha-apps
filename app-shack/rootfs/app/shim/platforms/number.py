@@ -40,6 +40,11 @@ class NumberEntityDescription(
     native_max_value: Optional[float] = None
     native_step: Optional[float] = None
     mode: Optional[NumberMode] = None
+    native_unit_of_measurement: Optional[str] = None
+    # Legacy field names for compatibility with older integrations
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    step: Optional[float] = None
 
 
 class NumberEntity(Entity):

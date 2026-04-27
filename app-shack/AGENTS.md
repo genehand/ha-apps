@@ -19,7 +19,9 @@ shim/
 │   ├── util.py          # dt, yaml, color, unit_conversion, percentage
 │   ├── helpers.py       # device_registry, config_validation, storage, etc.
 │   ├── components.py    # alarm_control_panel, cover, mqtt, image, etc.
-│   └── network.py       # Network utilities
+│   ├── network.py       # Network utilities
+│   ├── oauth2.py        # OAuth2 flow with PKCE, token refresh, JWT
+│   └── application_credentials.py  # HA Application Credentials component
 ├── entity.py            # Entity base classes and EntityDescription
 ├── core.py              # Re-exports from split modules (for integration compatibility)
 ├── models.py            # Data classes: ConfigEntry, State, Event, ServiceCall, callback
@@ -34,6 +36,8 @@ shim/
 ├── ha_fetched/          # Upstream HA code (const.py, exceptions.py)
 └── hacs_fetched/        # Upstream HACS utilities
 ```
+
+> OAuth2 and Application Credentials details → [`docs/oauth.md`](docs/oauth.md)
 
 ### Import patterns
 
@@ -323,27 +327,14 @@ class FrozenEntityDescription(EntityDescription):
 
 **Note:** The `FrozenOrThawed` metaclass works around Python dataclass inheritance rules by creating frozen dataclasses internally while allowing subclasses to choose their frozen status via `@dataclass` decorator.
 
-## Common Tasks
+## Entity Registry and Config Entry Tracking
 
-**Add a New Dependency**: Edit `pyproject.toml`, add to `dependencies` or `dev`, run `uv sync` to update the lock file.
+The `EntityRegistry` now tracks entities by config entry ID:
 
-**Update App Version** (`config.yaml` is source of truth):
-
-```bash
-# 1. Edit config.yaml and update version: X.Y.Z
-
-# 2. Sync to pyproject.toml (for uv)
-cd app-shack/rootfs/app && ./sync-versions.py
-```
-
-**Version locations:**
-
-- `config.yaml` → HA app version (source of truth)
-- `pyproject.toml` → For uv dependency management
-
-Keep them in sync for consistency.
-
-**Local Testing**: Run `cd app-shack/rootfs/app && uv run python3 main.py` (uv will auto-sync dependencies).
+- Each entity registered during `async_setup_entry` gets `_attr_config_entry_id` set to the current entry's ID
+- `EntityRegistry` maintains `_entries_by_config_entry: Dict[str, List[RegistryEntry]]` for lookups
+- `RegistryEntry` entity registry entries (compatible with HA's entity registry format) track `entity_id`, `unique_id`, `config_entry_id`, and `disabled` status
+- Cleanup on unregister: when an entity is unregistered, it's removed from both the flat `_entities` dict and the config-entry-bucketed `_entries_by_config_entry` dict
 
 ## Web UI and HA Ingress
 

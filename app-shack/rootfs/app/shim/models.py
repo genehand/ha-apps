@@ -98,6 +98,7 @@ class ConfigEntry(Generic[T]):
     data: dict = field(default_factory=dict)
     options: dict = field(default_factory=dict)
     pref_disable_new_entities: bool = False
+    pref_disable_polling: bool = False
     source: str = "user"
     runtime_data: Any = None
     state: str = field(default="not_loaded", repr=False)

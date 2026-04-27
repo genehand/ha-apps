@@ -88,6 +88,19 @@ class ShimManager:
         _LOGGER.debug("Starting Shim Manager (phase 1 - fast setup)")
         self._running = True
 
+        # Setup application credentials storage
+        from .stubs.application_credentials import (
+            setup_application_credentials,
+            _async_provide_implementation,
+        )
+        from .stubs.oauth2 import async_add_implementation_provider
+
+        setup_application_credentials(self._hass, self._hass.shim_dir)
+        async_add_implementation_provider(
+            self._hass, "application_credentials", _async_provide_implementation
+        )
+        _LOGGER.debug("Application credentials storage initialized")
+
         # Setup MQTT subscriptions
         self._setup_mqtt_subscriptions()
 
@@ -955,9 +968,40 @@ class ShimManager:
 
         entry_id = f"{domain}_{int(time.time() * 1000)}"
 
+        # Look up the integration's ConfigFlow version for correct migration
+        entry_version = 1
+        try:
+            import importlib
+            from shim.config_entries import ConfigFlow
+
+            config_flow_module = importlib.import_module(
+                f"custom_components.{domain}.config_flow"
+            )
+            for attr_name in ("VERSION", "ENTRIES_VERSION"):
+                if hasattr(config_flow_module, attr_name):
+                    entry_version = getattr(config_flow_module, attr_name)
+                    break
+            else:
+                # Find the ConfigFlow subclass (class name may vary, e.g.
+                # SmartcarOAuth2FlowHandler rather than ConfigFlow)
+                _SKIP_NAMES = {"AbstractOAuth2FlowHandler", "OAuth2FlowHandler"}
+                for attr_name in dir(config_flow_module):
+                    attr = getattr(config_flow_module, attr_name)
+                    if (
+                        isinstance(attr, type)
+                        and issubclass(attr, ConfigFlow)
+                        and attr is not ConfigFlow
+                        and attr.__name__ not in _SKIP_NAMES
+                        and hasattr(attr, "VERSION")
+                    ):
+                        entry_version = getattr(attr, "VERSION")
+                        break
+        except (ImportError, AttributeError):
+            pass
+
         entry = ConfigEntry(
             entry_id=entry_id,
-            version=1,
+            version=entry_version,
             domain=domain,
             title=data.get("name", info.name),
             data=data,

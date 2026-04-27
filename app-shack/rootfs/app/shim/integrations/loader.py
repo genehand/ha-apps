@@ -702,12 +702,14 @@ class IntegrationLoader:
             from ..config_entries import ConfigFlow
 
             config_flow_class = None
+            _SKIP_CONFIG_FLOW_NAMES = {"AbstractOAuth2FlowHandler", "OAuth2FlowHandler"}
             for attr_name in dir(config_flow_module):
                 attr = getattr(config_flow_module, attr_name)
                 if (
                     isinstance(attr, type)
                     and issubclass(attr, ConfigFlow)
                     and attr is not ConfigFlow
+                    and attr.__name__ not in _SKIP_CONFIG_FLOW_NAMES
                 ):
                     config_flow_class = attr
                     break
@@ -992,12 +994,15 @@ class IntegrationLoader:
             config_flow_class = None
 
             # Look for ConfigFlow subclass in the config_flow module
+            # Skip abstract/base OAuth2 classes that integrations import
+            _SKIP_CONFIG_FLOW_NAMES = {"AbstractOAuth2FlowHandler", "OAuth2FlowHandler"}
             for attr_name in dir(config_flow_module):
                 attr = getattr(config_flow_module, attr_name)
                 if (
                     isinstance(attr, type)
                     and issubclass(attr, ConfigFlow)
                     and attr is not ConfigFlow
+                    and attr.__name__ not in _SKIP_CONFIG_FLOW_NAMES
                 ):
                     config_flow_class = attr
                     break
@@ -1010,6 +1015,7 @@ class IntegrationLoader:
             flow = config_flow_class()
             flow.hass = self._hass
             flow.handler = domain
+            flow.context["source"] = "user"
 
             # Generate flow ID
             flow_id = self._hass.config_entries.async_create_flow(domain)
@@ -1083,7 +1089,7 @@ class IntegrationLoader:
             result["flow_id"] = flow_id
 
             # Update cur_step_id based on result type
-            # If the step returns a form, update cur_step_id to match the returned step_id
+            # If the step returns a form, external, or external_done, update cur_step_id
             if result.get("type") == "form":
                 returned_step_id = result.get("step_id")
                 if returned_step_id and returned_step_id != step_id:
@@ -1091,11 +1097,27 @@ class IntegrationLoader:
                         f"Config flow step changed from {step_id} to {returned_step_id}"
                     )
                     flow.cur_step_id = returned_step_id
+            elif result.get("type") == "external":
+                returned_step_id = result.get("step_id")
+                if returned_step_id and returned_step_id != step_id:
+                    _LOGGER.debug(
+                        f"Config flow external step: {step_id} -> {returned_step_id}"
+                    )
+                    flow.cur_step_id = returned_step_id
+            elif result.get("type") == "external_done":
+                next_step_id = result.get("next_step_id")
+                if next_step_id and next_step_id != step_id:
+                    _LOGGER.debug(
+                        f"Config flow external done, next step: {next_step_id}"
+                    )
+                    flow.cur_step_id = next_step_id
 
             return result
 
         except Exception as e:
             _LOGGER.error(f"Failed to continue config flow for {domain}: {e}")
+            import traceback
+            _LOGGER.debug(f"Config flow traceback:\n{traceback.format_exc()}")
             return None
         finally:
             set_current_integration(None)

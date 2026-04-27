@@ -288,6 +288,24 @@ class LocalOAuth2Implementation(AbstractOAuth2Implementation):
         return {"access_token": "stub_token", "token_type": "bearer"}
 
 
+class ExtraStoredData:
+    """Base class for extra stored data."""
+
+    def as_dict(self) -> dict:
+        """Return a dict representation of the data."""
+        raise NotImplementedError
+
+
+class RestoredExtraData(ExtraStoredData):
+    """Wraps extra stored data restored from storage."""
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def as_dict(self) -> dict:
+        return self._data
+
+
 class RestoreEntity:
     """Stub for RestoreEntity that supports async_get_last_state.
 
@@ -329,6 +347,33 @@ class RestoreEntity:
             attributes=saved.get("attributes", {}),
         )
 
+    async def async_get_last_extra_data(self) -> ExtraStoredData | None:
+        """Return last extra data from storage."""
+        entity_id = getattr(self, 'entity_id', None)
+        hass = getattr(self, 'hass', None)
+
+        if not hass or not entity_id:
+            return None
+
+        from ..storage import Storage
+
+        shim_dir = getattr(hass, 'shim_dir', None)
+        if not shim_dir:
+            return None
+
+        storage = Storage(shim_dir)
+        saved = storage.load_entity_state(entity_id)
+
+        if saved is None or "extra_data" not in saved:
+            return None
+
+        return RestoredExtraData(saved["extra_data"])
+
+    @property
+    def extra_restore_state_data(self) -> ExtraStoredData | None:
+        """Return extra state data for restore."""
+        return None
+
     def _save_state_for_restore(self) -> None:
         """Save the current entity state to storage for later restoration.
 
@@ -350,8 +395,13 @@ class RestoreEntity:
 
         storage = Storage(shim_dir)
         state_value = getattr(self, 'state', None)
+        extra_data = None
+        if hasattr(self, 'extra_restore_state_data'):
+            extra = self.extra_restore_state_data
+            if extra is not None:
+                extra_data = extra.as_dict()
         if state_value is not None:
-            storage.save_entity_state(entity_id, str(state_value))
+            storage.save_entity_state(entity_id, str(state_value), extra_data)
 
 
 # Store for signal callbacks: {signal: [callbacks]}
@@ -609,8 +659,10 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
         return registry
 
     entity_registry.async_get = async_get
-    entity_registry.RegistryEntry = type("RegistryEntry", (), {"entity_id": None})
-    entity_registry.async_entries_for_config_entry = lambda hass, config_entry_id: []
+    from ..entity import RegistryEntry
+
+    entity_registry.RegistryEntry = RegistryEntry
+    entity_registry.async_entries_for_config_entry = lambda hass, config_entry_id: EntityRegistry().async_entries_for_config_entry(config_entry_id)
     homeassistant.helpers.entity_registry = entity_registry
     sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
 
@@ -620,74 +672,36 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     homeassistant.helpers.entity_component = entity_component
     sys.modules["homeassistant.helpers.entity_component"] = entity_component
 
-    # config_entry_oauth2_flow
+    # config_entry_oauth2_flow - real OAuth2 implementation
+    from .oauth2 import (
+        OAuth2Session,
+        AbstractOAuth2Implementation,
+        LocalOAuth2Implementation,
+        LocalOAuth2ImplementationWithPkce,
+        AbstractOAuth2FlowHandler,
+        async_register_implementation,
+        async_get_implementations,
+        async_get_config_entry_implementation,
+        async_oauth2_request,
+        async_add_implementation_provider,
+        AUTH_CALLBACK_PATH,
+        MY_AUTH_CALLBACK_PATH,
+    )
+
     oauth2_flow = types.ModuleType("homeassistant.helpers.config_entry_oauth2_flow")
     oauth2_flow.OAuth2Session = OAuth2Session
     oauth2_flow.AbstractOAuth2Implementation = AbstractOAuth2Implementation
     oauth2_flow.LocalOAuth2Implementation = LocalOAuth2Implementation
-
-    # OAuth2FlowHandler base class
-    from ..config_entries import ConfigFlow
-
-    class OAuth2FlowHandler(ConfigFlow):
-        """OAuth2 Flow Handler base class with manual token entry support."""
-
-        DOMAIN = ""
-        VERSION = 1
-
-        def __init__(self):
-            super().__init__()
-            self._oauth2_session = None
-            self._oauth2_implementation = None
-
-        async def async_step_user(self, user_input=None):
-            """Handle user step - show manual token entry form."""
-            if user_input is not None:
-                return await self.async_oauth_create_entry(user_input)
-
-            from homeassistant.helpers.selector import (
-                TextSelector,
-                TextSelectorConfig,
-                TextSelectorType,
-            )
-            import voluptuous as vol
-
-            data_schema = vol.Schema(
-                {
-                    vol.Required("access_token"): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                    ),
-                    vol.Optional("refresh_token"): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                    ),
-                    vol.Optional("expires_at"): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.NUMBER)
-                    ),
-                }
-            )
-
-            return self.async_show_form(
-                step_id="user",
-                data_schema=data_schema,
-                description_placeholders={
-                    "info": "OAuth2 authentication is not supported in this environment. You can manually enter access token for testing purposes."
-                },
-            )
-
-        async def async_step_auth(self, user_input=None):
-            return await self.async_step_user(user_input)
-
-        async def async_oauth_create_entry(self, data):
-            return self.async_create_entry(title="OAuth2 Manual Entry", data=data)
-
-        async def async_step_pick_implementation(self, user_input=None):
-            return await self.async_step_user(user_input)
-
-    oauth2_flow.OAuth2FlowHandler = OAuth2FlowHandler
-    oauth2_flow.AbstractOAuth2FlowHandler = OAuth2FlowHandler
-    oauth2_flow.async_get_implementations = lambda hass, domain: []
-    oauth2_flow.async_register_implementation = lambda hass, domain, implementation: None
-    oauth2_flow.async_get_config_entry_implementation = lambda hass, config_entry: None
+    oauth2_flow.LocalOAuth2ImplementationWithPkce = LocalOAuth2ImplementationWithPkce
+    oauth2_flow.AbstractOAuth2FlowHandler = AbstractOAuth2FlowHandler
+    oauth2_flow.OAuth2FlowHandler = AbstractOAuth2FlowHandler
+    oauth2_flow.async_register_implementation = async_register_implementation
+    oauth2_flow.async_get_implementations = async_get_implementations
+    oauth2_flow.async_get_config_entry_implementation = async_get_config_entry_implementation
+    oauth2_flow.async_oauth2_request = async_oauth2_request
+    oauth2_flow.async_add_implementation_provider = async_add_implementation_provider
+    oauth2_flow.AUTH_CALLBACK_PATH = AUTH_CALLBACK_PATH
+    oauth2_flow.MY_AUTH_CALLBACK_PATH = MY_AUTH_CALLBACK_PATH
 
     homeassistant.helpers.config_entry_oauth2_flow = oauth2_flow
     sys.modules["homeassistant.helpers.config_entry_oauth2_flow"] = oauth2_flow
@@ -752,8 +766,8 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     # restore_state
     restore_state = types.ModuleType("homeassistant.helpers.restore_state")
     restore_state.RestoreEntity = RestoreEntity
-    restore_state.ExtraStoredData = type("ExtraStoredData", (), {})
-    restore_state.RestoredExtraData = type("RestoredExtraData", (), {})
+    restore_state.ExtraStoredData = ExtraStoredData
+    restore_state.RestoredExtraData = RestoredExtraData
     restore_state.async_get = lambda hass: None
     homeassistant.helpers.restore_state = restore_state
     sys.modules["homeassistant.helpers.restore_state"] = restore_state

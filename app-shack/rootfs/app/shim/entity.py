@@ -276,6 +276,16 @@ class EntityCategory(StrEnum):
     DIAGNOSTIC = "diagnostic"
 
 
+class RegistryEntry:
+    """Entity registry entry compatible with HA's entity registry."""
+
+    def __init__(self, entity_id: str, unique_id: str, config_entry_id: str, disabled: bool = False):
+        self.entity_id = entity_id
+        self.unique_id = unique_id
+        self.config_entry_id = config_entry_id
+        self.disabled = disabled
+
+
 class EntityRegistry:
     """Registry for tracking entities."""
 
@@ -285,6 +295,7 @@ class EntityRegistry:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._entities: Dict[str, "Entity"] = {}
+            cls._instance._entries_by_config_entry: Dict[str, List[RegistryEntry]] = {}
             cls._instance._hass = None
         return cls._instance
 
@@ -295,11 +306,30 @@ class EntityRegistry:
     def register(self, entity: "Entity") -> None:
         """Register an entity."""
         self._entities[entity.entity_id] = entity
+        # Track by config entry ID if available
+        config_entry_id = getattr(entity, "_attr_config_entry_id", None)
+        if config_entry_id:
+            entry = RegistryEntry(
+                entity_id=entity.entity_id,
+                unique_id=getattr(entity, "unique_id", entity.entity_id),
+                config_entry_id=config_entry_id,
+                disabled=not getattr(entity, "entity_registry_enabled_default", True),
+            )
+            if config_entry_id not in self._entries_by_config_entry:
+                self._entries_by_config_entry[config_entry_id] = []
+            self._entries_by_config_entry[config_entry_id].append(entry)
         _LOGGER.debug(f"Registered entity {entity.entity_id}")
 
     def unregister(self, entity_id: str) -> None:
         """Unregister an entity."""
         if entity_id in self._entities:
+            entity = self._entities[entity_id]
+            config_entry_id = getattr(entity, "_attr_config_entry_id", None)
+            if config_entry_id and config_entry_id in self._entries_by_config_entry:
+                self._entries_by_config_entry[config_entry_id] = [
+                    e for e in self._entries_by_config_entry[config_entry_id]
+                    if e.entity_id != entity_id
+                ]
             del self._entities[entity_id]
             _LOGGER.debug(f"Unregistered entity {entity_id}")
 
@@ -310,6 +340,10 @@ class EntityRegistry:
     def get_all(self) -> List["Entity"]:
         """Get all registered entities."""
         return list(self._entities.values())
+
+    def async_entries_for_config_entry(self, config_entry_id: str) -> List[RegistryEntry]:
+        """Return registry entries for a config entry."""
+        return list(self._entries_by_config_entry.get(config_entry_id, []))
 
     def async_update_entity(
         self, entity_id: str, *, name: str = None, icon: str = None, **kwargs

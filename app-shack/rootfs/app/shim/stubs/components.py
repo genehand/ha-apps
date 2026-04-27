@@ -238,6 +238,27 @@ def create_components_stubs(hass, homeassistant, platforms):
     diagnostics.async_get_config_entry_diagnostics = lambda hass, config_entry: {}
     diagnostics.async_get_device_diagnostics = lambda hass, config_entry, device: {}
     diagnostics.REDACTED = "**REDACTED**"
+
+    def async_redact_data(data, to_redact):
+        """Redact sensitive data from a dict recursively."""
+        if not isinstance(data, dict):
+            return data
+        redacted = {}
+        for key, value in data.items():
+            if key in to_redact:
+                redacted[key] = diagnostics.REDACTED
+            elif isinstance(value, dict):
+                redacted[key] = async_redact_data(value, to_redact)
+            elif isinstance(value, list):
+                redacted[key] = [
+                    async_redact_data(item, to_redact) if isinstance(item, dict) else item
+                    for item in value
+                ]
+            else:
+                redacted[key] = value
+        return redacted
+
+    diagnostics.async_redact_data = async_redact_data
     homeassistant.components.diagnostics = diagnostics
     sys.modules["homeassistant.components.diagnostics"] = diagnostics
 
@@ -362,32 +383,8 @@ def create_additional_stubs(hass, homeassistant):
     homeassistant.components.image = image_stub
     sys.modules["homeassistant.components.image"] = image_stub
 
-    # number - extend the existing platforms.number module
-    from ..frozen_dataclass_compat import FrozenOrThawed
-    from typing import Optional
-
+    # number - extend the existing platforms.number module with module-level attrs
     number_stub = homeassistant.components.number
-
-    # Create an extended NumberEntityDescription with legacy field names
-    class NumberEntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
-        """Number entity description with legacy field support."""
-        key: str
-        name: Optional[str] = None
-        translation_key: Optional[str] = None
-        icon: Optional[str] = None
-        device_class: Optional[str] = None
-        entity_category: Optional[str] = None
-        entity_registry_enabled_default: bool = True
-        native_unit_of_measurement: Optional[str] = None
-        native_max_value: Optional[float] = None
-        native_min_value: Optional[float] = None
-        native_step: Optional[float] = None
-        # Legacy field names for compatibility
-        min_value: Optional[float] = None
-        max_value: Optional[float] = None
-        step: Optional[float] = None
-
-    number_stub.NumberEntityDescription = NumberEntityDescription
 
     # Add NumberDeviceClass enum-like class with all device class constants
     number_stub.NumberDeviceClass = type("NumberDeviceClass", (), {})
@@ -459,6 +456,22 @@ def create_additional_stubs(hass, homeassistant):
         number_stub.ATTR_MODE = "mode"
     if not hasattr(number_stub, 'DOMAIN'):
         number_stub.DOMAIN = "number"
+
+    # application_credentials
+    from .application_credentials import (
+        AuthorizationServer,
+        ClientCredential,
+        async_import_client_credential,
+        DOMAIN as APP_CREDS_DOMAIN,
+    )
+
+    app_creds_stub = types.ModuleType("homeassistant.components.application_credentials")
+    app_creds_stub.DOMAIN = APP_CREDS_DOMAIN
+    app_creds_stub.AuthorizationServer = AuthorizationServer
+    app_creds_stub.ClientCredential = ClientCredential
+    app_creds_stub.async_import_client_credential = async_import_client_credential
+    homeassistant.components.application_credentials = app_creds_stub
+    sys.modules["homeassistant.components.application_credentials"] = app_creds_stub
 
     # scene
     scene_stub = types.ModuleType("homeassistant.components.scene")

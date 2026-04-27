@@ -66,7 +66,6 @@ class IntegrationInfo:
         requirements: Optional[List[str]] = None,
         dependencies: Optional[List[str]] = None,
         full_name: Optional[str] = None,
-        version_mismatch: bool = False,
         _release_notes_cache: Optional[List[Dict[str, Any]]] = None,
     ):
         self.domain = domain
@@ -84,9 +83,6 @@ class IntegrationInfo:
         self.requirements = requirements or []
         self.dependencies = dependencies or []
         self.full_name = full_name  # HACS full_name (owner/repo) for HACS default repos
-        self.version_mismatch = (
-            version_mismatch  # True if installed version != requested
-        )
         # Volatile cache for fetched release notes (not persisted to storage)
         self._release_notes_cache: Optional[List[Dict[str, Any]]] = _release_notes_cache
 
@@ -108,7 +104,6 @@ class IntegrationInfo:
             "requirements": self.requirements,
             "dependencies": self.dependencies,
             "full_name": self.full_name,
-            "version_mismatch": self.version_mismatch,
         }
 
 
@@ -198,6 +193,8 @@ class IntegrationManager:
         """Load installed integrations from storage."""
         data = self._storage.load_integrations()
         for domain, info_data in data.items():
+            # Migrate: remove old version_mismatch field (no longer tracked)
+            info_data.pop("version_mismatch", None)
             self._integrations[domain] = IntegrationInfo(**info_data)
 
     def _save_integrations(self) -> None:
@@ -829,6 +826,7 @@ class IntegrationManager:
             if not info.enabled:
                 continue
 
+            # Clear update notifications for integrations with version mismatch
             try:
                 # Use CDN data for version checking - match by repository_url
                 if info.repository_url in hacs_repos_by_url:
@@ -1301,21 +1299,9 @@ class IntegrationManager:
             existing_info = self._integrations.get(actual_domain)
             was_enabled = existing_info.enabled if existing_info else False
 
-            # Get installed version from manifest
-            installed_version = manifest.get("version", "unknown")
-
-            # Check if installed version matches requested version
-            # Normalize versions by stripping 'v' prefix for comparison
-            version_mismatch = False
-            if version:
-                norm_version = version.lstrip("v")
-                norm_installed = str(installed_version).lstrip("v")
-                if norm_installed != norm_version:
-                    version_mismatch = True
-                    _LOGGER.warning(
-                        f"Version mismatch for {actual_domain}: requested {version}, "
-                        f"got {installed_version}"
-                    )
+            # Use git tag as canonical version, fall back to manifest.json
+            # when no tag was specified (e.g. branch-based installs)
+            installed_version = version or manifest.get("version", "unknown")
 
             # Update integration info using actual domain
             info = IntegrationInfo(
@@ -1332,7 +1318,6 @@ class IntegrationManager:
                 requirements=manifest.get("requirements", []),
                 dependencies=manifest.get("dependencies", []),
                 full_name=full_name if source == "hacs_default" else None,
-                version_mismatch=version_mismatch,
             )
 
             self._integrations[actual_domain] = info

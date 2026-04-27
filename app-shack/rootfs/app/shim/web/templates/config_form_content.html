@@ -96,6 +96,8 @@
             {% if field.required %}required{% endif %}
         >{{ field.default or '' }}</textarea>
         {% elif field.type == 'checkbox' %}
+        {# Hidden input ensures unchecked boxes submit 'false' #}
+        <input type="hidden" name="{{ field.name }}" value="false">
         <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
             <input
                 type="checkbox"
@@ -126,14 +128,7 @@
         {% endif %}
         {% endfor %}
     {% else %}
-        <label for="name">
-            Name
-            <span class="pico-color-red-500">*</span>
-        </label>
-        <input type="text" id="name" name="name" required>
-        {% if errors.get('name') %}
-        <small class="pico-color-red-500">{{ errors['name'] }}</small>
-        {% endif %}
+        <p class="pico-color-muted">No configuration fields required for this step.</p>
     {% endif %}
 
     <div class="grid" style="margin-top: var(--pico-spacing); align-items: stretch;">

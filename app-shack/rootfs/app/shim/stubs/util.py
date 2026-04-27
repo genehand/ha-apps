@@ -28,10 +28,27 @@ def create_util_stubs(hass, homeassistant):
     dt_util = types.ModuleType("homeassistant.util.dt")
     dt_util.DEFAULT_TIME_ZONE = timezone.utc
     dt_util.now = lambda: datetime.now(dt_util.DEFAULT_TIME_ZONE)
+    dt_util.utcnow = lambda: datetime.now(timezone.utc)
     dt_util.as_utc = lambda d: d.astimezone(timezone.utc)
+    dt_util.utc_from_timestamp = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc)
     dt_util.start_of_local_day = lambda: datetime.now(
         dt_util.DEFAULT_TIME_ZONE
     ).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def parse_datetime(datetime_str):
+        """Parse a datetime string into a datetime object."""
+        from datetime import datetime as _datetime
+        if not datetime_str:
+            return None
+        # ISO format with Z suffix
+        if isinstance(datetime_str, str):
+            datetime_str = datetime_str.replace("Z", "+00:00")
+        try:
+            return _datetime.fromisoformat(datetime_str)
+        except (ValueError, TypeError):
+            return None
+
+    dt_util.parse_datetime = parse_datetime
     homeassistant.util.dt = dt_util
     sys.modules["homeassistant.util.dt"] = dt_util
 
@@ -111,7 +128,49 @@ def create_util_stubs(hass, homeassistant):
                     return (value - 273.15) * 9 / 5 + 32
             return value
 
+    class DistanceConverter:
+        """Distance/speed converter."""
+
+        _CONVERSION = {
+            ("mi", "km"): 1.60934,
+            ("km", "mi"): 1 / 1.60934,
+            ("mph", "km/h"): 1.60934,
+            ("km/h", "mph"): 1 / 1.60934,
+            ("gal", "L"): 3.78541,
+            ("L", "gal"): 1 / 3.78541,
+        }
+
+        @staticmethod
+        def convert(value, from_unit, to_unit):
+            """Convert distance/speed between units."""
+            if from_unit == to_unit:
+                return value
+            factor = DistanceConverter._CONVERSION.get((from_unit, to_unit))
+            if factor is not None:
+                return value * factor
+            # Fallback: try direct reciprocal
+            factor = DistanceConverter._CONVERSION.get((to_unit, from_unit))
+            if factor is not None:
+                return value / factor
+            return value
+
+    class PressureConverter:
+        """Pressure converter."""
+
+        @staticmethod
+        def convert(value, from_unit, to_unit):
+            """Convert pressure between units."""
+            if from_unit == to_unit:
+                return value
+            if (from_unit, to_unit) == ("psi", "kPa"):
+                return value * 6.89476
+            if (from_unit, to_unit) == ("kPa", "psi"):
+                return value / 6.89476
+            return value
+
     unit_conversion.TemperatureConverter = TemperatureConverter
+    unit_conversion.DistanceConverter = DistanceConverter
+    unit_conversion.PressureConverter = PressureConverter
     homeassistant.util.unit_conversion = unit_conversion
     sys.modules["homeassistant.util.unit_conversion"] = unit_conversion
 

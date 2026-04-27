@@ -46,24 +46,6 @@
     .release-notes-content h3 { font-size: 1rem; }
     .release-notes-content img { max-width: 100%; }
 </style>
-{% if version_warning %}
-<article class="version-warning-banner" style="border-color: var(--pico-color-amber-500); background: var(--pico-color-amber-50); color: var(--pico-color-amber-900);">
-    <div style="display: flex; align-items: center; gap: 0.75rem;">
-        <span style="font-size: 1.5rem;">⚠️</span>
-        <div>
-            <strong style="color: inherit;">Version Mismatch</strong>
-            <div style="font-size: 0.9rem; margin-top: 0.25rem; color: inherit;">{{ version_warning }}</div>
-        </div>
-    </div>
-</article>
-<style>
-    [data-theme="dark"] .version-warning-banner {
-        background: var(--pico-color-amber-900) !important;
-        color: var(--pico-color-amber-100) !important;
-    }
-</style>
-{% endif %}
-
 <article>
     <h2>Integration Details</h2>
     <div class="info-row">

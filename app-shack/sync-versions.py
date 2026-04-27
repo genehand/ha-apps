@@ -10,7 +10,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 CONFIG_FILE = SCRIPT_DIR / "config.yaml"
 PYPROJECT_FILE = SCRIPT_DIR / "rootfs" / "app" / "pyproject.toml"
 REPO_STATUS_FILE = SCRIPT_DIR / "rootfs" / "app" / "metadata" / "repository_status.json"
-INTEGRATIONS_DIR = SCRIPT_DIR / "rootfs" / "app" / "data" / "shim" / "custom_components"
+INTEGRATIONS_JSON = SCRIPT_DIR / "rootfs" / "app" / "data" / "shim" / "integrations.json"
 
 
 def get_version_from_config() -> str:
@@ -32,68 +32,43 @@ def sync_version_to_pyproject(version: str) -> None:
     print(f"Synced version {version} to pyproject.toml")
 
 
-def extract_github_repo(manifest: dict) -> str | None:
-    """Extract GitHub repo path from manifest documentation or issue_tracker."""
-    for key in ["documentation", "issue_tracker"]:
-        url = manifest.get(key, "")
-        if url and "github.com" in url:
-            # Extract user/repo from URLs like https://github.com/user/repo/...
-            match = re.search(r"github\.com/([^/]+/[^/]+)", url)
-            if match:
-                return match.group(1)
-    return None
+def update_integration_versions(repo_status: dict) -> dict:
+    """Update repo_status versions from integrations.json metadata.
 
+    Uses the git tag version tracked by IntegrationManager (more reliable
+    than manifest.json). The app's own logic handles falling back to
+    manifest.json versions for repos not tracked here.
+    """
+    if not INTEGRATIONS_JSON.exists():
+        print("No integrations.json found, skipping metadata sync")
+        return repo_status
 
-def update_integration_versions() -> None:
-    """Check locally installed integrations and update repository_status.json."""
-    if not INTEGRATIONS_DIR.exists():
-        print("No integrations directory found")
-        return
+    print("Checking integration metadata...")
 
-    print("Checking locally installed integrations...")
-
-    # Load repository_status.json
-    with open(REPO_STATUS_FILE) as f:
-        repo_status = json.load(f)
-
-    # Build lookup for verified repos
     verified = repo_status.get("verified", {})
     repo_lookup = {key.lower(): key for key in verified}
 
-    updated = False
+    with open(INTEGRATIONS_JSON) as f:
+        integrations = json.load(f)
 
-    # Scan installed integrations
-    for manifest_path in INTEGRATIONS_DIR.glob("*/manifest.json"):
-        try:
-            with open(manifest_path) as f:
-                manifest = json.load(f)
+    for domain, info in integrations.items():
+        full_name = info.get("full_name")
+        tag_version = info.get("version")
+        if not full_name or not tag_version:
+            continue
 
-            local_version = manifest.get("version")
-            github_repo = extract_github_repo(manifest)
+        repo_key = repo_lookup.get(full_name.lower())
+        if not repo_key:
+            continue
 
-            if not local_version or not github_repo:
-                continue
+        current_version = verified[repo_key].get("version")
+        if current_version != tag_version:
+            print(
+                f"  Updating {repo_key}: {current_version} \u2192 {tag_version}"
+            )
+            verified[repo_key]["version"] = tag_version
 
-            # Lookup using normalized repo path
-            repo_key = repo_lookup.get(github_repo.lower())
-            if not repo_key:
-                continue
-
-            current_version = verified[repo_key].get("version")
-
-            if current_version != local_version:
-                print(f"  Updating {repo_key}: {current_version} -> {local_version}")
-                verified[repo_key]["version"] = local_version
-                updated = True
-
-        except Exception as e:
-            print(f"  Error reading {manifest_path}: {e}")
-
-    # Save updated repository_status.json
-    if updated:
-        with open(REPO_STATUS_FILE, "w") as f:
-            json.dump(repo_status, f, indent=2)
-            f.write("\n")
+    return repo_status
 
 
 def run_uv_sync() -> None:
@@ -105,7 +80,16 @@ def run_uv_sync() -> None:
 def main():
     version = get_version_from_config()
     sync_version_to_pyproject(version)
-    update_integration_versions()
+
+    with open(REPO_STATUS_FILE) as f:
+        repo_status = json.load(f)
+
+    repo_status = update_integration_versions(repo_status)
+
+    with open(REPO_STATUS_FILE, "w") as f:
+        json.dump(repo_status, f, indent=2)
+        f.write("\n")
+
     run_uv_sync()
 
 

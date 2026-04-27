@@ -4,9 +4,8 @@ Manages JSON file storage for config entries, devices, and entity registry.
 """
 
 import json
-import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 from datetime import datetime
 
 from .logging import get_logger
@@ -23,7 +22,6 @@ class Storage:
 
         # Storage files
         self._entries_file = self._shim_dir / "entries.json"
-        self._devices_file = self._shim_dir / "devices.json"
         self._entities_file = self._shim_dir / "entities.json"
         self._integrations_file = self._shim_dir / "integrations.json"
         self._custom_repos_file = self._shim_dir / "custom_repos.json"
@@ -80,33 +78,6 @@ class Storage:
         self._save_json(self._entries_file, entries)
         _LOGGER.debug(f"Saved {sum(len(v) for v in entries.values())} config entries")
 
-    # Device Registry
-    def load_devices(self) -> Dict[str, dict]:
-        """Load devices from storage."""
-        return self._load_json(self._devices_file)
-
-    def save_devices(self, devices: Dict[str, dict]) -> None:
-        """Save devices to storage."""
-        self._save_json(self._devices_file, devices)
-        _LOGGER.debug(f"Saved {len(devices)} devices")
-
-    def add_device(self, device_id: str, device_info: dict) -> None:
-        """Add or update a device."""
-        devices = self.load_devices()
-        devices[device_id] = {
-            **device_info,
-            "id": device_id,
-            "modified_at": datetime.now().isoformat(),
-        }
-        self.save_devices(devices)
-
-    def remove_device(self, device_id: str) -> None:
-        """Remove a device."""
-        devices = self.load_devices()
-        if device_id in devices:
-            del devices[device_id]
-            self.save_devices(devices)
-
     # Entity Registry
     def load_entities(self) -> Dict[str, dict]:
         """Load entity registry from storage."""
@@ -138,22 +109,6 @@ class Storage:
         self.save_entities(entities)
         _LOGGER.debug(f"Registered entity {entity_id}")
 
-    def unregister_entity(self, entity_id: str) -> None:
-        """Unregister an entity."""
-        entities = self.load_entities()
-        if entity_id in entities:
-            del entities[entity_id]
-            self.save_entities(entities)
-            _LOGGER.debug(f"Unregistered entity {entity_id}")
-
-    def get_entity_by_unique_id(self, unique_id: str) -> Optional[dict]:
-        """Find entity by unique_id."""
-        entities = self.load_entities()
-        for entity in entities.values():
-            if entity.get("unique_id") == unique_id:
-                return entity
-        return None
-
     # Entity State Storage (for RestoreEntity)
     def load_entity_states(self) -> Dict[str, dict]:
         """Load saved entity states from storage."""
@@ -164,20 +119,24 @@ class Storage:
         self._save_json(self._entity_states_file, states)
         _LOGGER.debug(f"Saved {len(states)} entity states")
 
-    def save_entity_state(self, entity_id: str, state: str, attributes: Optional[dict] = None) -> None:
+    def save_entity_state(self, entity_id: str, state: str, attributes: Optional[dict] = None, extra_data: Optional[dict] = None) -> None:
         """Save the state of a single entity.
 
         Args:
             entity_id: The entity ID (e.g., 'text.flightradar24_airport_track')
             state: The state value to save
             attributes: Optional attributes dict to save with the state
+            extra_data: Optional extra restore data dict to save with the state
         """
         states = self.load_entity_states()
-        states[entity_id] = {
+        entry = {
             "state": state,
             "attributes": attributes or {},
             "last_updated": datetime.now().isoformat(),
         }
+        if extra_data is not None:
+            entry["extra_data"] = extra_data
+        states[entity_id] = entry
         self.save_entity_states(states)
         _LOGGER.debug(f"Saved state for {entity_id}: {state}")
 
@@ -210,45 +169,12 @@ class Storage:
         """Save integration registry to storage."""
         self._save_json(self._integrations_file, integrations)
 
-    def register_integration(
-        self,
-        domain: str,
-        version: str,
-        source: str = "hacs_default",
-        enabled: bool = False,
-    ) -> None:
-        """Register an integration."""
-        integrations = self.load_integrations()
-        integrations[domain] = {
-            "domain": domain,
-            "version": version,
-            "source": source,
-            "enabled": enabled,
-            "installed_at": datetime.now().isoformat(),
-            "last_checked": None,
-            "latest_version": version,
-        }
-        self.save_integrations(integrations)
-        _LOGGER.info(f"Registered integration {domain}@{version}")
-
-    def update_integration(self, domain: str, **kwargs) -> None:
-        """Update integration metadata."""
-        integrations = self.load_integrations()
-        if domain in integrations:
-            integrations[domain].update(kwargs)
-            self.save_integrations(integrations)
-
     def remove_integration(self, domain: str) -> None:
         """Remove an integration from registry."""
         integrations = self.load_integrations()
         if domain in integrations:
             del integrations[domain]
             self.save_integrations(integrations)
-
-    def is_integration_enabled(self, domain: str) -> bool:
-        """Check if integration is enabled."""
-        integrations = self.load_integrations()
-        return integrations.get(domain, {}).get("enabled", False)
 
     def get_enabled_integrations(self) -> list:
         """Get list of enabled integration domains."""
@@ -258,19 +184,6 @@ class Storage:
             for domain, info in integrations.items()
             if info.get("enabled", False)
         ]
-
-    # Integration file storage
-    def get_integration_dir(self, domain: str) -> Path:
-        """Get path to integration directory."""
-        custom_components = self._shim_dir / "custom_components"
-        custom_components.mkdir(exist_ok=True)
-        return custom_components / domain
-
-    def integration_exists(self, domain: str) -> bool:
-        """Check if integration files exist."""
-        integration_dir = self.get_integration_dir(domain)
-        manifest = integration_dir / "manifest.json"
-        return manifest.exists()
 
     # Custom Repositories
     def load_custom_repos(self) -> Dict[str, dict]:
@@ -334,16 +247,4 @@ class Storage:
                 return entry
         return None
 
-    # Clear all data (for testing/reset)
-    def clear_all(self) -> None:
-        """Clear all stored data."""
-        for filepath in [
-            self._entries_file,
-            self._devices_file,
-            self._entities_file,
-            self._integrations_file,
-            self._custom_repos_file,
-        ]:
-            if filepath.exists():
-                filepath.unlink()
-        _LOGGER.warning("All storage cleared")
+

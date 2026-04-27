@@ -94,6 +94,11 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         """Return the unique ID of the flow from context."""
         return self.context.get("unique_id")
 
+    @property
+    def source(self) -> Optional[str]:
+        """Return the source of the flow from context."""
+        return self.context.get("source")
+
     def __getattr__(self, name: str) -> any:
         """Provide default values for attributes that may not be set.
 
@@ -176,6 +181,7 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         title: str,
         data: Dict[str, Any],
         options: Optional[Dict[str, Any]] = None,
+        description_placeholders: Optional[Dict[str, str]] = None,
     ):
         """Create config entry."""
         # Include unique_id from flow context if set (needed by meross_lan and others)
@@ -190,6 +196,8 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         }
         if options:
             result["options"] = options
+        if description_placeholders:
+            result["description_placeholders"] = description_placeholders
         return result
 
     def async_abort(self, reason: str):

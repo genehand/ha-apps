@@ -214,15 +214,6 @@ class WebUI:
                             }
                         )
 
-            # Check for version mismatch (set at install time if requested != installed)
-            version_warning = None
-            if info.version_mismatch and info.latest_version:
-                version_warning = (
-                    f"Installed version ({info.version}) does not match "
-                    f"requested version ({info.latest_version}). The maintainer may have "
-                    f"forgotten to bump the version in manifest.json."
-                )
-
             # Convert to dict for template compatibility
             info_dict = info.to_dict()
             entries_dicts = [
@@ -280,7 +271,6 @@ class WebUI:
                 entries=entries_dicts,
                 entities=entities_dicts,
                 devices=devices,
-                version_warning=version_warning,
                 releases=releases,
             )
             return HTMLResponse(content=html)
@@ -635,6 +625,19 @@ class WebUI:
             if not info:
                 raise HTTPException(status_code=404, detail="Integration not found")
 
+            # Compute and store the OAuth redirect URI from the request
+            hass = self._shim_manager.get_hass()
+            ingress_path = request.headers.get("x-ingress-path", "")
+            if ingress_path:
+                # Running via HA ingress
+                redirect_uri = f"{ingress_path.rstrip('/')}/auth/external/callback"
+            else:
+                # Direct access - use request base URL
+                base_url = str(request.base_url).rstrip("/")
+                redirect_uri = f"{base_url}/auth/external/callback"
+            hass.data["_oauth2_redirect_uri"] = redirect_uri
+            _LOGGER.debug("OAuth2 redirect URI set to: %s", redirect_uri)
+
             # Start config flow
             result = (
                 await self._shim_manager.get_integration_loader().start_config_flow(
@@ -645,6 +648,32 @@ class WebUI:
             if not result:
                 raise HTTPException(
                     status_code=400, detail="Failed to start config flow"
+                )
+
+            # Handle abort immediately (e.g. missing credentials)
+            if result.get("type") == "abort":
+                reason = result.get("reason", "unknown")
+                if reason == "missing_credentials":
+                    return HTMLResponse(
+                        content=self._render_template(
+                            "config_form.html",
+                            request=request,
+                            domain=domain,
+                            fields=[],
+                            errors={"base": "Missing OAuth credentials. "
+                                    "Please add application credentials first."},
+                            description={
+                                "add_creds_url": f"../credentials/{domain}",
+                                "info": "This integration requires OAuth2 application credentials. "
+                                         f"<a href='../credentials/{domain}'>Add credentials here</a>.",
+                            },
+                            step_id="user",
+                            flow_id=result.get("flow_id"),
+                            is_options_flow=False,
+                        )
+                    )
+                return HTMLResponse(
+                    content=f'<div class="alert alert-error">Aborted: {reason}</div>'
                 )
 
             return self._render_config_step(request, domain, result)
@@ -859,6 +888,50 @@ class WebUI:
                 # Show menu selection step
                 return self._render_menu_step(request, domain, result)
 
+            elif result.get("type") == "external":
+                # OAuth2 authorization step - show link to authorize
+                return self._render_external_step(request, domain, result)
+
+            elif result.get("type") == "external_done":
+                # OAuth flow completed externally, continue to next step
+                next_step_id = result.get("next_step_id", "creation")
+                result = (
+                    await self._shim_manager.get_integration_loader().continue_config_flow(
+                        domain, flow_id, {"next_step": next_step_id}
+                    )
+                )
+                if not result:
+                    return HTMLResponse(
+                        '<div class="alert alert-error">Failed to continue OAuth flow</div>'
+                    )
+                # Handle the result of the next step
+                if result.get("type") == "create_entry":
+                    entry_data = result.get("data", {})
+                    entry_options = result.get("options")
+                    entry = await self._shim_manager.create_config_entry(
+                        domain, entry_data, entry_options
+                    )
+                    if entry:
+                        response = HTMLResponse(
+                            '<div class="alert alert-success">Configuration successful! Please enable the integration to use it.</div>'
+                        )
+                        response.headers["HX-Redirect"] = self._get_detail_redirect(
+                            request, domain
+                        )
+                        return response
+                    else:
+                        return HTMLResponse(
+                            '<div class="alert alert-error">Failed to create entry</div>'
+                        )
+                elif result.get("type") == "form":
+                    return self._render_config_step(request, domain, result)
+                elif result.get("type") == "abort":
+                    return HTMLResponse(
+                        f'<div class="alert alert-error">Aborted: {result.get("reason")}</div>'
+                    )
+                else:
+                    return self._render_config_step(request, domain, result)
+
             elif result.get("type") == "abort":
                 return HTMLResponse(
                     f'<div class="alert alert-error">Aborted: {result.get("reason")}</div>'
@@ -868,6 +941,187 @@ class WebUI:
                 return HTMLResponse(
                     f'<div class="alert alert-error">Unknown result: {result.get("type")}</div>'
                 )
+
+        @self._app.get("/auth/external/callback")
+        async def oauth_callback(request: Request):
+            """Handle OAuth2 external callback.
+
+            Receives authorization code from OAuth provider and resumes
+            the config flow.
+            """
+            state_param = request.query_params.get("state")
+            code = request.query_params.get("code")
+            error = request.query_params.get("error")
+
+            if not state_param:
+                return HTMLResponse(
+                    content="<h1>Missing state parameter</h1>", status_code=400
+                )
+
+            hass = self._shim_manager.get_hass()
+            from ..stubs.oauth2 import _decode_jwt
+
+            state = _decode_jwt(hass, state_param)
+            if state is None:
+                return HTMLResponse(
+                    content="<h1>Invalid state parameter</h1><p>The authorization link may have expired.</p>",
+                    status_code=400,
+                )
+
+            flow_id = state.get("flow_id")
+            if not flow_id:
+                return HTMLResponse(
+                    content="<h1>Missing flow ID in state</h1>", status_code=400
+                )
+
+            user_input = {"state": state}
+            if code:
+                user_input["code"] = code
+            elif error:
+                user_input["error"] = error
+            else:
+                return HTMLResponse(
+                    content="<h1>Missing code or error parameter</h1>", status_code=400
+                )
+
+            # Resume the config flow
+            result = await hass.config_entries.flow.async_configure(
+                flow_id, user_input
+            )
+
+            # Close the popup window and show a message
+            if result.get("type") == "abort":
+                return HTMLResponse(
+                    content=f"""
+                    <h1>Authorization Failed</h1>
+                    <p>{result.get('reason', 'Unknown error')}</p>
+                    <script>window.close()</script>
+                    """,
+                    status_code=400,
+                )
+
+            return HTMLResponse(
+                content="""
+                <h1>Authorization Successful</h1>
+                <p>You can close this window and return to the config flow.</p>
+                <script>window.close()</script>
+                """
+            )
+
+        @self._app.get("/credentials", response_class=HTMLResponse)
+        async def credentials_list(request: Request):
+            """List all integrations with application credentials."""
+            hass = self._shim_manager.get_hass()
+            from ..stubs.application_credentials import DATA_COMPONENT
+
+            storage = hass.data.get(DATA_COMPONENT)
+            domains = []
+
+            # Find all domains that have credentials
+            if storage:
+                seen = set()
+                for item in storage.async_items():
+                    domain = item.get("domain")
+                    if domain and domain not in seen:
+                        seen.add(domain)
+                        # Try to get integration info for display name
+                        info = self._shim_manager.get_integration_manager().get_integration(domain)
+                        domains.append({
+                            "domain": domain,
+                            "name": info.name if info else domain,
+                        })
+
+            html = self._render_template(
+                "credentials.html",
+                request=request,
+                domains=domains,
+                current_domain=None,
+            )
+            return HTMLResponse(content=html)
+
+        @self._app.get("/credentials/{domain}", response_class=HTMLResponse)
+        async def credentials_domain(request: Request, domain: str):
+            """Show credentials for a specific integration."""
+            hass = self._shim_manager.get_hass()
+            from ..stubs.application_credentials import DATA_COMPONENT
+
+            storage = hass.data.get(DATA_COMPONENT)
+            credentials = []
+            all_domains = []
+
+            if storage:
+                seen = set()
+                for item in storage.async_items():
+                    item_domain = item.get("domain")
+                    if item_domain and item_domain not in seen:
+                        seen.add(item_domain)
+                        info = self._shim_manager.get_integration_manager().get_integration(item_domain)
+                        all_domains.append({
+                            "domain": item_domain,
+                            "name": info.name if info else item_domain,
+                        })
+                    if item_domain == domain:
+                        credentials.append({
+                            "id": item.get("id"),
+                            "client_id": item.get("client_id"),
+                            "name": item.get("name"),
+                        })
+
+            info = self._shim_manager.get_integration_manager().get_integration(domain)
+            html = self._render_template(
+                "credentials.html",
+                request=request,
+                domains=all_domains,
+                current_domain=domain,
+                current_name=info.name if info else domain,
+                credentials=credentials,
+            )
+            return HTMLResponse(content=html)
+
+        @self._app.post("/credentials/{domain}")
+        async def credentials_create(request: Request, domain: str):
+            """Create a new application credential."""
+            form_data = await request.form()
+            hass = self._shim_manager.get_hass()
+            from ..stubs.application_credentials import (
+                DATA_COMPONENT,
+                ClientCredential,
+            )
+
+            storage = hass.data.get(DATA_COMPONENT)
+            if storage is None:
+                raise HTTPException(status_code=500, detail="Application credentials not initialized")
+
+            storage.async_create_item({
+                "domain": domain,
+                "client_id": form_data.get("client_id", "").strip(),
+                "client_secret": form_data.get("client_secret", "").strip(),
+                "name": form_data.get("name", "").strip() or None,
+            })
+
+            # Redirect back to the domain page
+            response = HTMLResponse(
+                '<div class="alert alert-success">Credential saved successfully.</div>'
+            )
+            response.headers["HX-Redirect"] = f"./{domain}"
+            return response
+
+        @self._app.delete("/credentials/{domain}/{item_id}")
+        async def credentials_delete(request: Request, domain: str, item_id: str):
+            """Delete an application credential."""
+            hass = self._shim_manager.get_hass()
+            from ..stubs.application_credentials import DATA_COMPONENT
+
+            storage = hass.data.get(DATA_COMPONENT)
+            if storage is None:
+                raise HTTPException(status_code=500, detail="Application credentials not initialized")
+
+            if storage.async_delete_item(item_id):
+                return HTMLResponse(
+                    '<tr><td colspan="3" class="alert alert-success">Credential deleted.</td></tr>'
+                )
+            else:
+                raise HTTPException(status_code=404, detail="Credential not found")
 
         @self._app.get("/config/{entry_id}/reconfigure", response_class=HTMLResponse)
         async def options_flow_start(request: Request, entry_id: str):
@@ -1691,6 +1945,88 @@ class WebUI:
                         </div>
                     </div>
                 </form>
+                <div id="config-result"></div>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
+    def _render_external_step(
+        self,
+        request: Request,
+        domain: str,
+        result: dict,
+        is_options_flow: bool = False,
+        entry_id: str = None,
+    ) -> HTMLResponse:
+        """Render an OAuth2 external authorization step."""
+        url = result.get("url", "")
+        description = result.get("description_placeholders", {})
+        flow_id = result.get("flow_id")
+        step_id = result.get("step_id", "auth")
+
+        # Compute the callback check URL for polling
+        if is_options_flow and entry_id:
+            form_action = entry_id
+            title_prefix = "Reconfigure"
+        else:
+            form_action = domain
+            title_prefix = "Configure"
+
+        # Load translations
+        translations = self._load_integration_translations(domain)
+        step_translations = (
+            translations.get("config", {}).get("step", {}).get(step_id, {})
+        )
+        step_title = step_translations.get(
+            "title", f"{title_prefix} {domain.title()}"
+        )
+        step_description = step_translations.get("description", "")
+
+        # Build description placeholders text
+        desc_text = ""
+        if description:
+            for key, value in description.items():
+                desc_text += f"<p><strong>{key}:</strong> {value}</p>"
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>{step_title}</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <link rel="stylesheet" href="{PICO_CSS_URL}">
+            <link rel="stylesheet" href="{PICO_COLORS_URL}">
+            <script src="{HTMX_URL}" integrity="{HTMX_SRI}" crossorigin="anonymous"></script>
+            <style>
+                :root {{
+                    --pico-font-size: 1rem;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2>{step_title}</h2>
+                {"<p>" + step_description + "</p>" if step_description else ""}
+                {desc_text}
+                <div class="alert alert-info" role="alert">
+                    <p><strong>Step 1:</strong> Click the button below to open the authorization page.</p>
+                    <p><strong>Step 2:</strong> Complete authorization in the new window.</p>
+                    <p><strong>Step 3:</strong> Return here and click <strong>Continue Setup</strong>.</p>
+                </div>
+                <div style="margin: 20px 0; display: flex; gap: 15px; flex-wrap: wrap;">
+                    <a href="{url}" target="_blank" rel="noopener noreferrer"
+                       class="btn btn-primary" style="padding: 15px 30px; font-size: 1.1rem;">
+                        Authorize with {domain.title()}
+                    </a>
+                    <form hx-post="{form_action}" hx-target="#config-result" hx-swap="innerHTML" style="margin: 0;">
+                        <input type="hidden" name="flow_id" value="{flow_id}">
+                        <button type="submit" class="btn btn-secondary" style="padding: 15px 30px; font-size: 1.1rem;">
+                            Continue Setup
+                        </button>
+                    </form>
+                </div>
                 <div id="config-result"></div>
             </div>
         </body>

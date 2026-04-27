@@ -361,6 +361,8 @@ class ConfigEntries:
                 if hasattr(platform_module, "async_setup_entry"):
                     # Track entities that need to be added
                     _entities_to_add = []
+                    # Track tasks so we can await them before returning
+                    _platform_tasks = []
 
                     # Create async_add_entities callback
                     # This needs to work both when awaited AND when called synchronously
@@ -444,8 +446,9 @@ class ConfigEntries:
                                         f"but still publishing to MQTT for optional enable"
                                     )
 
-                                # Set integration domain for tracking
+                                # Set integration domain and config entry for tracking
                                 entity._attr_integration_domain = entry.domain
+                                entity._attr_config_entry_id = entry.entry_id
                                 # Register entity with loader under platform domain
                                 entity_registered = True
                                 if (
@@ -516,7 +519,8 @@ class ConfigEntries:
 
                         # Create task to run async work and store it so it doesn't get garbage collected
                         task = asyncio.create_task(_do_add())
-                        # Store reference to ensure task completes even if caller doesn't await
+                        _platform_tasks.append(task)
+                        # Also store reference globally to ensure task completes even if caller doesn't await
                         _pending_tasks = getattr(
                             self._hass, "_pending_entity_tasks", []
                         )
@@ -534,9 +538,9 @@ class ConfigEntries:
                         self._hass, entry, async_add_entities
                     )
 
-                    # Wait for any entities that were queued (in case they didn't await)
-                    if _entities_to_add:
-                        await asyncio.sleep(0.1)  # Give tasks time to start
+                    # Wait for all entity registration tasks to complete before returning
+                    if _platform_tasks:
+                        await asyncio.gather(*_platform_tasks, return_exceptions=True)
 
                     _LOGGER.debug(
                         f"Platform {platform} setup complete for {entry.domain}"
@@ -593,6 +597,13 @@ class FlowManager:
         result = await loader.start_config_flow(domain)
         if not result:
             return {"type": "abort", "reason": "failed_to_start"}
+
+        # Update flow context with any provided context (e.g. source from discovery)
+        if context:
+            flow_id = result.get("flow_id")
+            flow = self._config_entries._flow_progress.get(flow_id)
+            if flow:
+                flow.context.update(context)
 
         # If there's data (discovery), continue with that step
         if data is not None:
@@ -763,3 +774,36 @@ class FlowManager:
             _LOGGER.debug(f"Aborted config flow {flow_id}")
 
         return {"type": "abort", "flow_id": flow_id}
+
+    async def async_configure(
+        self, flow_id: str, user_input: Optional[dict] = None
+    ) -> dict:
+        """Continue a config flow with user input.
+
+        This is used by the OAuth2 callback to resume a flow with
+        authorization code or error data.
+        """
+        from .integrations.loader import IntegrationLoader
+
+        loader = self._hass.data.get("integration_loader")
+        if not loader:
+            _LOGGER.error("Integration loader not available")
+            return {"type": "abort", "reason": "loader_not_available"}
+
+        # Find the flow to get its handler (domain)
+        flow = self._config_entries._flow_progress.get(flow_id)
+        if not flow:
+            _LOGGER.error(f"Flow {flow_id} not found")
+            return {"type": "abort", "reason": "flow_not_found"}
+
+        domain = getattr(flow, "handler", None)
+        if not domain:
+            _LOGGER.error(f"Flow {flow_id} has no handler")
+            return {"type": "abort", "reason": "no_handler"}
+
+        # Continue the config flow
+        result = await loader.continue_config_flow(domain, flow_id, user_input or {})
+        if not result:
+            return {"type": "abort", "reason": "failed_to_continue"}
+
+        return result

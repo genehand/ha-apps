@@ -18,8 +18,18 @@ class _ConfigEntryModule:
     pass
 
 
+from ..entity import EntityDescription
+
+
+class TrackerEntityDescription(EntityDescription):
+    """Description for tracker entities."""
+
+    pass
+
+
 config_entry = _ConfigEntryModule()
 config_entry.TrackerEntity = None  # Will be set below
+config_entry.TrackerEntityDescription = TrackerEntityDescription
 
 
 # Create const submodule

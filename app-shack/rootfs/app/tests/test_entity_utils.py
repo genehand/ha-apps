@@ -1551,3 +1551,117 @@ class TestCoordinatorEntityMqttPublishing:
 
         # Verify no publish calls were made
         assert not mock_mqtt.publish.called
+
+
+class TestEntityRegistryConfigEntryTracking:
+    """Test that EntityRegistry tracks entities by config entry ID."""
+
+    def test_registry_tracks_config_entry_id(self):
+        """Test that entities are bucketed by config_entry_id."""
+        from shim.entity import EntityRegistry, Entity
+
+        registry = EntityRegistry()
+        # Reset singleton state for test
+        registry._entities = {}
+        registry._entries_by_config_entry = {}
+
+        entity1 = Entity()
+        entity1.entity_id = "sensor.battery"
+        entity1._attr_unique_id = "vin123_BATTERY_LEVEL"
+        entity1._attr_config_entry_id = "entry_abc"
+
+        entity2 = Entity()
+        entity2.entity_id = "sensor.odometer"
+        entity2._attr_unique_id = "vin123_ODOMETER"
+        entity2._attr_config_entry_id = "entry_abc"
+
+        entity3 = Entity()
+        entity3.entity_id = "switch.lock"
+        entity3._attr_unique_id = "vin456_LOCK"
+        entity3._attr_config_entry_id = "entry_def"
+
+        registry.register(entity1)
+        registry.register(entity2)
+        registry.register(entity3)
+
+        abc_entries = registry.async_entries_for_config_entry("entry_abc")
+        def_entries = registry.async_entries_for_config_entry("entry_def")
+        unknown_entries = registry.async_entries_for_config_entry("no_such_entry")
+
+        assert len(abc_entries) == 2
+        assert {e.unique_id for e in abc_entries} == {"vin123_BATTERY_LEVEL", "vin123_ODOMETER"}
+        assert len(def_entries) == 1
+        assert def_entries[0].unique_id == "vin456_LOCK"
+        assert len(unknown_entries) == 0
+
+    def test_registry_entry_disabled_field(self):
+        """Test RegistryEntry.disabled reflects entity_registry_enabled_default."""
+        from shim.entity import EntityRegistry, Entity
+
+        registry = EntityRegistry()
+        registry._entities = {}
+        registry._entries_by_config_entry = {}
+
+        enabled_entity = Entity()
+        enabled_entity.entity_id = "sensor.enabled"
+        enabled_entity._attr_unique_id = "enabled_1"
+        enabled_entity._attr_config_entry_id = "entry_1"
+        enabled_entity._attr_entity_registry_enabled_default = True
+
+        disabled_entity = Entity()
+        disabled_entity.entity_id = "sensor.disabled"
+        disabled_entity._attr_unique_id = "disabled_1"
+        disabled_entity._attr_config_entry_id = "entry_1"
+        disabled_entity._attr_entity_registry_enabled_default = False
+
+        registry.register(enabled_entity)
+        registry.register(disabled_entity)
+
+        entries = registry.async_entries_for_config_entry("entry_1")
+        assert len(entries) == 2
+
+        enabled_entry = next(e for e in entries if e.unique_id == "enabled_1")
+        disabled_entry = next(e for e in entries if e.unique_id == "disabled_1")
+
+        assert enabled_entry.disabled is False
+        assert disabled_entry.disabled is True
+
+    def test_registry_unregister_removes_config_entry(self):
+        """Test unregister removes from both _entities and _entries_by_config_entry."""
+        from shim.entity import EntityRegistry, Entity
+
+        registry = EntityRegistry()
+        registry._entities = {}
+        registry._entries_by_config_entry = {}
+
+        entity = Entity()
+        entity.entity_id = "sensor.temp"
+        entity._attr_unique_id = "temp_1"
+        entity._attr_config_entry_id = "entry_1"
+
+        registry.register(entity)
+        assert len(registry.async_entries_for_config_entry("entry_1")) == 1
+
+        registry.unregister("sensor.temp")
+        assert len(registry.async_entries_for_config_entry("entry_1")) == 0
+        assert registry.get("sensor.temp") is None
+
+    def test_registry_entries_return_copy(self):
+        """Test async_entries_for_config_entry returns a copy."""
+        from shim.entity import EntityRegistry, Entity
+
+        registry = EntityRegistry()
+        registry._entities = {}
+        registry._entries_by_config_entry = {}
+
+        entity = Entity()
+        entity.entity_id = "sensor.test"
+        entity._attr_unique_id = "test_1"
+        entity._attr_config_entry_id = "entry_1"
+
+        registry.register(entity)
+        entries = registry.async_entries_for_config_entry("entry_1")
+
+        # Modifying the returned list should not affect the registry
+        entries.clear()
+        assert len(registry.async_entries_for_config_entry("entry_1")) == 1

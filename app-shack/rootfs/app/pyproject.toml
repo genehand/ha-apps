@@ -1,6 +1,6 @@
 [project]
 name = "app-shack"
-version = "0.7.12"
+version = "0.8.0"
 description = "Home Assistant compatibility layer for running integrations outside of HA"
 requires-python = ">=3.14"
 dependencies = [
@@ -13,6 +13,8 @@ dependencies = [
     "jinja2>=3.1.0",
     "aiohttp>=3.9.0",
     "voluptuous>=0.14.0",
+    "pyjwt>=2.8.0",
+    "yarl>=1.9.0",
     "python-multipart>=0.0.6",
     "cryptography>=42.0.0",
 

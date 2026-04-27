@@ -11,10 +11,10 @@ This app creates a shim environment that lets you run [HACS](https://www.hacs.xy
 
 ### Why?
 
-- Mainly to minimize full HA restarts
+- Faster updates and fewer full restarts
+- Shack integrations can be updated dynamically without restarting
 - Core restarts are faster as well with less dependencies to manage
-- Probably minor, but splitting out python threads allows them to run on another core
-
+- Less noticeable, but python threads in another process can run on a separate core
 
 ## Installation
 
