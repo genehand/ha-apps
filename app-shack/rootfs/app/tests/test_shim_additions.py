@@ -949,15 +949,12 @@ class TestWebUISchemaParsing:
 
     def test_parse_field_with_suggested_value(self):
         """Test that suggested_value from description is used as default."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
-
-        # Create a mock shim manager (we won't use it, just need the instance)
-        web_ui = WebUI.__new__(WebUI)
 
         # Test vol.Optional with suggested_value (like cryptoinfo config_flow)
         key = vol.Optional("unit_of_measurement", description={"suggested_value": "$"})
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert field["name"] == "unit_of_measurement"
         assert field["required"] is False
@@ -966,14 +963,12 @@ class TestWebUISchemaParsing:
 
     def test_parse_field_with_regular_default(self):
         """Test that regular default values still work."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
-
-        web_ui = WebUI.__new__(WebUI)
 
         # Test vol.Required with default
         key = vol.Required("currency_name", default="usd")
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert field["name"] == "currency_name"
         assert field["required"] is True
@@ -981,14 +976,12 @@ class TestWebUISchemaParsing:
 
     def test_parse_field_no_default_or_suggested_value(self):
         """Test that fields without defaults have no default key (None values are cleaned)."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
-
-        web_ui = WebUI.__new__(WebUI)
 
         # Test vol.Optional without any default
         key = vol.Optional("precision")
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert field["name"] == "precision"
         assert field["required"] is False
@@ -997,10 +990,8 @@ class TestWebUISchemaParsing:
 
     def test_parse_field_default_overrides_suggested_value(self):
         """Test that explicit default takes precedence over suggested_value."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
-
-        web_ui = WebUI.__new__(WebUI)
 
         # If both default and suggested_value exist, default wins
         key = vol.Optional(
@@ -1008,32 +999,28 @@ class TestWebUISchemaParsing:
             default="explicit_default",
             description={"suggested_value": "suggested_value"},
         )
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert field["default"] == "explicit_default"
 
     def test_parse_field_basic_label_generation(self):
         """Test basic label generation from field name."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
 
-        web_ui = WebUI.__new__(WebUI)
-
         key = vol.Optional("test_field_name")
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert field["name"] == "test_field_name"
         assert field["label"] == "Test Field Name"
 
     def test_parse_field_id_shows_title_case(self):
         """Test that 'id' field shows 'Id' by default (translations will override)."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
 
-        web_ui = WebUI.__new__(WebUI)
-
         key = vol.Optional("id")
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert field["name"] == "id"
         # Without translations, it just title-cases the name
@@ -1041,10 +1028,8 @@ class TestWebUISchemaParsing:
 
     def test_parse_field_description_help_text(self):
         """Test that description/help text is extracted from field."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
-
-        web_ui = WebUI.__new__(WebUI)
 
         key = vol.Optional(
             "id",
@@ -1053,20 +1038,18 @@ class TestWebUISchemaParsing:
                 "description": "Unique name for this sensor.",
             },
         )
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert field["default"] == "my_id"
         assert field["description"] == "Unique name for this sensor."
 
     def test_parse_field_no_description(self):
         """Test that fields without description don't have description key."""
-        from shim.web.app import WebUI
+        from shim.web.schema import parse_field
         import voluptuous as vol
 
-        web_ui = WebUI.__new__(WebUI)
-
         key = vol.Optional("test_field")
-        field = web_ui._parse_field(key, str)
+        field = parse_field(key, str)
 
         assert "description" not in field
 
@@ -1088,10 +1071,8 @@ class TestWebUITranslations:
     )
     def test_load_integration_translations(self):
         """Test loading translations for an integration."""
-        from shim.web.app import WebUI
+        from shim.web.translations import load_integration_translations
         from pathlib import Path
-
-        web_ui = WebUI.__new__(WebUI)
 
         # Create a mock integration manager that returns the actual path
         class MockIntegrationManager:
@@ -1105,10 +1086,8 @@ class TestWebUITranslations:
                     / domain
                 )
 
-        web_ui._integration_manager = MockIntegrationManager()
-
         # Test with cryptoinfo integration (which has translations)
-        translations = web_ui._load_integration_translations("cryptoinfo")
+        translations = load_integration_translations(MockIntegrationManager(), "cryptoinfo")
 
         assert "config" in translations
         assert "step" in translations["config"]
@@ -1118,26 +1097,19 @@ class TestWebUITranslations:
 
     def test_load_integration_translations_missing_integration(self):
         """Test loading translations for non-existent integration."""
-        from shim.web.app import WebUI
-        from pathlib import Path
-
-        web_ui = WebUI.__new__(WebUI)
+        from shim.web.translations import load_integration_translations
 
         # Create a mock integration manager that returns None for missing integrations
         class MockIntegrationManager:
             def get_integration_path(self, domain):
                 return None
 
-        web_ui._integration_manager = MockIntegrationManager()
-
-        translations = web_ui._load_integration_translations("nonexistent")
+        translations = load_integration_translations(MockIntegrationManager(), "nonexistent")
         assert translations == {}
 
     def test_apply_field_translations_labels(self):
         """Test applying field labels from translations."""
-        from shim.web.app import WebUI
-
-        web_ui = WebUI.__new__(WebUI)
+        from shim.web.translations import apply_field_translations
 
         fields = [
             {"name": "id", "label": "Id"},
@@ -1157,16 +1129,14 @@ class TestWebUITranslations:
             }
         }
 
-        web_ui._apply_field_translations(fields, translations, "user")
+        apply_field_translations(fields, translations, "user")
 
         assert fields[0]["label"] == "Identifier"
         assert fields[1]["label"] == "Cryptocurrency id's"
 
     def test_apply_field_translations_descriptions(self):
         """Test applying field descriptions from translations."""
-        from shim.web.app import WebUI
-
-        web_ui = WebUI.__new__(WebUI)
+        from shim.web.translations import apply_field_translations
 
         fields = [
             {"name": "id", "label": "Id"},
@@ -1187,31 +1157,27 @@ class TestWebUITranslations:
             }
         }
 
-        web_ui._apply_field_translations(fields, translations, "user")
+        apply_field_translations(fields, translations, "user")
 
         assert fields[0]["description"] == "Unique name for the sensor."
         assert fields[1]["description"] == "Currency symbol to use."
 
     def test_apply_field_translations_missing_step(self):
         """Test that missing step in translations doesn't crash."""
-        from shim.web.app import WebUI
-
-        web_ui = WebUI.__new__(WebUI)
+        from shim.web.translations import apply_field_translations
 
         fields = [{"name": "id", "label": "Id"}]
         translations = {"config": {"step": {}}}
 
         # Should not raise
-        web_ui._apply_field_translations(fields, translations, "nonexistent_step")
+        apply_field_translations(fields, translations, "nonexistent_step")
 
         # Labels unchanged
         assert fields[0]["label"] == "Id"
 
     def test_apply_field_translations_reconfigure_step(self):
         """Test applying translations for reconfigure step."""
-        from shim.web.app import WebUI
-
-        web_ui = WebUI.__new__(WebUI)
+        from shim.web.translations import apply_field_translations
 
         fields = [{"name": "id", "label": "Id"}]
 
@@ -1226,7 +1192,7 @@ class TestWebUITranslations:
             }
         }
 
-        web_ui._apply_field_translations(fields, translations, "reconfigure")
+        apply_field_translations(fields, translations, "reconfigure")
 
         assert fields[0]["label"] == "Identifier"
         assert fields[0]["description"] == "Update the unique name."
