@@ -9,6 +9,7 @@ import re
 import json
 import asyncio
 import importlib
+import inspect
 import aiohttp
 import zipfile
 import shutil
@@ -822,7 +823,9 @@ class IntegrationManager:
             info.get("repository_url"): info for info in self._hacs_repos.values()
         }
 
-        for domain, info in self._integrations.items():
+        # Snapshot the dict to prevent RuntimeError from concurrent modifications
+        # (e.g., the install queue worker adding a newly installed integration)
+        for domain, info in list(self._integrations.items()):
             if not info.enabled:
                 continue
 
@@ -988,12 +991,21 @@ class IntegrationManager:
             task.error_message = str(e)
             _LOGGER.error(f"Exception installing {task.full_name_or_domain}: {e}")
         finally:
-            # Call callback if provided
+            # Call callback if provided (supports both sync and async callbacks)
             if task.callback:
                 try:
-                    task.callback(
-                        task.full_name_or_domain, task.status, task.error_message
-                    )
+                    if inspect.iscoroutinefunction(task.callback):
+                        await task.callback(
+                            task.full_name_or_domain,
+                            task.status,
+                            task.error_message,
+                        )
+                    else:
+                        task.callback(
+                            task.full_name_or_domain,
+                            task.status,
+                            task.error_message,
+                        )
                 except Exception as e:
                     _LOGGER.error(f"Install callback error: {e}")
 
@@ -1037,7 +1049,7 @@ class IntegrationManager:
                     # Notify callback if set (e.g., to publish MQTT update entity)
                     if self._on_updates_found:
                         try:
-                            if asyncio.iscoroutinefunction(self._on_updates_found):
+                            if inspect.iscoroutinefunction(self._on_updates_found):
                                 await self._on_updates_found(updates)
                             else:
                                 self._on_updates_found(updates)
@@ -1234,6 +1246,10 @@ class IntegrationManager:
                 repo_info = self._hacs_repos[full_name]
                 repo_url = repo_info["repository_url"]
                 domain = repo_info.get("domain", "")
+
+                # Use the latest version from CDN data if no specific version requested
+                if not version:
+                    version = repo_info.get("last_version")
             else:
                 _LOGGER.error(
                     f"Repository {full_name} not found in HACS default repositories"

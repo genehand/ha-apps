@@ -4,6 +4,7 @@ Orchestrates the shim, MQTT bridge, and integrations.
 """
 
 import asyncio
+import inspect
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
@@ -17,7 +18,7 @@ from .models import ConfigEntry
 from .storage import Storage
 from .import_patch import setup_import_patching
 from .entity import EntityRegistry, get_mqtt_object_id
-from .integrations.manager import IntegrationManager
+from .integrations.manager import InstallTask, IntegrationManager
 from .integrations.loader import IntegrationLoader
 
 if TYPE_CHECKING:
@@ -913,19 +914,24 @@ class ShimManager:
             full_name_or_domain, **kwargs
         )
 
-        # If it's a task (async install), add a callback to refresh updates when complete
-        if hasattr(result, "add_done_callback"):
+        # If it's an InstallTask (async install), register a callback
+        # to refresh update entity when the install completes
+        if isinstance(result, InstallTask):
+            original_callback = result.callback
 
-            async def refresh_on_complete(task):
-                try:
-                    await task
+            async def _on_install_complete(
+                full_name: str, status: str, error_message: Optional[str]
+            ):
+                if original_callback:
+                    if inspect.iscoroutinefunction(original_callback):
+                        await original_callback(full_name, status, error_message)
+                    else:
+                        original_callback(full_name, status, error_message)
+                if status == "complete":
                     _LOGGER.info("Install completed, refreshing update entity")
                     await self._refresh_update_entity()
-                except Exception as e:
-                    _LOGGER.error(f"Error refreshing update entity after install: {e}")
 
-            # Wrap in try/except since we can't directly await here
-            asyncio.create_task(refresh_on_complete(result))
+            result.callback = _on_install_complete
         else:
             # Synchronous/legacy result - refresh immediately
             if result:

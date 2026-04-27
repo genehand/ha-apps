@@ -663,7 +663,6 @@ class WebUI:
                             errors={"base": "Missing OAuth credentials. "
                                     "Please add application credentials first."},
                             description={
-                                "add_creds_url": f"../credentials/{domain}",
                                 "info": "This integration requires OAuth2 application credentials. "
                                          f"<a href='../credentials/{domain}'>Add credentials here</a>.",
                             },
