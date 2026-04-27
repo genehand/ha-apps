@@ -6,6 +6,7 @@ from fastapi import Request
 from starlette.datastructures import URL
 
 from shim.web.renderers import get_detail_redirect
+from shim.web.routes.config_flows import _extract_oauth_params
 
 
 class TestGetDetailRedirect:
@@ -162,3 +163,62 @@ class TestGetDetailRedirect:
         result = get_detail_redirect(request, "nest_protect")
         # From config flow page, should go up one level then to integrations
         assert result == "../integrations/nest_protect"
+
+
+class TestExtractOAuthParams:
+    """Test _extract_oauth_params helper."""
+
+    def test_full_url_with_code_and_state(self):
+        """Extract code and state from a full localhost callback URL."""
+        url = (
+            "http://localhost:8080/auth/external/callback"
+            "?code=AQABC123&state=xyz789"
+        )
+        result = _extract_oauth_params(url)
+        assert result["code"] == "AQABC123"
+        assert result["state"] == "xyz789"
+        assert result["error"] is None
+
+    def test_url_with_error(self):
+        """Extract error from a callback URL."""
+        url = (
+            "http://localhost:8080/auth/external/callback"
+            "?error=access_denied&state=abc"
+        )
+        result = _extract_oauth_params(url)
+        assert result["code"] is None
+        assert result["state"] == "abc"
+        assert result["error"] == "access_denied"
+
+    def test_url_without_query_params(self):
+        """Handle a URL with no query parameters."""
+        url = "http://localhost:8080/auth/external/callback"
+        result = _extract_oauth_params(url)
+        assert result["code"] is None
+        assert result["state"] is None
+        assert result["error"] is None
+
+    def test_code_only(self):
+        """Extract just a code value."""
+        url = "http://localhost:8080/auth/external/callback?code=SECRET123"
+        result = _extract_oauth_params(url)
+        assert result["code"] == "SECRET123"
+        assert result["state"] is None
+        assert result["error"] is None
+
+    def test_whitespace_trimmed(self):
+        """Leading/trailing whitespace is ignored."""
+        url = "  http://localhost:8080/auth/external/callback?code=ABC&state=DEF  "
+        result = _extract_oauth_params(url)
+        assert result["code"] == "ABC"
+        assert result["state"] == "DEF"
+
+    def test_multiple_values(self):
+        """When a param appears multiple times, the first value is used."""
+        url = (
+            "http://localhost:8080/auth/external/callback"
+            "?code=first&code=second&state=s1&state=s2"
+        )
+        result = _extract_oauth_params(url)
+        assert result["code"] == "first"
+        assert result["state"] == "s1"

@@ -50,26 +50,17 @@ class ImplementationUnavailableError(HomeAssistantError):
     """Raised when an underlying implementation is unavailable."""
 
 
+LOCALHOST_REDIRECT_URI = "http://localhost:8080/auth/external/callback"
+
+
 def async_get_redirect_uri(hass) -> str:
     """Return the redirect uri.
 
-    For the shim, this is computed from the stored redirect URI set by
-    the web app during config flow handling, or falls back to a default.
+    Always returns the localhost redirect URI. The OAuth provider will
+    redirect here, which will fail as expected. The user copies the
+    full failed redirect URL and pastes it back into the config form.
     """
-    # Check if the shim has stored a redirect URI for this flow
-    redirect_uri = getattr(hass, "data", {}).get("_oauth2_redirect_uri")
-    if redirect_uri:
-        return redirect_uri
-
-    # Fall back to constructing from external_url if set
-    ha_host = getattr(hass.config, "external_url", None)
-    if ha_host:
-        return f"{ha_host.rstrip('/')}{AUTH_CALLBACK_PATH}"
-
-    raise RuntimeError(
-        "No OAuth2 redirect URI available. "
-        "Set hass.config.external_url or ensure the web app stores one."
-    )
+    return LOCALHOST_REDIRECT_URI
 
 
 class AbstractOAuth2Implementation:

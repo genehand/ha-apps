@@ -75,38 +75,29 @@ class TestJWTState:
 class TestAsyncGetRedirectUri:
     """Test redirect URI computation."""
 
-    def test_from_hass_data(self):
-        """Test redirect URI from hass.data."""
+    def test_always_localhost(self):
+        """Test redirect URI is always the hardcoded localhost URL."""
         hass = MagicMock()
         hass.data = {"_oauth2_redirect_uri": "http://ingress/callback"}
-        hass.config.external_url = None
+        hass.config.external_url = "https://ha.example.com"
 
-        assert async_get_redirect_uri(hass) == "http://ingress/callback"
+        assert async_get_redirect_uri(hass) == "http://localhost:8080/auth/external/callback"
 
-    def test_from_external_url(self):
-        """Test redirect URI from hass.config.external_url."""
+    def test_ignores_external_url(self):
+        """Test redirect URI ignores external_url."""
         hass = MagicMock()
         hass.data = {}
         hass.config.external_url = "https://ha.example.com"
 
-        assert async_get_redirect_uri(hass) == "https://ha.example.com/auth/external/callback"
+        assert async_get_redirect_uri(hass) == "http://localhost:8080/auth/external/callback"
 
-    def test_external_url_trailing_slash(self):
-        """Test external_url with trailing slash is handled."""
+    def test_ignores_hass_data(self):
+        """Test redirect URI ignores stored _oauth2_redirect_uri."""
         hass = MagicMock()
-        hass.data = {}
-        hass.config.external_url = "https://ha.example.com/"
-
-        assert async_get_redirect_uri(hass) == "https://ha.example.com/auth/external/callback"
-
-    def test_missing_url_raises(self):
-        """Test RuntimeError when no redirect URI is available."""
-        hass = MagicMock()
-        hass.data = {}
+        hass.data = {"_oauth2_redirect_uri": "http://custom/callback"}
         hass.config.external_url = None
 
-        with pytest.raises(RuntimeError):
-            async_get_redirect_uri(hass)
+        assert async_get_redirect_uri(hass) == "http://localhost:8080/auth/external/callback"
 
 
 class TestLocalOAuth2Implementation:
@@ -130,7 +121,7 @@ class TestLocalOAuth2Implementation:
 
         assert impl.name == "Local application credentials"
         assert impl.domain == "smartcar"
-        assert impl.redirect_uri == "http://test/callback"
+        assert impl.redirect_uri == "http://localhost:8080/auth/external/callback"
 
     @pytest.mark.asyncio
     async def test_generate_authorize_url(self, mock_hass):

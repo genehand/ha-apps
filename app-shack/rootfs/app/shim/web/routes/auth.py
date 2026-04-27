@@ -21,64 +21,45 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
     async def oauth_callback(request: Request):
         """Handle OAuth2 external callback.
 
-        Receives authorization code from OAuth provider and resumes
-        the config flow.
+        Because the app runs behind Home Assistant ingress, this endpoint
+        is reached via a localhost redirect that will normally fail. The
+        user copies the full failed URL and pastes it back into the config
+        form to complete the flow.  If the request *does* reach us directly
+        (e.g. local testing), we show a simple instruction page.
         """
-        state_param = request.query_params.get("state")
         code = request.query_params.get("code")
+        state = request.query_params.get("state")
         error = request.query_params.get("error")
 
-        if not state_param:
-            return HTMLResponse(
-                content="<h1>Missing state parameter</h1>", status_code=400
-            )
+        callback_url = str(request.url)
 
-        hass = shim_manager.get_hass()
-        from ...stubs.oauth2 import _decode_jwt
-
-        state = _decode_jwt(hass, state_param)
-        if state is None:
+        if error:
             return HTMLResponse(
-                content="<h1>Invalid state parameter</h1><p>The authorization link may have expired.</p>",
+                content=f"""
+                <h1>Authorization Error</h1>
+                <p>{error}</p>
+                <p>Copy the URL below and paste it into the config form:</p>
+                <code style="word-break: break-all;">{callback_url}</code>
+                """,
                 status_code=400,
             )
 
-        flow_id = state.get("flow_id")
-        if not flow_id:
+        if not code or not state:
             return HTMLResponse(
-                content="<h1>Missing flow ID in state</h1>", status_code=400
-            )
-
-        user_input = {"state": state}
-        if code:
-            user_input["code"] = code
-        elif error:
-            user_input["error"] = error
-        else:
-            return HTMLResponse(
-                content="<h1>Missing code or error parameter</h1>", status_code=400
-            )
-
-        # Resume the config flow
-        result = await hass.config_entries.flow.async_configure(
-            flow_id, user_input
-        )
-
-        # Close the popup window and show a message
-        if result.get("type") == "abort":
-            return HTMLResponse(
-                content=f"""
-                <h1>Authorization Failed</h1>
-                <p>{result.get('reason', 'Unknown error')}</p>
-                <script>window.close()</script>
+                content="""
+                <h1>OAuth Callback</h1>
+                <p>This page is not reachable from Home Assistant ingress.</p>
+                <p>Copy the full URL from your browser's address bar and
+                paste it into the config form in the Shack UI.</p>
                 """,
                 status_code=400,
             )
 
         return HTMLResponse(
-            content="""
+            content=f"""
             <h1>Authorization Successful</h1>
-            <p>You can close this window and return to the config flow.</p>
-            <script>window.close()</script>
+            <p>Copy the URL below and paste it into the config form to
+            complete the setup:</p>
+            <code style="word-break: break-all;">{callback_url}</code>
             """
         )

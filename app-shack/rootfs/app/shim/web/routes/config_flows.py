@@ -18,10 +18,28 @@ from ..renderers import (
     render_menu_step,
     render_template,
 )
+from urllib.parse import parse_qs, urlparse
+
 from ..schema import convert_form_value, is_undefined
-from ..supervisor import fetch_ha_external_url
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _extract_oauth_params(callback_url: str) -> dict:
+    """Extract OAuth code, state, and error from a callback URL.
+
+    Accepts either a full URL (e.g. http://localhost:8080/...?code=...)
+    or just a query string.  Returns a dict with ``code``, ``state``,
+    and ``error`` keys (values may be None).
+    """
+    url = callback_url.strip()
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    return {
+        "code": query.get("code", [None])[0],
+        "state": query.get("state", [None])[0],
+        "error": query.get("error", [None])[0],
+    }
 
 
 def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
@@ -39,26 +57,14 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             raise HTTPException(status_code=404, detail="Integration not found")
 
         hass = shim_manager.get_hass()
-        ha_external_url = await fetch_ha_external_url()
-        if ha_external_url:
-            hass.config.external_url = ha_external_url
-            _LOGGER.debug("HA external_url from Supervisor: %s", ha_external_url)
 
-        # Compute and store the OAuth redirect URI from the request
-        ingress_path = request.headers.get("x-ingress-path", "")
-        if ingress_path:
-            if ha_external_url:
-                redirect_uri = (
-                    f"{ha_external_url.rstrip('/')}"
-                    f"{ingress_path.rstrip('/')}/auth/external/callback"
-                )
-            else:
-                redirect_uri = f"{ingress_path.rstrip('/')}/auth/external/callback"
-        else:
-            base_url = str(request.base_url).rstrip("/")
-            redirect_uri = f"{base_url}/auth/external/callback"
-        hass.data["_oauth2_redirect_uri"] = redirect_uri
-        _LOGGER.debug("OAuth2 redirect URI set to: %s", redirect_uri)
+        # Store the localhost redirect URI so oauth2 stubs can read it.
+        # The provider will redirect here, which will fail. The user copies
+        # the full failed URL and pastes it back into the config form.
+        from ...stubs.oauth2 import LOCALHOST_REDIRECT_URI
+
+        hass.data["_oauth2_redirect_uri"] = LOCALHOST_REDIRECT_URI
+        _LOGGER.debug("OAuth2 redirect URI set to: %s", LOCALHOST_REDIRECT_URI)
 
         result = (
             await shim_manager.get_integration_loader().start_config_flow(
@@ -116,6 +122,47 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
         hass = shim_manager.get_hass()
         flow = hass.config_entries._flow_progress.get(flow_id)
         schema = getattr(flow, "_last_form_schema", None) if flow else None
+
+        # Handle pasted OAuth callback URL (copy-paste flow)
+        oauth_callback_url = user_input.pop("oauth_callback_url", None)
+        if oauth_callback_url:
+            params = _extract_oauth_params(oauth_callback_url)
+            state_param = params.get("state")
+            code = params.get("code")
+            error = params.get("error")
+
+            if not state_param:
+                return HTMLResponse(
+                    '<div class="alert alert-error">'
+                    "Missing <code>state</code> parameter in the callback URL. "
+                    "Make sure you copied the full URL."
+                    "</div>"
+                )
+
+            from ...stubs.oauth2 import _decode_jwt
+
+            decoded_state = _decode_jwt(hass, state_param)
+            if decoded_state is None:
+                return HTMLResponse(
+                    '<div class="alert alert-error">'
+                    "Invalid <code>state</code> parameter. "
+                    "The authorization link may have expired."
+                    "</div>"
+                )
+
+            user_input = {"state": decoded_state}
+            if code:
+                user_input["code"] = code
+            elif error:
+                user_input["error"] = error
+            else:
+                return HTMLResponse(
+                    '<div class="alert alert-error">'
+                    "Missing <code>code</code> or <code>error</code> parameter "
+                    "in the callback URL."
+                    "</div>"
+                )
+            schema = None  # skip schema conversion for OAuth callback
 
         # Handle menu selection
         if "next_step" in user_input:
@@ -305,8 +352,10 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             return render_menu_step(request, domain, result)
 
         elif result.get("type") == "external":
-            redirect_uri = shim_manager.get_hass().data.get("_oauth2_redirect_uri")
-            return render_external_step(request, domain, result, redirect_uri=redirect_uri)
+            from ...stubs.oauth2 import LOCALHOST_REDIRECT_URI
+            return render_external_step(
+                request, domain, result, redirect_uri=LOCALHOST_REDIRECT_URI
+            )
 
         elif result.get("type") == "external_done":
             next_step_id = result.get("next_step_id", "creation")

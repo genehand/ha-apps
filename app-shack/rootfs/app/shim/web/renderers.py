@@ -275,11 +275,10 @@ def render_external_step(
     entry_id: str = None,
     redirect_uri: str = None,
 ) -> HTMLResponse:
-    """Render an OAuth2 external authorization step."""
+    """Render an OAuth2 external authorization step (copy-paste flow)."""
     url = result.get("url", "")
     description = result.get("description_placeholders", {})
     flow_id = result.get("flow_id")
-    step_id = result.get("step_id", "auth")
 
     # Compute the form action URL (relative for HA ingress compatibility)
     if is_options_flow and entry_id:
@@ -295,18 +294,20 @@ def render_external_step(
         for key, value in description.items():
             desc_text += f"<p><strong>{key}:</strong> {value}</p>"
 
-    # Redirect URI is displayed from the external step result context
+    # Redirect URI display block
     redirect_html = ""
-    if url:
+    if redirect_uri:
         redirect_html = f"""
-        <div class="alert" role="alert" style="margin-top: 15px; word-break: break-all;">
-            <p style="font-size: 0.9rem; margin-top: 5px;">
-                You will be redirected to the external service to authorize access.
+        <div style="margin-top: 15px; margin-bottom: 15px; padding: 12px;
+                    border: 1px solid var(--pico-form-element-border-color);
+                    border-radius: var(--pico-border-radius);
+                    background: var(--pico-card-background-color);">
+            <p style="margin: 0;">
+                <strong>Redirect URI:</strong> <code>{redirect_uri}</code>
             </p>
-            {f'''<div style="margin-top: 15px; margin-bottom: 15px; padding: 12px; border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius); background: var(--pico-card-background-color);">
-                <p style="margin: 0;"><strong>Redirect URI:</strong> <code>{redirect_uri}</code></p>
-                <p style="font-size: 0.85rem; margin: 8px 0 0 0;">Make sure this redirect URI is configured in your OAuth application settings.</p>
-            </div>''' if redirect_uri else ''}
+            <p style="font-size: 0.85rem; margin: 8px 0 0 0;">
+                Make sure this redirect URI is configured in your OAuth application settings.
+            </p>
         </div>
         """
 
@@ -331,22 +332,43 @@ def render_external_step(
             {desc_text}
             {redirect_html}
             <div class="alert alert-info" role="alert">
-                <p><strong>Step 1:</strong> Click the button below to open the authorization page.</p>
-                <p><strong>Step 2:</strong> Complete authorization in the new window.</p>
-                <p><strong>Step 3:</strong> Return here and click <strong>Continue Setup</strong>.</p>
+                <p><strong>Step 1:</strong> Click the button below to open
+                the authorization page in a new tab.</p>
             </div>
-            <div style="margin: 20px 0; display: flex; gap: 15px; flex-wrap: wrap;">
+            <div style="margin: 20px 0;">
                 <a href="{url}" target="_blank" rel="noopener noreferrer"
-                   class="btn btn-primary" style="padding: 15px 30px; font-size: 1.1rem;">
+                   class="btn btn-primary" role="button"
+                   style="padding: 15px 30px; font-size: 1.1rem;">
                     Authorize with {domain.title()}
                 </a>
-                <form hx-post="{form_action}" hx-target="#config-result" hx-swap="innerHTML" style="margin: 0;">
-                    <input type="hidden" name="flow_id" value="{flow_id}">
-                    <button type="submit" class="btn btn-secondary" style="padding: 15px 30px; font-size: 1.1rem;">
-                        Continue Setup
-                    </button>
-                </form>
             </div>
+            <div class="alert alert-warning" role="alert"
+                 style="word-break: break-all;">
+                <p><strong>Step 2:</strong> After authorizing, the page will
+                redirect to <code>{redirect_uri or "localhost"}</code> and
+                show an error. <strong>This is expected!</strong></p>
+                <p>Copy the <strong>entire URL</strong> from the browser's
+                address bar (or just the <code>code</code> parameter).</p>
+            </div>
+            <div class="alert alert-info" role="alert">
+                <p><strong>Step 3:</strong> Paste the URL or code below and
+                click <strong>Complete Setup</strong>.</p>
+            </div>
+            <form hx-post="{form_action}" hx-target="#config-result"
+                  hx-swap="innerHTML" style="margin: 20px 0;">
+                <input type="hidden" name="flow_id" value="{flow_id}">
+                <label for="oauth_callback_url">
+                    Authorization callback URL or code
+                </label>
+                <input type="text" id="oauth_callback_url"
+                       name="oauth_callback_url" required
+                       placeholder="http://localhost:8080/auth/external/callback?code=...&amp;state=..."
+                       style="width: 100%;">
+                <button type="submit" class="btn btn-primary"
+                        style="margin-top: 15px;">
+                    Complete Setup
+                </button>
+            </form>
             <div id="config-result"></div>
         </div>
     </body>
