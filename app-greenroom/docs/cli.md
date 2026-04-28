@@ -12,13 +12,12 @@ greenroom [OPTIONS]
 
 | Variable | CLI Option | Default | Description |
 |----------|------------|---------|-------------|
-| `SPOTIFY_USERNAME` | `--spotify-username` | - | Spotify account email (optional, legacy OAuth) |
 | `DEVICE_NAME` | `--device-name` | "Greenroom" | Name shown in HA and Spotify |
-| `MQTT_HOST` | `--mqtt-host` | "core-mosquitto" | MQTT broker hostname |
+| `MQTT_HOST` | `--mqtt-host` | "homeassistant.local" | MQTT broker hostname |
 | `MQTT_PORT` | `--mqtt-port` | 1883 | MQTT broker port |
-| `MQTT_USERNAME` | `--mqtt-username` | - | MQTT auth username (auto-fetched in add-on) |
-| `MQTT_PASSWORD` | `--mqtt-password` | - | MQTT auth password (auto-fetched in add-on) |
-| `MQTT_DEVICE_ID` | `--mqtt-device-id` | "greenroom" | MQTT device ID (used in topic names) |
+| `MQTT_USERNAME` | `--mqtt-username` | - | MQTT auth username |
+| `MQTT_PASSWORD` | `--mqtt-password` | - | MQTT auth password |
+| `MQTT_DEVICE_ID` | `--mqtt-device-id` | slugified device name | MQTT client ID and topic namespace |
 | `GREENROOM_WEB_PORT` | `--web-port` | 8099 | Port for web UI (internal, via ingress) |
 | `TOKEN_FILE` | - | `/data/greenroom_token.json` | Path to store OAuth credentials |
 | `RUST_LOG` | `--log-level` | "info" | Log level (trace/debug/info/warn/error) |
@@ -56,7 +55,8 @@ cargo run
 
 When running as a Home Assistant add-on, most options are automatically configured:
 
-- MQTT credentials are fetched from the Supervisor API
+- MQTT credentials are checked against the Supervisor API first, then fall back to add-on config options (for external MQTT brokers)
+- `MQTT_DEVICE_ID` is derived from `DEVICE_NAME` (slugified) unless explicitly set
 - `TOKEN_FILE` defaults to `/data/greenroom_token.json`
 - Web UI port is internal-only (accessed via ingress)
 

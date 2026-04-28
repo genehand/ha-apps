@@ -81,7 +81,6 @@ mod tests {
         _token_file: std::path::PathBuf,
     ) -> (Arc<RwLock<PlaybackState>>, broadcast::Sender<()>) {
         let _config = Config {
-            spotify_username: "".to_string(),
             device_name: "Test".to_string(),
             mqtt_host: "localhost".to_string(),
             mqtt_port: 1883,

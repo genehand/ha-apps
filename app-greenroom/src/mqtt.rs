@@ -403,7 +403,6 @@ mod tests {
     #[test]
     fn test_mqtt_bridge_creation() {
         let config = Config {
-            spotify_username: "".to_string(),
             device_name: "Test".to_string(),
             mqtt_host: "localhost".to_string(),
             mqtt_port: 1883,
@@ -434,7 +433,6 @@ mod tests {
     #[tokio::test]
     async fn test_connection_switch_command_enable() {
         let config = Config {
-            spotify_username: "".to_string(),
             device_name: "Test".to_string(),
             mqtt_host: "localhost".to_string(),
             mqtt_port: 1883,
@@ -479,7 +477,6 @@ mod tests {
     #[tokio::test]
     async fn test_connection_switch_command_disable() {
         let config = Config {
-            spotify_username: "".to_string(),
             device_name: "Test".to_string(),
             mqtt_host: "localhost".to_string(),
             mqtt_port: 1883,

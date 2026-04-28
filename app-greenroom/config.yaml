@@ -1,6 +1,6 @@
 slug: app-greenroom
 name: Greenroom
-version: 0.4.12
+version: 0.4.13
 url: https://github.com/genehand/ha-apps/blob/main/app-greenroom/README.md
 
 #image: "ghcr.io/genehand/greenroom-{arch}"
@@ -30,7 +30,6 @@ services:
   - mqtt:want
 
 options:
-  spotify_username: ""
   device_name: "Greenroom"
   mqtt_host: core-mosquitto
   mqtt_port: 1883
@@ -38,7 +37,6 @@ options:
   mqtt_password: ""
 
 schema:
-  spotify_username: str
   device_name: str
   mqtt_host: str?
   mqtt_port: int?

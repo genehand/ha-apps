@@ -877,7 +877,6 @@ mod tests {
 
     fn create_test_state(token_file: std::path::PathBuf) -> AppState {
         let config = Config {
-            spotify_username: "".to_string(),
             device_name: "Test".to_string(),
             mqtt_host: "localhost".to_string(),
             mqtt_port: 1883,
@@ -990,7 +989,6 @@ mod tests {
         let creds_path = temp_dir.path().join("credentials.json");
 
         let config = Config {
-            spotify_username: "".to_string(),
             device_name: "Test".to_string(),
             mqtt_host: "localhost".to_string(),
             mqtt_port: 1883,
@@ -1067,7 +1065,6 @@ mod tests {
             None,
             playback,
             &Config {
-                spotify_username: "".to_string(),
                 device_name: "Test".to_string(),
                 mqtt_host: "localhost".to_string(),
                 mqtt_port: 1883,
@@ -1099,7 +1096,6 @@ mod tests {
             None,
             playback,
             &Config {
-                spotify_username: "".to_string(),
                 device_name: "Test".to_string(),
                 mqtt_host: "localhost".to_string(),
                 mqtt_port: 1883,

@@ -47,14 +47,6 @@ fn notify_readiness() {
 #[command(about = "A Spotify Connect device that exposes media info to Home Assistant via MQTT")]
 #[command(version)]
 pub struct Cli {
-    /// Spotify username/email (for OAuth login)
-    #[arg(
-        long,
-        env = "SPOTIFY_USERNAME",
-        help = "Spotify account username or email"
-    )]
-    pub spotify_username: Option<String>,
-
     /// Device name shown in Spotify and Home Assistant
     #[arg(
         short,
@@ -122,7 +114,6 @@ pub struct Cli {
 /// Runtime configuration derived from CLI args
 #[derive(Clone)]
 pub struct Config {
-    pub spotify_username: String,
     pub device_name: String,
     pub mqtt_host: String,
     pub mqtt_port: u16,
@@ -133,15 +124,12 @@ pub struct Config {
 
 impl From<Cli> for Config {
     fn from(cli: Cli) -> Self {
-        let username = cli.spotify_username.unwrap_or_default();
-
         // Derive a unique MQTT device ID from the device name, unless explicitly set
         let mqtt_device_id = cli
             .mqtt_device_id
             .unwrap_or_else(|| slugify(&cli.device_name));
 
         Self {
-            spotify_username: username,
             device_name: cli.device_name,
             mqtt_host: cli.mqtt_host,
             mqtt_port: cli.mqtt_port,
