@@ -50,13 +50,13 @@ def shutdown_coordinators_for_domain(domain):
         count = len(coordinators)
         for coordinator in coordinators:
             if not coordinator._shutdown_requested:
-                _LOGGER.info(
+                _LOGGER.debug(
                     f"Force shutting down coordinator '{coordinator.name}' for disabled integration '{domain}'"
                 )
                 coordinator.hass.async_create_task(coordinator.async_shutdown())
             _unregister_coordinator(coordinator)
         if count > 0:
-            _LOGGER.info(
+            _LOGGER.debug(
                 f"Shutdown {count} coordinator(s) for domain '{domain}'"
             )
         del _coordinator_registry[domain]

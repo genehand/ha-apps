@@ -244,9 +244,22 @@ class ConfigEntries:
         return changed
 
     async def async_reload(self, entry_id: str) -> None:
-        """Reload an entry."""
-        # TODO: Implement reload logic
-        _LOGGER.info(f"Reloading config entry {entry_id}")
+        """Reload an entry.
+
+        Delegates to the integration loader's reload_config_entry for
+        proper unload/reload lifecycle with MQTT preservation.
+        """
+        loader = self._hass.data.get("integration_loader")
+        if not loader:
+            _LOGGER.error("Integration loader not available, cannot reload")
+            return
+
+        entry = self.async_get_entry(entry_id)
+        if not entry:
+            _LOGGER.error(f"Entry {entry_id} not found")
+            return
+
+        await loader.reload_config_entry(entry)
 
     async def async_forward_entry_unload(
         self, entry: ConfigEntry, platform: str

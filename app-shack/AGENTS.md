@@ -37,7 +37,8 @@ shim/
 └── hacs_fetched/        # Upstream HACS utilities
 ```
 
-> OAuth2 and Application Credentials details → [`docs/oauth.md`](docs/oauth.md)
+> OAuth2 and Application Credentials details → [`oauth.md`](docs/oauth.md)
+> Integration Reload Buttons → [`integration-reloads.md`](docs/integration-reloads.md)
 
 ### Import patterns
 

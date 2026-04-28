@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Callable
 
 from ..logging import get_logger, set_current_integration
 from ..hass import HomeAssistant
-from ..models import ConfigEntry
+from ..models import ConfigEntry, _slugify_name
 from ..entity import EntityRegistry
 from ..import_patch import setup_import_patching
 from ..options_map import patch_select_descriptions
@@ -38,6 +38,9 @@ class IntegrationLoader:
         # Setup entity registry
         self._entity_registry = EntityRegistry()
         self._entity_registry.setup(hass)
+
+        # Track reload button entities by entry_id for targeted cleanup
+        self._reload_buttons: Dict[str, Any] = {}
 
     async def load_integration(self, domain: str) -> bool:
         """Load an integration module.
@@ -65,7 +68,7 @@ class IntegrationLoader:
 
         try:
             set_current_integration(domain)
-            _LOGGER.info(f"Loading integration {domain}")
+            _LOGGER.debug(f"Loading integration {domain}")
 
             # Ensure persistent packages are in sys.path (for container mode)
             # This needs to happen before importing the integration
@@ -146,7 +149,7 @@ class IntegrationLoader:
 
         try:
             set_current_integration(domain)
-            _LOGGER.info(f"Setting up {domain} with entry {entry.entry_id}")
+            _LOGGER.debug(f"Setting up {domain} with entry {entry.entry_id}")
 
             module = self._loaded_integrations[domain]
 
@@ -242,6 +245,11 @@ class IntegrationLoader:
             if result:
                 _LOGGER.debug(f"Successfully setup {domain}")
                 entry.state = "loaded"
+
+                # Create a reload button entity for this entry so users
+                # can trigger a reload from Home Assistant (MQTT button press)
+                await self._create_reload_button(entry)
+
                 return True
             else:
                 _LOGGER.error(f"Integration {domain} setup returned False")
@@ -275,7 +283,7 @@ class IntegrationLoader:
 
         try:
             set_current_integration(domain)
-            _LOGGER.info(f"Unloading {domain} (cleanup_mqtt={cleanup_mqtt})")
+            _LOGGER.debug(f"Unloading {domain} (cleanup_mqtt={cleanup_mqtt})")
 
             # Set shutdown flag on hass so async_forward_entry_unload knows
             # not to clean up MQTT topics during server shutdown
@@ -308,7 +316,12 @@ class IntegrationLoader:
                 pass
 
             # Remove all entities for this domain
+            # (This includes the reload button entity since it has
+            # integration_domain set to the entry's domain)
             await self._remove_domain_entities(domain, cleanup_mqtt=cleanup_mqtt)
+
+            # Clean up reload button tracking for this entry
+            self._remove_reload_button(entry.entry_id)
 
             # Call async_unload for global cleanup if no more entries
             entries = self._hass.config_entries.async_entries(domain)
@@ -325,7 +338,7 @@ class IntegrationLoader:
                 )
 
             entry.state = "not_loaded"
-            _LOGGER.info(f"Successfully unloaded {domain}")
+            _LOGGER.debug(f"Successfully unloaded {domain}")
             return True
 
         except Exception as e:
@@ -358,7 +371,7 @@ class IntegrationLoader:
                 if entity_domain == domain:
                     entities_to_remove.append((platform_domain, entity))
 
-        _LOGGER.info(
+        _LOGGER.debug(
             f"Found {len(entities_to_remove)} entities to remove for domain {domain}"
         )
 
@@ -419,6 +432,159 @@ class IntegrationLoader:
 
         return True
 
+    async def _register_internal_entity(self, entity, platform: str) -> None:
+        """Register an entity created internally (not by an integration).
+
+        Handles entity_id generation, loader registration, entity registry,
+        MQTT discovery, and state publishing — all steps normally done
+        by async_forward_entry_setups for integration-created entities.
+
+        Args:
+            entity: The entity instance (must have unique_id, name, etc. set).
+            platform: The platform domain (e.g., 'button').
+        """
+        # Generate entity_id if not set
+        if not entity.entity_id:
+            unique_id = getattr(entity, "unique_id", None) or str(id(entity))
+            entity.entity_id = f"{platform}.{_slugify_name(unique_id)}"
+
+        # Register with loader
+        self.register_entity(platform, entity)
+
+        # Add to entity registry
+        registry = EntityRegistry()
+        registry.setup(self._hass)
+        registry.register(entity)
+
+        # Set up entity in hass
+        entity.hass = self._hass
+        await entity.async_added_to_hass()
+
+        # Publish MQTT discovery and initial state
+        if hasattr(entity, "_publish_mqtt_discovery"):
+            await entity._publish_mqtt_discovery()
+        entity.async_write_ha_state()
+
+        _LOGGER.debug(
+            "Registered internal entity %s (%s)",
+            entity.entity_id,
+            type(entity).__name__,
+        )
+
+    async def _create_reload_button(self, entry: ConfigEntry) -> None:
+        """Create and register a reload button entity for a config entry.
+
+        The button appears as a ButtonEntity with device_class='restart'
+        in HA's MQTT discovery, allowing users to reload the integration
+        from the HA UI.
+
+        Args:
+            entry: The config entry to create a reload button for.
+        """
+        # Avoid creating duplicate reload buttons
+        if entry.entry_id in self._reload_buttons:
+            _LOGGER.debug(
+                "Reload button already exists for entry %s, skipping",
+                entry.entry_id,
+            )
+            return
+
+        # Lazy imports to avoid circular import at module load time
+        # (shim.platforms.__init__ triggers homeassistant imports)
+        from ..platforms.button import ButtonEntity, ButtonDeviceClass
+
+        class _ReloadButtonEntity(ButtonEntity):
+            """A button that reloads a specific integration config entry."""
+
+            def __init__(
+                self,
+                _loader: "IntegrationLoader",
+                _entry: ConfigEntry,
+                _device_info: Optional[dict] = None,
+            ):
+                super().__init__()
+                self._loader = _loader
+                self._entry = _entry
+                self._attr_unique_id = f"reload_{_entry.entry_id}"
+                self._attr_name = f"Reload {_entry.title or _entry.domain}"
+                self._attr_device_class = ButtonDeviceClass.RESTART
+                self._attr_entity_category = "config"
+                self._attr_integration_domain = _entry.domain
+                self._attr_config_entry_id = _entry.entry_id
+                self._attr_device_info = _device_info or {
+                    "identifiers": {("shack", _entry.domain)},
+                    "name": f"Shack - {_entry.title or _entry.domain}",
+                    "manufacturer": "Shack",
+                    "model": "Integration",
+                }
+
+            async def async_press(self) -> None:
+                """Press the reload button — reloads the integration config entry."""
+                _LOGGER.debug(
+                    "Reload button pressed for %s entry %s",
+                    self._entry.domain,
+                    self._entry.entry_id,
+                )
+                await self._loader.reload_config_entry(self._entry)
+
+        # Build device_info from the integration's entities if available,
+        # otherwise use a generic Shack device
+        device_info = self._get_reload_button_device_info(entry)
+
+        button = _ReloadButtonEntity(self, entry, _device_info=device_info)
+        await self._register_internal_entity(button, "button")
+        self._reload_buttons[entry.entry_id] = button
+
+        _LOGGER.debug(
+            "Created reload button for %s entry %s",
+            entry.domain,
+            entry.entry_id,
+        )
+
+    def _remove_reload_button(self, entry_id: str) -> None:
+        """Remove the reload button entity for a config entry.
+
+        The button is cleaned up automatically by _remove_domain_entities
+        during unload, so this just removes the tracking reference.
+
+        Args:
+            entry_id: The config entry ID to remove the button for.
+        """
+        if entry_id in self._reload_buttons:
+            del self._reload_buttons[entry_id]
+            _LOGGER.debug("Removed reload button tracking for entry %s", entry_id)
+
+    def _get_reload_button_device_info(
+        self, entry: ConfigEntry
+    ) -> Dict[str, Any]:
+        """Build device info for a reload button entity.
+
+        Tries to find an existing entity from this integration to reuse
+        its device_info, so the reload button appears on the same device
+        as the integration's entities. Falls back to a Shack-managed device.
+
+        Args:
+            entry: The config entry.
+
+        Returns:
+            A device_info dict suitable for MQTT discovery.
+        """
+        # Try to find an entity from this integration to inherit its device
+        for platform_domain, entities in self._entities.items():
+            for entity in entities:
+                if getattr(entity, "_attr_config_entry_id", None) == entry.entry_id:
+                    entity_device = getattr(entity, "device_info", None)
+                    if entity_device:
+                        return entity_device
+
+        # Fallback: create a Shack-managed device for this integration
+        return {
+            "identifiers": {("shack", entry.domain)},
+            "name": f"Shack - {entry.title or entry.domain}",
+            "manufacturer": "Shack",
+            "model": "Integration",
+        }
+
     async def remove_config_entry(self, entry: ConfigEntry) -> bool:
         """Remove a specific config entry and its entities."""
         domain = entry.domain
@@ -441,14 +607,6 @@ class IntegrationLoader:
             return False
         finally:
             set_current_integration(None)
-
-    def register_entity(self, domain: str, entity) -> None:
-        """Register an entity created by an integration."""
-        if domain not in self._entities:
-            self._entities[domain] = []
-
-        self._entities[domain].append(entity)
-        _LOGGER.debug(f"Registered entity {entity.entity_id} for {domain}")
 
     def get_entities(
         self, domain: Optional[str] = None, integration_domain: Optional[str] = None
@@ -928,7 +1086,7 @@ class IntegrationLoader:
             success = await self.setup_integration(entry)
 
             if success:
-                _LOGGER.info(f"Successfully reloaded {domain} entry {entry.entry_id}")
+                _LOGGER.debug(f"Successfully reloaded {domain} entry {entry.entry_id}")
             else:
                 _LOGGER.error(f"Failed to reload {domain} entry {entry.entry_id}")
 
@@ -939,23 +1097,6 @@ class IntegrationLoader:
             return False
         finally:
             set_current_integration(None)
-
-    async def reload_all(self) -> None:
-        """Reload all enabled integrations."""
-        _LOGGER.info("Reloading all integrations")
-
-        # Unload all
-        for domain in list(self._loaded_integrations.keys()):
-            entry = self._hass.config_entries.async_get_entry(domain)
-            if entry:
-                await self.unload_integration(entry)
-
-        # Reload all enabled
-        enabled = self._integration_manager.get_enabled_integrations()
-        for info in enabled:
-            entries = self._hass.config_entries.async_entries(info.domain)
-            for entry in entries:
-                await self.setup_integration(entry)
 
     async def start_config_flow(self, domain: str) -> Optional[dict]:
         """Start a config flow for an integration."""

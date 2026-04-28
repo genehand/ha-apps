@@ -190,7 +190,7 @@ class ShimManager:
         for domain in self._integration_loader.get_loaded_integrations():
             entries = self._hass.config_entries.async_entries(domain)
             for entry in entries:
-                _LOGGER.info(
+                _LOGGER.debug(
                     f"Unloading {domain} entry {entry.entry_id} (cleanup_mqtt=False)"
                 )
                 try:

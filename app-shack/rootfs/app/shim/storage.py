@@ -22,7 +22,6 @@ class Storage:
 
         # Storage files
         self._entries_file = self._shim_dir / "entries.json"
-        self._entities_file = self._shim_dir / "entities.json"
         self._integrations_file = self._shim_dir / "integrations.json"
         self._custom_repos_file = self._shim_dir / "custom_repos.json"
         self._entity_states_file = self._shim_dir / "entity_states.json"
@@ -77,37 +76,6 @@ class Storage:
         """Save config entries to storage."""
         self._save_json(self._entries_file, entries)
         _LOGGER.debug(f"Saved {sum(len(v) for v in entries.values())} config entries")
-
-    # Entity Registry
-    def load_entities(self) -> Dict[str, dict]:
-        """Load entity registry from storage."""
-        return self._load_json(self._entities_file)
-
-    def save_entities(self, entities: Dict[str, dict]) -> None:
-        """Save entity registry to storage."""
-        self._save_json(self._entities_file, entities)
-        _LOGGER.debug(f"Saved {len(entities)} entities")
-
-    def register_entity(
-        self,
-        entity_id: str,
-        unique_id: str,
-        platform: str,
-        device_id: Optional[str] = None,
-        area_id: Optional[str] = None,
-    ) -> None:
-        """Register an entity in the registry."""
-        entities = self.load_entities()
-        entities[entity_id] = {
-            "entity_id": entity_id,
-            "unique_id": unique_id,
-            "platform": platform,
-            "device_id": device_id,
-            "area_id": area_id,
-            "registered_at": datetime.now().isoformat(),
-        }
-        self.save_entities(entities)
-        _LOGGER.debug(f"Registered entity {entity_id}")
 
     # Entity State Storage (for RestoreEntity)
     def load_entity_states(self) -> Dict[str, dict]:
