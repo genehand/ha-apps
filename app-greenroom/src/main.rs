@@ -91,14 +91,13 @@ pub struct Cli {
     #[arg(long, env = "MQTT_PASSWORD", help = "MQTT broker password")]
     pub mqtt_password: Option<String>,
 
-    /// MQTT device ID for unique topics
+    /// MQTT device ID for unique topics (defaults to slugified device name)
     #[arg(
         long,
         env = "MQTT_DEVICE_ID",
-        default_value = "greenroom",
         help = "MQTT device ID (used in topic names)"
     )]
-    pub mqtt_device_id: String,
+    pub mqtt_device_id: Option<String>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(
@@ -136,6 +135,11 @@ impl From<Cli> for Config {
     fn from(cli: Cli) -> Self {
         let username = cli.spotify_username.unwrap_or_default();
 
+        // Derive a unique MQTT device ID from the device name, unless explicitly set
+        let mqtt_device_id = cli
+            .mqtt_device_id
+            .unwrap_or_else(|| slugify(&cli.device_name));
+
         Self {
             spotify_username: username,
             device_name: cli.device_name,
@@ -143,9 +147,19 @@ impl From<Cli> for Config {
             mqtt_port: cli.mqtt_port,
             mqtt_username: cli.mqtt_username,
             mqtt_password: cli.mqtt_password,
-            mqtt_device_id: cli.mqtt_device_id,
+            mqtt_device_id,
         }
     }
+}
+
+/// Slugify a string for use as a safe MQTT device ID:
+/// lowercase, spaces to underscores, strip non-alphanumeric characters.
+fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c == ' ' { '_' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
 }
 
 /// Playback state shared between Spotify client and MQTT bridge
@@ -200,10 +214,6 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting Greenroom - Spotify Connect for Home Assistant via MQTT");
     info!("Device name: {}", cli.device_name);
-
-    if cli.spotify_username.is_none() {
-        info!("No Spotify credentials provided - will run in demo mode");
-    }
 
     // Convert CLI args to config
     let config: Config = cli.clone().into();

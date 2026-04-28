@@ -21,7 +21,7 @@ pub async fn wait_for_connection_enabled(
         };
 
         if !currently_enabled {
-            info!("Spotify connection disabled via MQTT switch, waiting...");
+            info!("Spotify connection disabled, waiting...");
             // set_disabled_state will be called by the caller if needed
 
             // Wait for connection to be re-enabled

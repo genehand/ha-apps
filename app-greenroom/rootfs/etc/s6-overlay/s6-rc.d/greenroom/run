@@ -9,11 +9,23 @@
 export RUST_LOG=$(bashio::config 'log_level' 'info')
 
 # Get other configuration values from add-on options
-export SPOTIFY_USERNAME=$(bashio::config 'spotify_username')
 export DEVICE_NAME=$(bashio::config 'device_name')
 
 # MQTT configuration - try Supervisor API first, fallback to user config
-if bashio::services.available 'mqtt'; then
+# We check directly via curl to avoid bashio logging an ERROR when the
+# MQTT service is not available via Supervisor (expected with external MQTT).
+MQTT_VIA_SUPERVISOR=false
+if MQTT_RESPONSE=$(curl -s --request GET \
+    -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${SUPERVISOR_API:-http://supervisor}/services/mqtt" 2>/dev/null); then
+    MQTT_RESULT=$(echo "${MQTT_RESPONSE}" | bashio::jq '.result' 2>/dev/null) || true
+    if [ "${MQTT_RESULT}" = "ok" ]; then
+        MQTT_VIA_SUPERVISOR=true
+    fi
+fi
+
+if [ "${MQTT_VIA_SUPERVISOR}" = "true" ]; then
     export MQTT_HOST=$(bashio::services 'mqtt' 'host')
     export MQTT_PORT=$(bashio::services 'mqtt' 'port')
     export MQTT_USERNAME=$(bashio::services 'mqtt' 'username')
