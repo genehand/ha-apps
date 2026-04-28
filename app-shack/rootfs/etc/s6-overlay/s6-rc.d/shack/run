@@ -10,8 +10,19 @@ export LOG_LEVEL=$(bashio::config 'log_level' 'INFO')
 
 bashio::log.info "Starting Shack..."
 
-# MQTT configuration - try Supervisor service first, fallback to user config
-if bashio::services.available 'mqtt'; then
+# MQTT configuration - try Supervisor API first, fallback to user config
+MQTT_VIA_SUPERVISOR=false
+if MQTT_RESPONSE=$(curl -s --request GET \
+    -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${SUPERVISOR_API:-http://supervisor}/services/mqtt" 2>/dev/null); then
+    MQTT_RESULT=$(echo "${MQTT_RESPONSE}" | bashio::jq '.result' 2>/dev/null) || true
+    if [ "${MQTT_RESULT}" = "ok" ]; then
+        MQTT_VIA_SUPERVISOR=true
+    fi
+fi
+
+if [ "${MQTT_VIA_SUPERVISOR}" = "true" ]; then
     export MQTT_HOST=$(bashio::services 'mqtt' 'host')
     export MQTT_PORT=$(bashio::services 'mqtt' 'port')
     export MQTT_USERNAME=$(bashio::services 'mqtt' 'username')
