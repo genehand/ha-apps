@@ -169,41 +169,52 @@ def build_mqtt_device_config(device_info: Any) -> Dict[str, Any]:
         ),
     }
 
-    # Try to get name from device_info first, then look up in device registry
-    name = get_device_info_attr(device_info, "name")
-    if not name and get_device_info_attr(device_info, "identifiers"):
-        # Look up device in registry to get the name
+    # Look up device in registry once if we have identifiers
+    registry_device = None
+    identifiers = get_device_info_attr(device_info, "identifiers")
+    if identifiers:
         try:
             from homeassistant.helpers import device_registry as dr
 
             # Get the registry - works with or without hass
             registry = dr.async_get(None)
             if registry and hasattr(registry, "_devices"):
-                # Get identifiers from device_info
-                identifiers = get_device_info_attr(device_info, "identifiers", set())
                 # Look for matching device in registry
                 for device_id, device in registry._devices.items():
                     # Check if any identifier matches
                     if hasattr(device, "identifiers"):
                         # Check for identifier overlap
                         if identifiers & device.identifiers:
-                            name = device.name
+                            registry_device = device
                             break
         except Exception:
             pass
 
+    # Try to get name from device_info first, then fall back to registry
+    name = get_device_info_attr(device_info, "name")
+    if not name and registry_device is not None:
+        name = registry_device.name
     if name:
         config["name"] = name
 
+    # Try to get manufacturer from device_info first, then fall back to registry
     manufacturer = get_device_info_attr(device_info, "manufacturer")
+    if not manufacturer and registry_device is not None:
+        manufacturer = registry_device.manufacturer
     if manufacturer:
         config["manufacturer"] = manufacturer
 
+    # Try to get model from device_info first, then fall back to registry
     model = get_device_info_attr(device_info, "model")
+    if not model and registry_device is not None:
+        model = registry_device.model
     if model:
         config["model"] = model
 
+    # Try to get sw_version from device_info first, then fall back to registry
     sw_version = get_device_info_attr(device_info, "sw_version")
+    if not sw_version and registry_device is not None:
+        sw_version = registry_device.sw_version
     if sw_version:
         config["sw_version"] = sw_version
 

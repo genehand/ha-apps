@@ -513,6 +513,92 @@ class TestBuildMqttDeviceConfig:
         result = build_mqtt_device_config(None)
         assert result == {}
 
+    def test_build_device_config_fallback_to_registry(self):
+        """Test that manufacturer/model/sw_version fallback to device registry."""
+        from unittest.mock import MagicMock, patch
+        from shim.entity import build_mqtt_device_config
+        from shim.stubs.helpers import DeviceEntry, DeviceRegistry
+
+        # Create a registry with a device that has manufacturer/model/sw_version
+        registry = DeviceRegistry(None)
+        registry.async_get_or_create(
+            config_entry_id="test_entry",
+            identifiers={("smartcar", "test-vin")},
+            manufacturer="Volkswagen",
+            model="ID.4 (2024)",
+            name="Volkswagen ID.4",
+            sw_version="5.4.3",
+        )
+
+        # Patch the device registry lookup to return our registry
+        with patch("shim.stubs.helpers._global_device_registry", registry):
+            device_info = {"identifiers": {("smartcar", "test-vin")}}
+            result = build_mqtt_device_config(device_info)
+
+        assert result["name"] == "Volkswagen ID.4"
+        assert result["manufacturer"] == "Volkswagen"
+        assert result["model"] == "ID.4 (2024)"
+        assert result["sw_version"] == "5.4.3"
+
+    def test_build_device_config_prefers_device_info_over_registry(self):
+        """Test that device_info values take precedence over registry."""
+        from unittest.mock import patch
+        from shim.entity import build_mqtt_device_config
+        from shim.stubs.helpers import DeviceRegistry
+
+        registry = DeviceRegistry(None)
+        registry.async_get_or_create(
+            config_entry_id="test_entry",
+            identifiers={("smartcar", "test-vin")},
+            manufacturer="Volkswagen",
+            model="ID.4 (2024)",
+            name="Volkswagen ID.4",
+            sw_version="5.4.3",
+        )
+
+        with patch("shim.stubs.helpers._global_device_registry", registry):
+            device_info = {
+                "identifiers": {("smartcar", "test-vin")},
+                "manufacturer": "Override Manufacturer",
+                "model": "Override Model",
+                "sw_version": "Override Version",
+                "name": "Override Name",
+            }
+            result = build_mqtt_device_config(device_info)
+
+        assert result["name"] == "Override Name"
+        assert result["manufacturer"] == "Override Manufacturer"
+        assert result["model"] == "Override Model"
+        assert result["sw_version"] == "Override Version"
+
+    def test_build_device_config_partial_registry_fallback(self):
+        """Test mixed device_info and registry fallback."""
+        from unittest.mock import patch
+        from shim.entity import build_mqtt_device_config
+        from shim.stubs.helpers import DeviceRegistry
+
+        registry = DeviceRegistry(None)
+        registry.async_get_or_create(
+            config_entry_id="test_entry",
+            identifiers={("smartcar", "test-vin")},
+            manufacturer="Volkswagen",
+            model="ID.4 (2024)",
+            name="Volkswagen ID.4",
+            sw_version="5.4.3",
+        )
+
+        with patch("shim.stubs.helpers._global_device_registry", registry):
+            device_info = {
+                "identifiers": {("smartcar", "test-vin")},
+                "manufacturer": "Override Manufacturer",
+            }
+            result = build_mqtt_device_config(device_info)
+
+        assert result["manufacturer"] == "Override Manufacturer"
+        assert result["model"] == "ID.4 (2024)"
+        assert result["sw_version"] == "5.4.3"
+        assert result["name"] == "Volkswagen ID.4"
+
 
 class TestMqttCleanup:
     """Test cases for MQTT cleanup on entity removal."""
