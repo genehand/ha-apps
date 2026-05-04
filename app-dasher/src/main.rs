@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         client_states: ClientStates::new(),
         http_client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
             .build()?,
         panel_updates: Arc::new(DashMap::new()),
     };

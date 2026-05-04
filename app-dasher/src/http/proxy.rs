@@ -31,8 +31,10 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
     let mut headers = reqwest::header::HeaderMap::new();
     for (key, value) in req.headers() {
         let key_lower = key.as_str().to_lowercase();
-        // Skip host header (we set it via reqwest)
-        if key_lower != "host" {
+        // Skip hop-by-hop headers that reqwest sets automatically
+        // based on the body we send (content-length, transfer-encoding)
+        if key_lower != "host" && key_lower != "content-length" && key_lower != "transfer-encoding"
+        {
             if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_ref()) {
                 if let Ok(val) = reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
                     headers.insert(name, val);
@@ -118,7 +120,7 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
         .map(|ct| ct.starts_with("text/html"))
         .unwrap_or(false);
 
-    if is_html {
+    if is_html && !path.starts_with("/api/") {
         return build_html_response(upstream_response, status).await;
     }
 
@@ -211,7 +213,7 @@ mod tests {
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Write;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_string, header_exists, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::config::Config;
@@ -231,6 +233,7 @@ mod tests {
     fn create_test_state(config: Arc<Config>) -> AppState {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap();
 
@@ -276,6 +279,51 @@ mod tests {
 
         // Empty path
         assert_eq!(get_timeout_for_path(""), Some(5));
+    }
+
+    /// Test that Transfer-Encoding and Content-Length are stripped from forwarded request
+    /// headers, since reqwest sets them automatically based on the body.
+    #[tokio::test]
+    async fn test_strips_transfer_encoding_on_request() {
+        let mock_server = MockServer::start().await;
+
+        let form_body = "username=admin&password=secret";
+
+        // Negative expectation: transfer-encoding should NOT be forwarded.
+        // Mount a responder first (required), then set expect(0).
+        Mock::given(method("POST"))
+            .and(path("/api/ingress/test"))
+            .and(header_exists("transfer-encoding"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        // Positive expectation: the body should arrive correctly
+        Mock::given(method("POST"))
+            .and(path("/api/ingress/test"))
+            .and(body_string(form_body.to_string()))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let state = create_test_state(config);
+
+        let mut req = Request::new(Body::from(form_body));
+        *req.method_mut() = axum::http::Method::POST;
+        *req.uri_mut() = "/api/ingress/test".parse().unwrap();
+        req.headers_mut()
+            .insert("Transfer-Encoding", "chunked".parse().unwrap());
+
+        let response = handle(req, state, "127.0.0.1".to_string()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the negative expectation (transfer-encoding was not forwarded)
+        mock_server.verify().await;
     }
 
     /// Test that Accept-Encoding header is forwarded to upstream
@@ -416,6 +464,53 @@ mod tests {
         assert_eq!(decompressed, json_data);
     }
 
+    /// Test that HTML responses under /api/* skip script injection
+    #[tokio::test]
+    async fn test_api_path_skips_html_injection() {
+        let mock_server = MockServer::start().await;
+
+        let html_body = "<html><head></head><body>API response</body></html>";
+
+        Mock::given(method("GET"))
+            .and(path("/api/test"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "text/html")
+                    .set_body_string(html_body),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let state = create_test_state(config);
+
+        let mut req = Request::new(Body::empty());
+        *req.method_mut() = axum::http::Method::GET;
+        *req.uri_mut() = "/api/test".parse().unwrap();
+
+        let response = handle(req, state, "127.0.0.1".to_string()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Content-Length should be preserved from upstream (injected path strips it)
+        assert_eq!(
+            response
+                .headers()
+                .get("content-length")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            &html_body.len().to_string()
+        );
+
+        // Body should be unchanged (no script injected)
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert_eq!(body_str, html_body);
+    }
+
     /// Test that non-gzipped responses still work correctly
     #[tokio::test]
     async fn test_non_gzip_response_passes_through() {
@@ -450,5 +545,42 @@ mod tests {
         // Verify body is the original plain text
         let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(String::from_utf8(body_bytes.to_vec()).unwrap(), plain_text);
+    }
+
+    /// Test that redirect responses are passed through to the client without following
+    #[tokio::test]
+    async fn test_redirect_passed_through() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/ingress/test"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("Location", "/login?next=%2Fgarage%2F"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config(mock_server.uri().trim_start_matches("http://").to_string());
+        let state = create_test_state(config);
+
+        let mut req = Request::new(Body::empty());
+        *req.method_mut() = axum::http::Method::GET;
+        *req.uri_mut() = "/ingress/test".parse().unwrap();
+
+        let response = handle(req, state, "127.0.0.1".to_string()).await;
+
+        // Should return the 302 directly, not follow it
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "/login?next=%2Fgarage%2F"
+        );
     }
 }

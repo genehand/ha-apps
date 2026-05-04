@@ -1,5 +1,5 @@
 name: Dasher
-version: 0.7.3
+version: 0.7.4
 slug: dasher
 description: Filter websocket events for dashboard entities
 url: https://github.com/genehand/ha-apps/blob/main/app-dasher/README.md

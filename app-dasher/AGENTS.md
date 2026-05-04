@@ -228,6 +228,13 @@ RUST_LOG=info,dasher=debug cargo run
 - Binary built statically for minimal image size
 - Configuration mounted at `/data/options.json` in container
 
+## HTTP Client Configuration
+
+The proxy uses `reqwest::Client` configured in both `src/main.rs` and test helpers in `src/http/proxy.rs`. Key settings:
+
+- **`.redirect(reqwest::redirect::Policy::none())`** — Required. Redirects must be passed through to the client so the browser's URL bar reflects the correct path after following redirects (critical for ingress addons that use `action=""` forms). Without this, reqwest follows redirects internally and the browser never sees the intermediate URLs.
+- **`.timeout(Duration::from_secs(30))`** — Default timeout for upstream requests.
+
 ## Common Tasks
 
 **Add a New Dependency**: Edit `Cargo.toml`, add to `[dependencies]`, then run `cargo build`.
