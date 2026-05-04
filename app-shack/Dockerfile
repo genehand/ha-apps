@@ -11,6 +11,7 @@ ENV UV_LINK_MODE=copy
 
 # Install build dependencies for packages with C/Rust extensions
 RUN apk add --no-cache \
+    git \
     gcc \
     musl-dev \
     libffi-dev \
