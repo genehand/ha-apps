@@ -120,8 +120,9 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
         .map(|ct| ct.starts_with("text/html"))
         .unwrap_or(false);
 
-    if is_html && !path.starts_with("/api/") {
-        return build_html_response(upstream_response, status).await;
+    if is_html {
+        let inject = !path.starts_with("/api/");
+        return build_html_response(upstream_response, status, inject).await;
     }
 
     // Extract response headers for non-HTML
@@ -144,7 +145,11 @@ pub async fn handle(req: Request, state: AppState, client_ip: String) -> Respons
     }
 }
 
-async fn build_html_response(upstream_response: reqwest::Response, status: StatusCode) -> Response {
+async fn build_html_response(
+    upstream_response: reqwest::Response,
+    status: StatusCode,
+    inject: bool,
+) -> Response {
     // Clone headers before consuming the response body
     let headers = upstream_response.headers().clone();
 
@@ -160,8 +165,8 @@ async fn build_html_response(upstream_response: reqwest::Response, status: Statu
         }
     };
 
-    let (injected_bytes, new_encoding) =
-        crate::http::inject::process_html_response(&body_bytes, content_encoding);
+    let (processed_bytes, new_encoding) =
+        crate::http::inject::process_html_response(&body_bytes, content_encoding, inject);
 
     // Build response headers, removing content-length/transfer-encoding/content-encoding
     // since body changed and we may have recompressed
@@ -188,7 +193,7 @@ async fn build_html_response(upstream_response: reqwest::Response, status: Statu
         }
     }
 
-    let body = Body::from(injected_bytes);
+    let body = Body::from(processed_bytes);
 
     match response_builder.body(body) {
         Ok(response) => response,
@@ -465,6 +470,7 @@ mod tests {
     }
 
     /// Test that HTML responses under /api/* skip script injection
+    /// but still get clean headers (content-length stripped, no stale encoding)
     #[tokio::test]
     async fn test_api_path_skips_html_injection() {
         let mock_server = MockServer::start().await;
@@ -494,15 +500,16 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        // Content-Length should be preserved from upstream (injected path strips it)
-        assert_eq!(
-            response
-                .headers()
-                .get("content-length")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            &html_body.len().to_string()
+        // No stale Content-Encoding should be present (original wasn't compressed)
+        assert!(
+            response.headers().get("content-encoding").is_none(),
+            "Content-Encoding should not be present for uncompressed HTML"
+        );
+
+        // No stale Transfer-Encoding should be present (stripped by build_html_response)
+        assert!(
+            response.headers().get("transfer-encoding").is_none(),
+            "Transfer-Encoding should not be present"
         );
 
         // Body should be unchanged (no script injected)

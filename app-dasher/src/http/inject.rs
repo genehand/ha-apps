@@ -10,6 +10,7 @@ const MAX_HTML_SIZE: usize = 1024 * 1024; // 1MB
 pub fn process_html_response(
     body: &[u8],
     content_encoding: Option<&str>,
+    inject: bool,
 ) -> (Vec<u8>, Option<String>) {
     if body.len() > MAX_HTML_SIZE {
         tracing::warn!(
@@ -41,24 +42,28 @@ pub fn process_html_response(
         }
     };
 
-    let injected = inject_script(&html_str);
+    let processed = if inject {
+        inject_script(&html_str)
+    } else {
+        html_str
+    };
 
     match content_encoding {
-        Some("gzip") => match compress_gzip(injected.as_bytes()) {
+        Some("gzip") => match compress_gzip(processed.as_bytes()) {
             Ok(compressed) => (compressed, Some("gzip".to_string())),
             Err(e) => {
                 tracing::warn!("Failed to recompress HTML: {}, serving uncompressed", e);
-                (injected.into_bytes(), None)
+                (processed.into_bytes(), None)
             }
         },
-        Some("deflate") => match compress_deflate(injected.as_bytes()) {
+        Some("deflate") => match compress_deflate(processed.as_bytes()) {
             Ok(compressed) => (compressed, Some("deflate".to_string())),
             Err(e) => {
                 tracing::warn!("Failed to recompress HTML: {}, serving uncompressed", e);
-                (injected.into_bytes(), None)
+                (processed.into_bytes(), None)
             }
         },
-        _ => (injected.into_bytes(), None),
+        _ => (processed.into_bytes(), None),
     }
 }
 
@@ -177,19 +182,28 @@ mod tests {
     }
 
     #[test]
-    fn test_process_html_uncompressed() {
+    fn test_process_html_uncompressed_with_inject() {
         let html = "<html><head></head><body>Hello</body></html>";
-        let (result, encoding) = process_html_response(html.as_bytes(), None);
+        let (result, encoding) = process_html_response(html.as_bytes(), None, true);
         assert!(encoding.is_none());
         let result_str = String::from_utf8(result).unwrap();
         assert!(result_str.contains("dasher_tab="));
     }
 
     #[test]
+    fn test_process_html_uncompressed_without_inject() {
+        let html = "<html><head></head><body>Hello</body></html>";
+        let (result, encoding) = process_html_response(html.as_bytes(), None, false);
+        assert!(encoding.is_none());
+        let result_str = String::from_utf8(result).unwrap();
+        assert_eq!(result_str, html);
+    }
+
+    #[test]
     fn test_process_html_deflate() {
         let html = "<html><head></head><body>Hello</body></html>";
         let compressed = compress_deflate(html.as_bytes()).unwrap();
-        let (result, encoding) = process_html_response(&compressed, Some("deflate"));
+        let (result, encoding) = process_html_response(&compressed, Some("deflate"), true);
         assert_eq!(encoding, Some("deflate".to_string()));
         let decompressed = decompress_deflate(&result).unwrap();
         let result_str = String::from_utf8(decompressed).unwrap();
@@ -200,7 +214,7 @@ mod tests {
     fn test_process_html_gzip() {
         let html = "<html><head></head><body>Hello</body></html>";
         let compressed = compress_gzip(html.as_bytes()).unwrap();
-        let (result, encoding) = process_html_response(&compressed, Some("gzip"));
+        let (result, encoding) = process_html_response(&compressed, Some("gzip"), true);
         assert_eq!(encoding, Some("gzip".to_string()));
         let decompressed = decompress_gzip(&result).unwrap();
         let result_str = String::from_utf8(decompressed).unwrap();
@@ -210,7 +224,7 @@ mod tests {
     #[test]
     fn test_process_html_too_large() {
         let html = vec![b'x'; MAX_HTML_SIZE + 1];
-        let (result, encoding) = process_html_response(&html, None);
+        let (result, encoding) = process_html_response(&html, None, true);
         assert_eq!(result, html);
         assert!(encoding.is_none());
     }
