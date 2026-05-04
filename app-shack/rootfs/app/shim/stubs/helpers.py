@@ -607,10 +607,26 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
         except (TypeError, ValueError):
             raise ValueError(f"Invalid longitude: {value}")
 
+    def config_entry_only_config_schema(domain: str):
+        """Return a config schema for integrations that don't support YAML setup.
+
+        Logs a warning if the domain key appears in a YAML configuration dict.
+        """
+        def validator(config):
+            if isinstance(config, dict) and domain in config:
+                _LOGGER.warning(
+                    'The %s integration does not support YAML setup, '
+                    'please remove it from your configuration file',
+                    domain,
+                )
+            return config
+        return validator
+
     config_validation.ensure_list = ensure_list
     config_validation.multi_select = multi_select
     config_validation.latitude = latitude_validator
     config_validation.longitude = longitude_validator
+    config_validation.config_entry_only_config_schema = config_entry_only_config_schema
     homeassistant.helpers.config_validation = config_validation
     sys.modules["homeassistant.helpers.config_validation"] = config_validation
 
@@ -618,6 +634,7 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     entity_platform = types.ModuleType("homeassistant.helpers.entity_platform")
     entity_platform.async_get_platforms = lambda *args, **kwargs: []
     entity_platform.AddEntitiesCallback = lambda *args, **kwargs: None
+    entity_platform.AddConfigEntryEntitiesCallback = lambda *args, **kwargs: None
 
     class _MockPlatform:
         def async_register_entity_service(self, *args, **kwargs):
