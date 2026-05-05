@@ -136,17 +136,15 @@ STATE_CLASS_TOTAL = "total"
 STATE_CLASS_TOTAL_INCREASING = "total_increasing"
 
 
-class RestoreSensor:
+from ..restore import RestoreEntity
+
+
+class RestoreSensor(RestoreEntity):
     """Mixin class for restoring sensor state after restart.
 
-    Saves sensor state to persistent storage and restores it when
-    the entity is re-added to Home Assistant after a restart.
+    Adds sensor-specific restore support on top of RestoreEntity,
+    including native_value / native_unit_of_measurement preservation.
     """
-
-    @property
-    def extra_restore_state_data(self):
-        """Return extra state data for restoration."""
-        return None
 
     async def async_get_last_sensor_data(self):
         """Return last sensor data from restore.
@@ -169,45 +167,11 @@ class RestoreSensor:
             native_unit_of_measurement=last_state.attributes.get("unit_of_measurement"),
         )
 
-    async def async_get_last_state(self):
-        """Return last state from storage.
-
-        Returns a State-like object with a 'state' attribute, or None if
-        no previous state is found.
-        """
-        # Get entity_id and hass from the instance
-        entity_id = getattr(self, 'entity_id', None)
-        hass = getattr(self, 'hass', None)
-
-        if not hass or not entity_id:
-            return None
-
-        from ..storage import Storage
-        from ..models import State
-
-        # Get the shim directory from hass
-        shim_dir = getattr(hass, 'shim_dir', None)
-        if not shim_dir:
-            return None
-
-        storage = Storage(shim_dir)
-        saved = storage.load_entity_state(entity_id)
-
-        if saved is None:
-            return None
-
-        # Return a State object with the saved state
-        return State(
-            entity_id=entity_id,
-            state=saved.get("state", ""),
-            attributes=saved.get("attributes", {}),
-        )
-
     def _save_state_for_restore(self) -> None:
         """Save the current sensor state to storage for later restoration.
 
-        This should be called when the sensor state changes to ensure
-        the latest state is available after a restart.
+        Extends the base implementation to also persist
+        native_unit_of_measurement so it can be restored after a restart.
         """
         entity_id = getattr(self, 'entity_id', None)
         hass = getattr(self, 'hass', None)
@@ -217,7 +181,6 @@ class RestoreSensor:
 
         from ..storage import Storage
 
-        # Get the shim directory from hass
         shim_dir = getattr(hass, 'shim_dir', None)
         if not shim_dir:
             return

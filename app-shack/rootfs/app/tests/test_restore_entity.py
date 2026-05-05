@@ -145,6 +145,64 @@ class TestRestoreEntityWithStorage:
         assert saved is None
 
 
+class TestRestoreNumber:
+    """Test RestoreNumber state save and restore functionality."""
+
+    @pytest.mark.asyncio
+    async def test_restore_number_saves_and_restores_state(self, hass):
+        """Test that RestoreNumber saves state and can restore it later."""
+        from shim.platforms.number import RestoreNumber
+
+        class TestRestoreNumberEntity(RestoreNumber):
+            """Test number entity that supports state restoration."""
+
+            def __init__(self):
+                super().__init__()
+                self._attr_unique_id = "test_restore_number_001"
+                self.entity_id = "number.test_restore_number"
+                self._attr_native_value = 0.0
+
+            def set_native_value(self, value: float) -> None:
+                self._attr_native_value = value
+
+        entity = TestRestoreNumberEntity()
+        entity.hass = hass
+        entity._added = True
+
+        # Update value and write state
+        entity._attr_native_value = 42.5
+        entity.async_write_ha_state()
+
+        # Verify state was written
+        state = hass.states.get("number.test_restore_number")
+        assert state is not None
+        assert state.state == "42.5"
+
+        # Verify state was saved to storage
+        storage = Storage(hass.shim_dir)
+        saved = storage.load_entity_state("number.test_restore_number")
+        assert saved is not None
+        assert saved["state"] == "42.5"
+
+    @pytest.mark.asyncio
+    async def test_restore_number_returns_none_when_no_saved_state(self, hass):
+        """Test that RestoreNumber returns None when no state was saved."""
+        from shim.platforms.number import RestoreNumber
+
+        class TestRestoreNumberEntity(RestoreNumber):
+            def __init__(self):
+                super().__init__()
+                self._attr_unique_id = "test_restore_number_002"
+                self.entity_id = "number.test_no_saved"
+                self._attr_native_value = 0.0
+
+        entity = TestRestoreNumberEntity()
+        entity.hass = hass
+
+        last_state = await entity.async_get_last_state()
+        assert last_state is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

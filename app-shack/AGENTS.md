@@ -39,6 +39,7 @@ shim/
 
 > OAuth2 and Application Credentials details → [`oauth.md`](docs/oauth.md)
 > Integration Reload Buttons → [`integration-reloads.md`](docs/integration-reloads.md)
+> State Restoration (RestoreEntity) → [`state-restore.md`](docs/state-restore.md)
 
 ### Import patterns
 

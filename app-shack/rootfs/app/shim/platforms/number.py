@@ -17,6 +17,7 @@ from ..entity import (
 )
 from ..logging import get_logger
 from ..frozen_dataclass_compat import FrozenOrThawed
+from ..restore import RestoreEntity
 
 _LOGGER = get_logger(__name__)
 
@@ -100,6 +101,16 @@ class NumberEntity(Entity):
     async def async_set_native_value(self, value: float) -> None:
         """Set the value of the entity."""
         await self.hass.async_add_executor_job(self.set_native_value, value)
+
+    def async_write_ha_state(self) -> None:
+        """Write state to the state machine and save for restoration.
+
+        If this entity is a RestoreEntity, also saves the state to persistent
+        storage so it can be restored after a restart.
+        """
+        super().async_write_ha_state()
+        if isinstance(self, RestoreEntity):
+            self._save_state_for_restore()
 
     def _mqtt_publish(self) -> None:
         """Publish state to MQTT."""
@@ -190,3 +201,14 @@ class NumberEntity(Entity):
         # Publish discovery
         mqtt.publish(discovery_topic, json.dumps(config), qos=0, retain=True)
         _LOGGER.debug(f"Published number discovery config for {self.entity_id}")
+
+
+class RestoreNumber(NumberEntity, RestoreEntity):
+    """Mixin class for restoring previous number state after restart.
+
+    Adds restore support for number entities.  Use as a mixin alongside
+    NumberEntity:
+
+        class MyNumber(RestoreNumber):
+            ...
+    """

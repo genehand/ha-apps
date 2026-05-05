@@ -27,63 +27,7 @@ class TextMode(StrEnum):
     PASSWORD = "password"
 
 
-class RestoreEntity:
-    """Mixin class for restoring entity state after restart.
-
-    Saves entity state to persistent storage and restores it when
-    the entity is re-added to Home Assistant after a restart.
-    """
-
-    async def async_get_last_state(self):
-        """Return last state from storage.
-
-        Returns a State-like object with a 'state' attribute, or None if
-        no previous state is found.
-        """
-        if not self.hass or not self.entity_id:
-            return None
-
-        from ..storage import Storage
-        from ..models import State
-
-        # Get the shim directory from hass
-        shim_dir = getattr(self.hass, 'shim_dir', None)
-        if not shim_dir:
-            return None
-
-        storage = Storage(shim_dir)
-        saved = storage.load_entity_state(self.entity_id)
-
-        if saved is None:
-            return None
-
-        # Return a State object with the saved state
-        return State(
-            entity_id=self.entity_id,
-            state=saved.get("state", ""),
-            attributes=saved.get("attributes", {}),
-        )
-
-    def _save_state_for_restore(self) -> None:
-        """Save the current entity state to storage for later restoration.
-
-        This should be called when the entity state changes to ensure
-        the latest state is available after a restart.
-        """
-        if not self.hass or not self.entity_id:
-            return
-
-        from ..storage import Storage
-
-        # Get the shim directory from hass
-        shim_dir = getattr(self.hass, 'shim_dir', None)
-        if not shim_dir:
-            return
-
-        storage = Storage(shim_dir)
-        state_value = self.state
-        if state_value is not None:
-            storage.save_entity_state(self.entity_id, str(state_value))
+from ..restore import RestoreEntity
 
 
 class TextEntity(Entity):

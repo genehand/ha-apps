@@ -18,6 +18,10 @@ from ..entity import (
     get_mqtt_safe_unique_id,
 )
 from ..frozen_dataclass_compat import FrozenOrThawed
+from ..logging import get_logger
+from ..restore import RestoreEntity
+
+_LOGGER = get_logger(__name__)
 
 DOMAIN = "switch"
 
@@ -64,6 +68,19 @@ class SwitchEntity(ToggleEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off via sync method in executor."""
         await self.hass.async_add_executor_job(self.turn_off, **kwargs)
+
+    def async_write_ha_state(self) -> None:
+        """Write state to the state machine and save for restoration.
+
+        If this entity is a RestoreEntity, also saves the state to persistent
+        storage so it can be restored after a restart.
+        """
+        # Call the parent implementation
+        super().async_write_ha_state()
+
+        # Save state for restoration if this is a RestoreEntity
+        if isinstance(self, RestoreEntity):
+            self._save_state_for_restore()
 
     def _mqtt_publish(self) -> None:
         """Publish state to MQTT."""
