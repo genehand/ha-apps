@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import fnmatch
 import asyncio
+import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Generic, Union, TYPE_CHECKING
@@ -220,7 +221,7 @@ class ConfigEntry(Generic[T]):
         """Run all registered unload callbacks."""
         for callback in self._on_unload_callbacks:
             try:
-                if asyncio.iscoroutinefunction(callback):
+                if inspect.iscoroutinefunction(callback):
                     await callback()
                 else:
                     callback()

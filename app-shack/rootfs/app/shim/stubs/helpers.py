@@ -6,6 +6,7 @@ event, restore_state, dispatcher, service_info, network, storage, and instance_i
 """
 
 import asyncio
+import inspect
 import sys
 import types
 import uuid
@@ -409,7 +410,7 @@ def _async_get_clientsession(hass, verify_ssl=True):
     """Get aiohttp ClientSession with caching."""
     key = (id(hass), verify_ssl)
     if key not in _client_session_cache:
-        connector = aiohttp.TCPConnector(verify_ssl=verify_ssl)
+        connector = aiohttp.TCPConnector(ssl=verify_ssl)
         session = aiohttp.ClientSession(connector=connector)
         _client_session_cache[key] = session
     return _client_session_cache[key]
@@ -417,7 +418,7 @@ def _async_get_clientsession(hass, verify_ssl=True):
 
 def _async_create_clientsession(hass, verify_ssl=True):
     """Create a new aiohttp ClientSession."""
-    connector = aiohttp.TCPConnector(verify_ssl=verify_ssl)
+    connector = aiohttp.TCPConnector(ssl=verify_ssl)
     session = aiohttp.ClientSession(connector=connector)
     _created_sessions.append(session)
     return session
@@ -639,7 +640,7 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
                 await asyncio.sleep(interval.total_seconds())
                 try:
                     result = action()
-                    if asyncio.iscoroutine(result) or asyncio.iscoroutinefunction(action):
+                    if asyncio.iscoroutine(result) or inspect.iscoroutinefunction(action):
                         await result
                 except Exception:
                     pass
@@ -661,7 +662,7 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
             await asyncio.sleep(delay)
             try:
                 result = action()
-                if asyncio.iscoroutine(result) or asyncio.iscoroutinefunction(action):
+                if asyncio.iscoroutine(result) or inspect.iscoroutinefunction(action):
                     await result
             except Exception:
                 pass

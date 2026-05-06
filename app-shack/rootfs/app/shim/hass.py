@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -96,8 +97,8 @@ class HomeAssistant:
             # No running loop in this thread
             in_event_loop = False
 
-        if asyncio.iscoroutine(target) or asyncio.iscoroutinefunction(target):
-            coro = target(*args) if asyncio.iscoroutinefunction(target) else target
+        if asyncio.iscoroutine(target) or inspect.iscoroutinefunction(target):
+            coro = target(*args) if inspect.iscoroutinefunction(target) else target
             if in_event_loop:
                 # We're in the event loop thread
                 return asyncio.ensure_future(coro)
@@ -161,7 +162,7 @@ class HomeAssistant:
         listeners = self._event_listeners.get(event_type, [])
         for listener in listeners:
             try:
-                if asyncio.iscoroutinefunction(listener):
+                if inspect.iscoroutinefunction(listener):
                     asyncio.create_task(listener(event_data))
                 else:
                     listener(event_data)

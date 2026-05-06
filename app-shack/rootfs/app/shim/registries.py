@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import sys
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING, Union
@@ -125,7 +126,7 @@ class ServiceRegistry:
 
         handler = self._services[domain][service]
         try:
-            if asyncio.iscoroutinefunction(handler):
+            if inspect.iscoroutinefunction(handler):
                 await handler(service_data or {})
             else:
                 handler(service_data or {})

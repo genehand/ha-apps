@@ -127,7 +127,7 @@ class IntegrationManager:
         # Determine venv path: /data/.venv for addon mode, local .venv for dev mode
         if self._is_addon:
             self._venv_dir = Path("/data/.venv")
-            _LOGGER.info("Running in addon mode - using /data/.venv")
+            _LOGGER.debug("Running in addon mode - using /data/.venv")
         else:
             # In local dev, venv is at the app root (shim/integrations/manager.py -> ../../ -> app root)
             self._venv_dir = Path(__file__).parent.parent.parent / ".venv"

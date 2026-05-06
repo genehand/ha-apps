@@ -6,6 +6,7 @@ They require the integration files to be present in the data directory.
 
 import pytest
 import asyncio
+import inspect
 import sys
 from pathlib import Path
 import tempfile
@@ -454,7 +455,7 @@ class TestIntegrationManagerCallbacks:
         # when it finds updates (we don't test the full loop to avoid timing issues)
         updates = [mock_info]
         if updates:
-            if asyncio.iscoroutinefunction(test_callback):
+            if inspect.iscoroutinefunction(test_callback):
                 await test_callback(updates)
             else:
                 test_callback(updates)

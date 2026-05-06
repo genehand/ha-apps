@@ -4,6 +4,7 @@ Verifies that ConfigEntry.async_start_reauth exists and works correctly,
 preventing the AttributeError seen with nest_protect at shutdown.
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,8 +27,10 @@ class TestConfigEntryReauth:
         hass.config_entries = MagicMock()
         hass.config_entries.flow = MagicMock()
         hass.config_entries.flow.async_progress.return_value = active_flows or []
-        # async_create_task is a regular method (not async) that schedules tasks
-        hass.async_create_task = MagicMock()
+        # Schedule the coroutine via side effect so it doesn't leak as unawaited
+        hass.async_create_task = MagicMock(
+            side_effect=lambda coro, name=None: asyncio.ensure_future(coro)
+        )
         return hass
 
     def test_has_async_start_reauth_method(self):
@@ -217,8 +220,6 @@ class TestConfigEntryReauth:
             task = asyncio.ensure_future(coro)
             return task
 
-        import asyncio
-
         hass.async_create_task = mock_create_task
 
         # Call async_start_reauth
@@ -257,8 +258,6 @@ class TestConfigEntryReauth:
 
         hass.config_entries.flow.async_init = mock_async_init
 
-        import asyncio
-
         def mock_create_task(coro, name=None):
             task = asyncio.ensure_future(coro)
             return task
@@ -294,8 +293,6 @@ class TestConfigEntryReauth:
             return {"type": "abort", "reason": "mock"}
 
         hass.config_entries.flow.async_init = mock_async_init
-
-        import asyncio
 
         def mock_create_task(coro, name=None):
             task = asyncio.ensure_future(coro)
