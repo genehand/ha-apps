@@ -1,0 +1,52 @@
+{% if available %}
+<div class="integration-list">
+    {% for item in available %}
+    <article>
+        <div class="integration-row" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+            <div style="flex: 1; min-width: 0;">
+                <h5 style="margin-bottom: 0.25rem;">
+                    {{ item.name }}
+                    {% if item.verified %}
+                    <span class="verified-badge" title="Verified compatible ({{ item.verified_version }})">Verified</span>
+                    {% endif %}
+                </h5>
+                <div style="font-size: 12px; color: var(--pico-muted-color); margin-bottom: 0.25rem; display: flex; gap: 15px; align-items: center;">
+                    <a href="{{ item.repository_url }}" target="_blank" class="pico-color-muted" style="text-decoration: underline;">{{ item.full_name }}</a>
+                    {% if item.stars %}<span>⭐ {{ item.stars }}</span>{% endif %}
+                    {% if item.downloads %}<span>⬇️ {{ item.downloads }}</span>{% endif %}
+                </div>
+                <p class="pico-color-muted" style="margin-bottom: 0.25rem;">{{ item.description or 'No description' }}</p>
+                {% if item.source == 'custom' %}
+                <div class="pico-color-amber-500" style="font-size: 12px; margin-top: 5px;">
+                    Custom Repository
+                </div>
+                {% endif %}
+            </div>
+            <div class="button-group" style="flex-shrink: 0;">
+                {% if item.unsupported %}
+                <span class="pico-color-grey-500" style="font-weight: 600;" title="{{ item.unsupported_reason }}">Unsupported</span>
+                {% elif item.installed %}
+                <span class="installed-indicator">✓ Installed</span>
+                {% else %}
+                <button type="button"
+                        hx-post="integrations/{{ item.full_name }}/install"
+                        hx-target="this"
+                        hx-swap="outerHTML"
+                        hx-indicator="this"
+                        hx-disabled-elt="this"
+                        hx-on:click="this.textContent = 'Installing...'; this.disabled = true;"
+                        class="install-btn">
+                    Install
+                </button>
+                {% endif %}
+            </div>
+        </div>
+    </article>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <p>No integrations available.</p>
+    <p>Failed to fetch HACS repository list.</p>
+</div>
+{% endif %}

@@ -283,7 +283,14 @@
 
         // Handle HTMX reloadPage event for full page reloads
         document.body.addEventListener('reloadPage', function(evt) {
+            var targetHash = (evt.detail && evt.detail.hash) || '#installed';
+            window.location.hash = targetHash;
             window.location.reload();
+        });
+
+        // Refresh the Available tab content in the background
+        document.body.addEventListener('refreshAvailable', function() {
+            htmx.ajax('GET', '/api/available-fragment', {target: '#available', swap: 'innerHTML'});
         });
 
         function showTab(tabName) {

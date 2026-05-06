@@ -63,6 +63,36 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             mqtt_status=mqtt_status,
         )
 
+    @app.get("/api/available-fragment", response_class=HTMLResponse)
+    async def available_fragment():
+        """HTML fragment for the available integrations list (used by HTMX)."""
+        available = (
+            shim_manager.get_integration_manager().get_available_integrations()
+        )
+        available_dicts = [
+            {
+                "full_name": a.get("full_name"),
+                "domain": a.get("domain"),
+                "name": a.get("name"),
+                "description": a.get("description", ""),
+                "installed": a.get("installed", False),
+                "unsupported": a.get("unsupported", False),
+                "unsupported_reason": a.get("unsupported_reason"),
+                "verified": a.get("verified", False),
+                "verified_version": a.get("verified_version"),
+                "source": a.get("source", "hacs_default"),
+                "stars": a.get("stars", 0),
+                "downloads": a.get("downloads", 0),
+                "repository_url": a.get("repository_url", ""),
+            }
+            for a in available
+        ]
+        return render_template(
+            template_dir,
+            "available_fragment.html",
+            available=available_dicts,
+        )
+
     # ------------------------------------------------------------------ #
     #  Custom repositories (CRUD)
     # ------------------------------------------------------------------ #
@@ -82,7 +112,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             response = render_custom_repos_list(
                 custom_repos, success_message=message
             )
-            response.headers["HX-Location"] = "#custom"
+            response.headers["HX-Trigger-After-Swap"] = '{"refreshAvailable": {}}'
             return response
         else:
             return render_custom_repos_list(
@@ -104,7 +134,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             response = render_custom_repos_list(
                 custom_repos, success_message=message
             )
-            response.headers["HX-Location"] = "#custom"
+            response.headers["HX-Trigger-After-Swap"] = '{"refreshAvailable": {}}'
             return response
         else:
             return render_custom_repos_list(
