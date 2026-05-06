@@ -337,6 +337,9 @@ class IntegrationLoader:
                     f"Domain {domain} not found in _loaded_integrations during unload"
                 )
 
+            # Clean up sys.modules so the next load re-reads from disk
+            self._cleanup_sys_modules(domain)
+
             entry.state = "not_loaded"
             _LOGGER.debug(f"Successfully unloaded {domain}")
             return True
@@ -584,6 +587,31 @@ class IntegrationLoader:
             "manufacturer": "Shack",
             "model": "Integration",
         }
+
+    def _cleanup_sys_modules(self, domain: str) -> None:
+        """Remove all cached modules for an integration domain from sys.modules.
+
+        This ensures that subsequent importlib.import_module() calls will
+        re-read the code from disk instead of returning the stale cached
+        module. Must be called AFTER the integration is fully unloaded
+        (entities removed, async_unload_entry called, etc.) since those
+        operations still need the module reference.
+        """
+        prefix = f"custom_components.{domain}"
+        keys_to_remove = [
+            key
+            for key in sys.modules
+            if key == prefix or key.startswith(f"{prefix}.")
+        ]
+        for key in keys_to_remove:
+            del sys.modules[key]
+        if keys_to_remove:
+            importlib.invalidate_caches()
+            _LOGGER.debug(
+                "Cleaned up %d cached module(s) for %s from sys.modules",
+                len(keys_to_remove),
+                domain,
+            )
 
     async def remove_config_entry(self, entry: ConfigEntry) -> bool:
         """Remove a specific config entry and its entities."""
