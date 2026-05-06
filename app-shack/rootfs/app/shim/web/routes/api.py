@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,3 +114,19 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
         """API endpoint for listing verified repositories."""
         repos = shim_manager.get_integration_manager().get_verified_repos()
         return {"repositories": repos}
+
+    @app.post("/api/check-updates", response_class=HTMLResponse)
+    async def api_check_updates():
+        """Manually trigger an update check for all installed integrations."""
+        _LOGGER.info("Manual update check triggered")
+        updates = await shim_manager.get_integration_manager().check_for_updates()
+        await shim_manager._refresh_update_entity()
+
+        count = len(updates)
+        response = HTMLResponse(
+            f'<div class="alert alert-success">'
+            f"Update check complete. {count} update(s) available."
+            f"</div>"
+        )
+        response.headers["HX-Trigger"] = '{"reloadPage": {}}'
+        return response

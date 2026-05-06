@@ -256,6 +256,19 @@
 </article>
 
 <article>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 style="margin: 0;">Status</h3>
+        <button type="button"
+                hx-post="api/check-updates"
+                hx-target="body"
+                hx-swap="beforeend"
+                hx-indicator="#check-spinner"
+                hx-disabled-elt="this"
+                class="secondary outline">
+            <span id="check-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px;"></span>
+            <span class="button-text">Check for Updates</span>
+        </button>
+    </div>
     <div hx-get="status-fragment" hx-trigger="load, every 30s">
         <div class="spinner"></div> Loading status...
     </div>
