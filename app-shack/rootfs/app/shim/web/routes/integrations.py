@@ -40,9 +40,11 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
         custom_repos = (
             shim_manager.get_integration_manager().get_custom_repositories()
         )
+        custom_repos.sort(key=lambda x: x.get('name', '').lower())
 
         # Convert to dicts for template compatibility
         integrations_dicts = [i.to_dict() for i in integrations]
+        integrations_dicts.sort(key=lambda x: x.get('name', '').lower())
         available_dicts = [
             {
                 "full_name": a.get("full_name"),
@@ -61,6 +63,9 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             }
             for a in available
         ]
+        available_dicts.sort(
+            key=lambda x: (not x.get('verified', False), x.get('name', '').lower())
+        )
 
         html = render_template(
             template_dir,

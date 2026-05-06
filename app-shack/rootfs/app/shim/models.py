@@ -9,9 +9,12 @@ import fnmatch
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Generic, Union
+from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Generic, Union, TYPE_CHECKING
 from datetime import datetime
 from enum import Enum
+
+if TYPE_CHECKING:
+    from .hass import HomeAssistant
 
 from .logging import get_logger
 
@@ -111,6 +114,7 @@ class ConfigEntry(Generic[T]):
     def __post_init__(self):
         """Initialize callbacks list after creation."""
         self._on_unload_callbacks: List[Callable] = []
+        self._reauth_lock = asyncio.Lock()
 
     @property
     def unique_id(self) -> Optional[str]:
@@ -222,6 +226,105 @@ class ConfigEntry(Generic[T]):
                     callback()
             except Exception as e:
                 _LOGGER.error(f"Error in unload callback: {e}")
+
+    async def async_start_reauth(
+        self,
+        hass: Optional["HomeAssistant"] = None,
+        context: Optional[dict] = None,
+        data: Optional[dict] = None,
+    ) -> None:
+        """Start a reauth flow for this config entry.
+
+        Triggered by integrations (e.g. nest_protect) when authentication
+        credentials are no longer valid. Starts a new reauth config flow
+        so the user can re-authenticate via the web UI.
+
+        Compatible with Home Assistant's ConfigEntry.async_start_reauth
+        signature: (self, hass, context=None, data=None)
+        """
+        from .config_entries import SOURCE_REAUTH, SOURCE_RECONFIGURE
+
+        if not hass:
+            _LOGGER.warning(
+                "Reauth requested for %s (%s) but no hass instance provided",
+                self.title or self.domain,
+                self.domain,
+            )
+            return
+
+        # Check if reauth/reconfigure flow already in progress for this entry
+        if any(self.async_get_active_flows(hass, {SOURCE_REAUTH, SOURCE_RECONFIGURE})):
+            _LOGGER.debug(
+                "Reauth flow already in progress for %s entry %s",
+                self.domain,
+                self.entry_id,
+            )
+            return
+
+        hass.async_create_task(
+            self._async_init_reauth(hass, context, data),
+            f"config entry reauth {self.title} {self.domain} {self.entry_id}",
+        )
+
+    async def _async_init_reauth(
+        self,
+        hass: "HomeAssistant",
+        context: Optional[dict] = None,
+        data: Optional[dict] = None,
+    ) -> None:
+        """Initialize a reauth flow (background task).
+
+        Uses a lock to prevent duplicate reauth flows from being started.
+        Delegates to FlowManager.async_init with SOURCE_REAUTH context.
+        """
+        from .config_entries import SOURCE_REAUTH, SOURCE_RECONFIGURE
+
+        async with self._reauth_lock:
+            # Double-check after acquiring lock
+            if any(
+                self.async_get_active_flows(hass, {SOURCE_REAUTH, SOURCE_RECONFIGURE})
+            ):
+                return
+
+            flow_context: dict[str, Any] = {
+                "source": SOURCE_REAUTH,
+                "entry_id": self.entry_id,
+                "title_placeholders": {"name": self.title},
+                "unique_id": self.unique_id,
+            }
+            if context:
+                flow_context.update(context)
+
+            _LOGGER.warning(
+                "Starting reauth flow for %s (%s) - please re-authenticate in the web UI",
+                self.title,
+                self.domain,
+            )
+
+            await hass.config_entries.flow.async_init(
+                self.domain,
+                context=flow_context,
+                data=self.data | (data or {}),
+            )
+
+    def async_get_active_flows(
+        self, hass: "HomeAssistant", sources: set
+    ) -> list[dict]:
+        """Return active flows for this entry matching the given sources.
+
+        Args:
+            hass: The HomeAssistant instance.
+            sources: A set of source strings to match (e.g. {'reauth', 'reconfigure'}).
+
+        Returns:
+            List of flow progress dicts matching the criteria.
+        """
+        active: list[dict] = []
+        for flow_data in hass.config_entries.flow.async_progress():
+            ctx = flow_data.get("context", {})
+            if ctx.get("source") in sources and ctx.get("entry_id") == self.entry_id:
+                active.append(flow_data)
+        return active
 
 
 @dataclass
