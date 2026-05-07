@@ -3,7 +3,7 @@
 Provides Entity base class and entity registry functionality.
 """
 
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import Any, Dict, List, Optional, Callable, Set, Union
 import asyncio
 from datetime import datetime
@@ -382,18 +382,22 @@ class Entity:
 
     # Entity properties
     entity_id: Optional[str] = None
-    _attr_name: Optional[str] = None
-    _attr_unique_id: Optional[str] = None
-    _attr_device_info: Optional[Dict[str, Any]] = None
-    _attr_device_class: Optional[str] = None
-    _attr_icon: Optional[str] = None
-    _attr_unit_of_measurement: Optional[str] = None
-    _attr_extra_state_attributes: Optional[Dict[str, Any]] = None
-    _attr_entity_category: Optional[str] = None
+    _attr_attribution: str | None = None
     _attr_available: bool = True
-    _attr_should_poll: bool = False
+    _attr_device_class: Optional[str] = None
+    _attr_device_info: Optional[Dict[str, Any]] = None
+    _attr_disabled_by_default: bool = False
+    _attr_entity_category: Optional[str] = None
+    _attr_entity_picture: str | None = None
+    _attr_extra_state_attributes: Optional[Dict[str, Any]] = None
     _attr_force_update: bool = False
+    _attr_has_entity_name: bool = False
+    _attr_icon: Optional[str] = None
     _attr_integration_domain: Optional[str] = None
+    _attr_name: Optional[str] = None
+    _attr_should_poll: bool = False
+    _attr_unique_id: Optional[str] = None
+    _attr_unit_of_measurement: Optional[str] = None
     _unrecorded_attributes: frozenset = frozenset()
 
     def __init__(self):
@@ -533,6 +537,48 @@ class Entity:
         return self._attr_force_update
 
     @property
+    def attribution(self) -> Optional[str]:
+        """Return the attribution string."""
+        return getattr(self, "_attr_attribution", None)
+
+    @property
+    def assumed_state(self) -> bool:
+        """Return whether the state is presumed to be without real state."""
+        return getattr(self, "_attr_assumed_state", False)
+
+    @property
+    def entity_picture(self) -> Optional[str]:
+        """Return the entity picture."""
+        return getattr(self, "_attr_entity_picture", None)
+
+    @property
+    def entity_registry_visible_default(self) -> bool:
+        """Return if the entity should be visible by default."""
+        # Check entity_description for entity_registry_visible_default
+        if hasattr(self, "entity_description") and self.entity_description is not None:
+            value = getattr(
+                self.entity_description, "entity_registry_visible_default", None
+            )
+            if value is not None:
+                return value
+        return getattr(self, "_attr_entity_registry_visible_default", True)
+
+    @property
+    def translation_placeholders(self) -> Optional[Dict[str, str]]:
+        """Return translation placeholders."""
+        return getattr(self, "_attr_translation_placeholders", None)
+
+    @property
+    def capability_attributes(self) -> Optional[Dict[str, Any]]:
+        """Return capability attributes."""
+        return getattr(self, "_attr_capability_attributes", None)
+
+    @property
+    def supported_features(self) -> Optional[Any]:
+        """Return the supported features of the entity."""
+        return getattr(self, "_attr_supported_features", None)
+
+    @property
     def state(self) -> Any:
         """Return the state of the entity."""
         return None
@@ -557,7 +603,9 @@ class Entity:
         This helper can be called by platform-specific _mqtt_publish methods
         to handle attribute publishing consistently across all entity types.
         """
-        if not self.extra_state_attributes:
+
+        state = self.hass.states.get(self.entity_id)
+        if state is None or not state.attributes:
             return
 
         if not hasattr(self.hass, "_mqtt_client"):
@@ -575,7 +623,7 @@ class Entity:
 
         attr_topic = f"{base_topic}/attributes"
         mqtt.publish(
-            attr_topic, json.dumps(self.extra_state_attributes), qos=0, retain=True
+            attr_topic, json.dumps(state.attributes), qos=0, retain=True
         )
 
         # Republish discovery config to ensure json_attributes_topic is registered
@@ -592,7 +640,8 @@ class Entity:
         Args:
             config: The MQTT discovery config dict to modify.
         """
-        if not self.extra_state_attributes:
+        state = self.hass.states.get(self.entity_id)
+        if state is None or not state.attributes:
             return
 
         base_topic = self._get_mqtt_base_topic()
@@ -772,6 +821,17 @@ class Entity:
             attributes["icon"] = self.icon
         if self.unit_of_measurement:
             attributes["unit_of_measurement"] = self.unit_of_measurement
+        if self.attribution:
+            attributes["attribution"] = self.attribution
+        if self.entity_picture:
+            attributes["entity_picture"] = self.entity_picture
+        if self.supported_features is not None:
+            features = self.supported_features
+            # Convert IntFlag to int for serialization
+            if isinstance(features, int) and not isinstance(features, Enum):
+                attributes["supported_features"] = features
+            else:
+                attributes["supported_features"] = features.value if hasattr(features, "value") else int(features)
         if self.extra_state_attributes:
             attributes.update(self.extra_state_attributes)
 
