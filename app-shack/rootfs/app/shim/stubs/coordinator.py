@@ -90,7 +90,7 @@ class DataUpdateCoordinator(Generic[T]):
             self.config_entry = current_entry.get()
         else:
             self.config_entry = config_entry
-        self.data = {}
+        self.data = None
         self._shutdown_requested = False
         self._last_update_success = True
         self.last_exception = None
