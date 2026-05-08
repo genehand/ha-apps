@@ -235,12 +235,12 @@ class ImportPatcher:
     def _patch_aiohttp_response_json(self) -> None:
         """Patch aiohttp.ClientResponse.json for lenient parsing of error responses.
 
-        Some integrations (e.g. nest_protect) receive HTTP error responses with
-        text/plain content-type and empty body. aiohttp's json() raises
-        ContentTypeError, which integrations often catch and re-raise as their own
-        exception with a poor message. This patch attempts to parse the body as JSON
-        for error responses, and for empty text/plain bodies it raises
-        EmptyResponseException if the integration defines it, allowing clean handling.
+        Some integrations receive HTTP error responses with text/plain content-type
+        and empty body. aiohttp's json() raises ContentTypeError, which integrations
+        often catch and re-raise as their own exception with a poor message. This
+        patch attempts to parse the body as JSON for error responses, and for empty
+        text/plain bodies it raises EmptyResponseException if the integration defines
+        it, allowing clean handling.
         """
         import aiohttp
 

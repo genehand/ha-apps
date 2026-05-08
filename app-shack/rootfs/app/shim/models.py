@@ -228,7 +228,7 @@ class ConfigEntry(Generic[T]):
             except Exception as e:
                 _LOGGER.error(f"Error in unload callback: {e}")
 
-    async def async_start_reauth(
+    def async_start_reauth(
         self,
         hass: Optional["HomeAssistant"] = None,
         context: Optional[dict] = None,
@@ -236,12 +236,13 @@ class ConfigEntry(Generic[T]):
     ) -> None:
         """Start a reauth flow for this config entry.
 
-        Triggered by integrations (e.g. nest_protect) when authentication
-        credentials are no longer valid. Starts a new reauth config flow
-        so the user can re-authenticate via the web UI.
+        Triggered by integrations when authentication credentials are
+        no longer valid. Starts a new reauth config flow so the user
+        can re-authenticate via the web UI.
 
-        Compatible with Home Assistant's ConfigEntry.async_start_reauth
-        signature: (self, hass, context=None, data=None)
+        This is intentionally a synchronous method (not async def) to
+        match Home Assistant's implementation. The actual async work is
+        delegated to _async_init_reauth via hass.async_create_task.
         """
         from .config_entries import SOURCE_REAUTH, SOURCE_RECONFIGURE
 

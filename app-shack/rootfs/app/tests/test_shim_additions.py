@@ -1959,89 +1959,6 @@ class TestWaterHeaterConstants:
         assert entity.target_temperature_step == 5.0
 
 
-class TestWaterHeaterAttributeFiltering:
-    """Tests for water_heater filtering of inlet/outlet temperatures from attributes."""
-
-    def test_inlet_outlet_temperatures_filtered_from_mqtt_attributes(self):
-        """Test that inlet/outlet temperatures are not published to MQTT attributes.
-
-        The Rinnai integration sets outlet_temperature and inlet_temperature in
-        extra_state_attributes, but we have separate sensors for these and they
-        may be in Celsius (causing confusion with the water heater's Fahrenheit).
-        """
-        from unittest.mock import MagicMock
-        import json
-        from shim.platforms.water_heater import WaterHeaterEntity
-
-        entity = WaterHeaterEntity()
-        entity.entity_id = "water_heater.rinnai_test"
-        entity._attr_unique_id = "rinnai_test_wh"
-
-        # Set extra_state_attributes like Rinnai does (with inlet/outlet temps)
-        entity._attr_extra_state_attributes = {
-            "outlet_temperature": 22.8,
-            "inlet_temperature": 23.3,
-            "some_other_attr": "value",
-        }
-
-        # Create mock hass with MQTT client
-        mock_mqtt = MagicMock()
-        mock_mqtt.is_connected.return_value = True
-
-        mock_hass = MagicMock()
-        mock_hass._mqtt_client = mock_mqtt
-        entity.hass = mock_hass
-
-        # Call the overridden _publish_mqtt_attributes
-        entity._publish_mqtt_attributes()
-
-        # Verify MQTT publish was called
-        assert mock_mqtt.publish.called, "MQTT publish should have been called"
-
-        # Get the published payload
-        call_args = mock_mqtt.publish.call_args
-        payload = json.loads(call_args[0][1])
-
-        # inlet/outlet should be filtered out
-        assert "outlet_temperature" not in payload, (
-            "outlet_temperature should be filtered out"
-        )
-        assert "inlet_temperature" not in payload, (
-            "inlet_temperature should be filtered out"
-        )
-
-        # Other attributes should still be present
-        assert payload.get("some_other_attr") == "value"
-
-    def test_all_temps_filtered_when_only_inlet_outlet_present(self):
-        """Test that empty attributes don't cause publish when only inlet/outlet were present."""
-        from unittest.mock import MagicMock
-        from shim.platforms.water_heater import WaterHeaterEntity
-
-        entity = WaterHeaterEntity()
-        entity.entity_id = "water_heater.rinnai_test"
-
-        # Only inlet/outlet temps - no other attributes
-        entity._attr_extra_state_attributes = {
-            "outlet_temperature": 22.8,
-            "inlet_temperature": 23.3,
-        }
-
-        mock_mqtt = MagicMock()
-        mock_mqtt.is_connected.return_value = True
-
-        mock_hass = MagicMock()
-        mock_hass._mqtt_client = mock_mqtt
-        entity.hass = mock_hass
-
-        # Call _publish_mqtt_attributes
-        entity._publish_mqtt_attributes()
-
-        # Should NOT publish since all attributes were filtered out
-        assert not mock_mqtt.publish.called, (
-            "MQTT publish should not be called when all attrs filtered"
-        )
-
 
 class TestWaterHeaterModesDiscovery:
     """Tests for water_heater MQTT discovery modes list."""
@@ -2103,6 +2020,12 @@ class TestWaterHeaterModesDiscovery:
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
         mock_hass.async_add_job = MagicMock()
+        # Set up a proper state return to avoid MagicMock attr serialization issues
+        mock_state = MagicMock()
+        mock_state.entity_id = "water_heater.test"
+        mock_state.state = "idle"
+        mock_state.attributes = {}
+        mock_hass.states.get.return_value = mock_state
         entity.hass = mock_hass
 
         # First discovery - should have only operation_list

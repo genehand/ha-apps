@@ -55,8 +55,7 @@ class TestConfigEntryReauth:
         assert hasattr(entry, "async_get_active_flows")
         assert callable(entry.async_get_active_flows)
 
-    @pytest.mark.asyncio
-    async def test_async_start_reauth_without_hass_does_not_crash(self):
+    def test_async_start_reauth_without_hass_does_not_crash(self):
         """Test that calling async_start_reauth without hass logs a warning but doesn't crash.
 
         This covers the case where an integration calls it during shutdown
@@ -70,7 +69,7 @@ class TestConfigEntryReauth:
         )
 
         # Should not raise - hass is None
-        await entry.async_start_reauth(hass=None)
+        entry.async_start_reauth(hass=None)
 
     @pytest.mark.asyncio
     async def test_async_start_reauth_creates_background_task(self):
@@ -85,14 +84,13 @@ class TestConfigEntryReauth:
 
         hass = self._make_hass_mock(active_flows=[])
 
-        # Call async_start_reauth
-        await entry.async_start_reauth(hass=hass)
+        # Call async_start_reauth (sync method, no await needed)
+        entry.async_start_reauth(hass=hass)
 
         # Should have created a task via async_create_task
         hass.async_create_task.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_async_start_reauth_skips_when_flow_already_active(self):
+    def test_async_start_reauth_skips_when_flow_already_active(self):
         """Test that async_start_reauth skips if a reauth flow is already active."""
         entry = ConfigEntry(
             entry_id="test_reauth_5",
@@ -114,7 +112,7 @@ class TestConfigEntryReauth:
         ])
 
         # Call async_start_reauth
-        await entry.async_start_reauth(hass=hass)
+        entry.async_start_reauth(hass=hass)
 
         # Should NOT have created a task since a reauth flow already exists
         hass.async_create_task.assert_not_called()
@@ -223,7 +221,7 @@ class TestConfigEntryReauth:
         hass.async_create_task = mock_create_task
 
         # Call async_start_reauth
-        await entry.async_start_reauth(hass=hass)
+        entry.async_start_reauth(hass=hass)
 
         # Give the background task a chance to run
         await asyncio.sleep(0)
@@ -264,7 +262,7 @@ class TestConfigEntryReauth:
 
         hass.async_create_task = mock_create_task
 
-        await entry.async_start_reauth(hass=hass)
+        entry.async_start_reauth(hass=hass)
         await asyncio.sleep(0)
         assert flow_init_called
 
@@ -301,7 +299,7 @@ class TestConfigEntryReauth:
         hass.async_create_task = mock_create_task
 
         # Call with extra context (like xiaomi_ble does: entry.async_start_reauth(hass, data={"device": data}))
-        await entry.async_start_reauth(
+        entry.async_start_reauth(
             hass=hass,
             context={"extra_context": "some_extra_context"},
             data={"device": {"mac": "AA:BB:CC:DD:EE:FF"}},

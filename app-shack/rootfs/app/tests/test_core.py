@@ -875,7 +875,7 @@ class TestDataUpdateCoordinator:
     ):
         """Test DataUpdateCoordinator catches UnboundLocalError from buggy integrations.
 
-        Some integrations (like nws_alerts) have buggy code like:
+        Some integrations have buggy code like:
             raise UpdateFailed(msg) from error
         where 'error' is not defined in that scope. This causes UnboundLocalError.
         The coordinator should catch this and convert to UpdateFailed.

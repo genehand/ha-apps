@@ -986,8 +986,17 @@ class TestDirectAttributeAssignment:
 class TestPublishMqttAttributes:
     """Test cases for _publish_mqtt_attributes method."""
 
+    def _make_mock_state(self, entity_id, attrs):
+        """Create a mock state object with attributes."""
+        from unittest.mock import MagicMock
+        state = MagicMock()
+        state.entity_id = entity_id
+        state.state = "test"
+        state.attributes = attrs
+        return state
+
     def test_publish_attributes_when_present(self):
-        """Test that attributes are published when extra_state_attributes is set."""
+        """Test that attributes are published when state has attributes."""
         from unittest.mock import MagicMock
         import json
         from shim.entity import Entity
@@ -1001,6 +1010,10 @@ class TestPublishMqttAttributes:
 
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {"key1": "value1", "key2": 42, "device_class": "temperature"},
+        )
         entity.hass = mock_hass
 
         entity._publish_mqtt_attributes()
@@ -1008,21 +1021,43 @@ class TestPublishMqttAttributes:
         mock_mqtt.publish.assert_called_once()
         args, kwargs = mock_mqtt.publish.call_args
         assert args[0] == "homeassistant/sensor/test-entity/attributes"
-        assert json.loads(args[1]) == {"key1": "value1", "key2": 42}
+        assert json.loads(args[1]) == {"key1": "value1", "key2": 42, "device_class": "temperature"}
         assert kwargs == {"qos": 0, "retain": True}
 
     def test_no_publish_when_no_attributes(self):
-        """Test that nothing is published when extra_state_attributes is None."""
+        """Test that nothing is published when state has no attributes."""
         from unittest.mock import MagicMock
         from shim.entity import Entity
 
         entity = Entity()
         entity.entity_id = "sensor.test_entity"
-        entity._attr_extra_state_attributes = None
 
         mock_mqtt = MagicMock()
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {},
+        )
+        entity.hass = mock_hass
+
+        entity._publish_mqtt_attributes()
+
+        mock_mqtt.publish.assert_not_called()
+
+    def test_no_publish_when_state_none(self):
+        """Test that nothing is published when state doesn't exist."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+        entity._attr_extra_state_attributes = {"test": "value"}
+
+        mock_mqtt = MagicMock()
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
         entity.hass = mock_hass
 
         entity._publish_mqtt_attributes()
@@ -1043,6 +1078,10 @@ class TestPublishMqttAttributes:
 
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {"test": "value"},
+        )
         entity.hass = mock_hass
 
         entity._publish_mqtt_attributes()
@@ -1061,6 +1100,10 @@ class TestPublishMqttAttributes:
         mock_mqtt = MagicMock()
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {"test": "value"},
+        )
         entity.hass = mock_hass
 
         entity._publish_mqtt_attributes()
@@ -1071,13 +1114,30 @@ class TestPublishMqttAttributes:
 class TestAddMqttAttributesToConfig:
     """Test cases for _add_mqtt_attributes_to_config method."""
 
+    def _make_mock_state(self, entity_id, attrs):
+        """Create a mock state object with attributes."""
+        from unittest.mock import MagicMock
+        state = MagicMock()
+        state.entity_id = entity_id
+        state.state = "test"
+        state.attributes = attrs
+        return state
+
     def test_add_attributes_topic_to_config(self):
         """Test that json_attributes_topic is added when attributes exist."""
+        from unittest.mock import MagicMock
         from shim.entity import Entity
 
         entity = Entity()
         entity.entity_id = "sensor.test_entity"
         entity._attr_extra_state_attributes = {"test": "value"}
+
+        mock_hass = MagicMock()
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {"test": "value"},
+        )
+        entity.hass = mock_hass
 
         config = {}
         entity._add_mqtt_attributes_to_config(config)
@@ -1088,12 +1148,20 @@ class TestAddMqttAttributesToConfig:
         )
 
     def test_no_add_when_no_attributes(self):
-        """Test that json_attributes_topic is not added when attributes don't exist."""
+        """Test that json_attributes_topic is not added when state has no attributes."""
+        from unittest.mock import MagicMock
         from shim.entity import Entity
 
         entity = Entity()
         entity.entity_id = "sensor.test_entity"
         entity._attr_extra_state_attributes = None
+
+        mock_hass = MagicMock()
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {},
+        )
+        entity.hass = mock_hass
 
         config = {}
         entity._add_mqtt_attributes_to_config(config)
@@ -1102,11 +1170,19 @@ class TestAddMqttAttributesToConfig:
 
     def test_no_add_without_entity_id(self):
         """Test that json_attributes_topic is not added when entity_id is None."""
+        from unittest.mock import MagicMock
         from shim.entity import Entity
 
         entity = Entity()
         entity.entity_id = None
         entity._attr_extra_state_attributes = {"test": "value"}
+
+        mock_hass = MagicMock()
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {"test": "value"},
+        )
+        entity.hass = mock_hass
 
         config = {}
         entity._add_mqtt_attributes_to_config(config)
@@ -1258,6 +1334,7 @@ class TestSensorMqttDiscoveryUpdates:
 
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
         sensor.hass = mock_hass
 
         check_update_calls = []
@@ -1293,6 +1370,7 @@ class TestSensorMqttDiscoveryUpdates:
 
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
         sensor.hass = mock_hass
 
         jobs_added = []
@@ -1336,6 +1414,7 @@ class TestSensorMqttDiscoveryUpdates:
 
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
         sensor.hass = mock_hass
 
         jobs_added = []
@@ -1362,6 +1441,15 @@ class TestSensorMqttDiscoveryUpdates:
 class TestAttributesRepublishDiscovery:
     """Test cases for attributes triggering discovery republish."""
 
+    def _make_mock_state(self, entity_id, attrs):
+        """Create a mock state object with attributes."""
+        from unittest.mock import MagicMock
+        state = MagicMock()
+        state.entity_id = entity_id
+        state.state = "test"
+        state.attributes = attrs
+        return state
+
     def test_attributes_trigger_discovery_republish(self):
         """Test that first attributes publish triggers discovery republish."""
         from unittest.mock import MagicMock
@@ -1377,6 +1465,10 @@ class TestAttributesRepublishDiscovery:
 
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {"test": "value"},
+        )
         entity.hass = mock_hass
 
         jobs_added = []
@@ -1411,6 +1503,10 @@ class TestAttributesRepublishDiscovery:
 
         mock_hass = MagicMock()
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {"test": "value"},
+        )
         entity.hass = mock_hass
 
         jobs_added = []
@@ -1575,6 +1671,7 @@ class TestCoordinatorEntityMqttPublishing:
         mock_mqtt = MagicMock()
         mock_mqtt.is_connected.return_value = True
         mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
 
         # Create an entity with a state by overriding the state property
         class TestEntity(Entity):
@@ -1604,11 +1701,16 @@ class TestCoordinatorEntityMqttPublishing:
     def test_entity_mqtt_publish_skips_when_no_mqtt_client(self):
         """Test that _mqtt_publish skips when no MQTT client."""
         from shim.entity import Entity
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, PropertyMock
 
-        # Create a mock hass without MQTT client
+        # Create a mock hass where _mqtt_client doesn't exist.
+        # MagicMock auto-creates attributes, so we need to configure it
+        # to raise AttributeError for _mqtt_client.
         mock_hass = MagicMock()
-        # No _mqtt_client attribute
+        mock_hass.states.get.return_value = None
+
+        # Make _mqtt_client raise AttributeError to simulate missing attribute
+        type(mock_hass)._mqtt_client = PropertyMock(side_effect=AttributeError("no _mqtt_client"))
 
         entity = Entity()
         entity.hass = mock_hass

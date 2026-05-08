@@ -321,48 +321,6 @@ class WaterHeaterEntity(Entity):
         # Publish attributes using base class helper
         self._publish_mqtt_attributes()
 
-    def _publish_mqtt_attributes(self) -> None:
-        """Publish extra_state_attributes to MQTT, filtering out inlet/outlet temps.
-
-        The Rinnai integration sets outlet_temperature and inlet_temperature in
-        extra_state_attributes, but we have separate sensors for these. We filter
-        them out here to avoid duplication and Celsius/Fahrenheit confusion.
-        """
-        if not self.extra_state_attributes:
-            return
-
-        # Filter out inlet/outlet temperatures - these are handled by separate sensors
-        filtered_attributes = {
-            k: v
-            for k, v in self.extra_state_attributes.items()
-            if k not in ("outlet_temperature", "inlet_temperature")
-        }
-
-        if not filtered_attributes:
-            return
-
-        if not hasattr(self.hass, "_mqtt_client"):
-            return
-
-        mqtt = self.hass._mqtt_client
-        if not mqtt.is_connected():
-            return
-
-        base_topic = self._get_mqtt_base_topic()
-        if not base_topic:
-            return
-
-        import json
-
-        attr_topic = f"{base_topic}/attributes"
-        mqtt.publish(attr_topic, json.dumps(filtered_attributes), qos=0, retain=True)
-
-        # Republish discovery config to ensure json_attributes_topic is registered
-        attr_key = "_mqtt_attrs_registered"
-        if not getattr(self, attr_key, False):
-            setattr(self, attr_key, True)
-            self.hass.async_add_job(self._publish_mqtt_discovery)
-
     async def _cleanup_mqtt(self) -> None:
         """Clean up MQTT topics when entity is removed.
 

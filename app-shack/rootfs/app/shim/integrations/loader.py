@@ -850,9 +850,9 @@ class IntegrationLoader:
                 if not setup_result:
                     _LOGGER.warning(f"Integration {domain} async_setup returned False")
 
-            # Ensure entry data is initialized - some integrations (like localtuya)
-            # store entry-specific data in hass.data[DOMAIN][entry_id] during async_setup_entry
-            # If not already set up, we need to call async_setup_entry to populate this data
+            # Ensure entry data is initialized - some integrations store entry-specific data
+            # in hass.data[DOMAIN][entry_id] during async_setup_entry. If not already set up,
+            # we need to call async_setup_entry to populate this data
             if entry.state != "loaded":
                 _LOGGER.debug(
                     f"Entry {entry.entry_id} not loaded, calling async_setup_entry before options flow"
@@ -983,7 +983,7 @@ class IntegrationLoader:
             set_current_integration(domain)
 
             # Ensure entry data is initialized before continuing
-            # Some integrations (like localtuya) require hass.data[DOMAIN][entry_id]
+            # Some integrations require hass.data[DOMAIN][entry_id]
             if entry.state != "loaded":
                 _LOGGER.info(
                     f"Entry {entry.entry_id} not loaded in continue_options_flow, setting up now"
