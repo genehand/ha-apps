@@ -75,14 +75,19 @@ async def notify_readiness():
         return
     try:
         # Write a newline to file descriptor 3 to signal readiness to S6
-        with open(3, "w") as f:
-            f.write("\n")
+        await asyncio.to_thread(_write_readiness_notification)
         logger = logging.getLogger("shack")
         logger.debug("Readiness notification sent to S6")
     except (OSError, IOError) as e:
         # If fd 3 isn't available, log but don't fail
         logger = logging.getLogger("shack")
         logger.debug(f"Could not send readiness notification: {e}")
+
+
+def _write_readiness_notification():
+    """Synchronous helper: write newline to fd 3 for S6-overlay."""
+    with open(3, "w") as f:
+        f.write("\n")
 
 
 async def main():

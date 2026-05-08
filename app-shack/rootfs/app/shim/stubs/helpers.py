@@ -392,13 +392,13 @@ def _save_uuid(uuid_str):
 
 async def _async_get_instance_id(hass) -> str:
     """Get unique ID for the hass instance."""
-    return _load_or_create_uuid()
+    return await asyncio.to_thread(_load_or_create_uuid)
 
 
 async def _async_recreate_instance_id(hass) -> str:
     """Recreate a new unique ID for the hass instance."""
     new_uuid = uuid.uuid4().hex
-    _save_uuid(new_uuid)
+    await asyncio.to_thread(_save_uuid, new_uuid)
     return new_uuid
 
 

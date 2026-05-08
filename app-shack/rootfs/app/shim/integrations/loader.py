@@ -115,7 +115,9 @@ class IntegrationLoader:
 
             # Patch select descriptions to add options_map for display value translation
             # Pass the integration path so we can load translations
-            patch_select_descriptions(domain, module, integration_path)
+            await asyncio.to_thread(
+                patch_select_descriptions, domain, module, integration_path
+            )
 
             _LOGGER.debug(f"Successfully loaded integration {domain}")
             return True

@@ -63,7 +63,7 @@ class RestoreEntity:
             return None
 
         storage = Storage(shim_dir)
-        saved = storage.load_entity_state(entity_id)
+        saved = await storage.async_load_entity_state(entity_id)
 
         if saved is None:
             return None
@@ -89,7 +89,7 @@ class RestoreEntity:
             return None
 
         storage = Storage(shim_dir)
-        saved = storage.load_entity_state(entity_id)
+        saved = await storage.async_load_entity_state(entity_id)
 
         if saved is None or "extra_data" not in saved:
             return None
@@ -127,4 +127,6 @@ class RestoreEntity:
             if extra is not None:
                 extra_data = extra.as_dict()
         if state_value is not None:
-            storage.save_entity_state(entity_id, str(state_value), extra_data=extra_data)
+            storage.save_entity_state(
+                entity_id, str(state_value), extra_data=extra_data
+            )

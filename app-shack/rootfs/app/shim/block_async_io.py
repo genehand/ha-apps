@@ -77,8 +77,9 @@ def _check_import_call_allowed(mapped_args: dict[str, Any]) -> bool:
 def _check_file_allowed(mapped_args: dict[str, Any]) -> bool:
     """Skip the check if the path starts with an allowed prefix (e.g. /proc).
 
-    Also allows file reads from Jinja2's template loader so that template
-    rendering on the event loop doesn't produce noisy warnings.
+    Also allows file reads from:
+    - Jinja2's template loader (template rendering on the event loop)
+    - The shim's own storage layer (entity states, JSON files — fast I/O)
     """
     args = mapped_args["args"]
     path = args[0] if type(args[0]) is str else str(args[0])
@@ -88,9 +89,9 @@ def _check_file_allowed(mapped_args: dict[str, Any]) -> bool:
         # Frame 0: this function
         # Frame 1: warn_for_blocking_call
         # Frame 2: protected_loop_func (the wrapper)
-        # Frame 3: the original caller (e.g. jinja2/loaders.py)
+        # Frame 3: the original caller
         caller = sys._getframe(3).f_code.co_filename  # noqa
-        if "jinja2" in caller:
+        if "jinja2" in caller or caller.endswith("storage.py"):
             return True
     return False
 
@@ -107,7 +108,24 @@ def _check_sleep_call_allowed(mapped_args: dict[str, Any]) -> bool:
 def _check_load_verify_locations_call_allowed(mapped_args: dict[str, Any]) -> bool:
     """Skip the check if only cadata is passed (no I/O)."""
     kwargs = mapped_args.get("kwargs")
-    return bool(kwargs and len(kwargs) == 1 and "cadata" in kwargs)
+    if kwargs and len(kwargs) == 1 and "cadata" in kwargs:
+        return True
+    # Allow calls from paho-mqtt's SSL setup
+    return _check_paho_ssl_context(mapped_args)
+
+
+def _check_paho_ssl_context(mapped_args: dict[str, Any]) -> bool:
+    """Allow SSL context operations called from paho-mqtt's client.
+
+    Also allows calls from within ``ssl.py`` itself, since those are
+    chained from an already-allowed ``load_default_certs()`` call
+    (e.g. ``ssl.py`` calls ``set_default_verify_paths`` internally).
+    """
+    with suppress(ValueError):
+        caller = sys._getframe(3).f_code.co_filename  # noqa
+        if "paho" in caller or caller.endswith("ssl.py"):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -129,15 +147,6 @@ class BlockingCall:
 # ---------------------------------------------------------------------------
 # Detection and warning logic
 # ---------------------------------------------------------------------------
-
-
-def _dev_help_message(what: str) -> str:
-    """Generate a help message directing developers to best practices."""
-    return (
-        "For developers, please see "
-        "https://developers.home-assistant.io/docs/asyncio_blocking_operations/"
-        f"#{what.replace('.', '')}"
-    )
 
 
 def warn_for_blocking_call(
@@ -173,27 +182,23 @@ def warn_for_blocking_call(
     if was_reported:
         _LOGGER.debug(
             "Detected blocking call to %s with args %s "
-            "inside the event loop at %s, line %s: %s. "
-            "This is causing stability issues.\n%s",
+            "inside the event loop at %s, line %s: %s.",
             func.__name__,
             mapped_args.get("args"),
             offender_filename,
             offender_lineno,
             offender_line,
-            _dev_help_message(func.__name__),
         )
     else:
         _LOGGER.warning(
             "Detected blocking call to %s with args %s "
             "inside the event loop at %s, line %s: %s. "
-            "This is causing stability issues.\n%s\n"
             "Traceback (most recent call last):\n%s",
             func.__name__,
             mapped_args.get("args"),
             offender_filename,
             offender_lineno,
             offender_line,
-            _dev_help_message(func.__name__),
             "".join(traceback.format_stack(f=offender_frame)),
         )
 
@@ -295,7 +300,7 @@ _BLOCKING_CALLS: tuple[BlockingCall, ...] = (
         original_func=SSLContext.load_default_certs,
         object=SSLContext,
         function="load_default_certs",
-        check_allowed=None,
+        check_allowed=_check_paho_ssl_context,
         skip_for_tests=True,
     ),
     BlockingCall(
@@ -316,7 +321,7 @@ _BLOCKING_CALLS: tuple[BlockingCall, ...] = (
         original_func=SSLContext.set_default_verify_paths,
         object=SSLContext,
         function="set_default_verify_paths",
-        check_allowed=None,
+        check_allowed=_check_paho_ssl_context,
         skip_for_tests=True,
     ),
     BlockingCall(

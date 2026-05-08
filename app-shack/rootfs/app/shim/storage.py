@@ -3,6 +3,7 @@
 Manages JSON file storage for config entries, devices, and entity registry.
 """
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Dict, Optional
@@ -87,6 +88,14 @@ class Storage:
         self._save_json(self._entity_states_file, states)
         _LOGGER.debug(f"Saved {len(states)} entity states")
 
+    async def async_load_entity_states(self) -> Dict[str, dict]:
+        """Load saved entity states from storage (async, runs in thread)."""
+        return await asyncio.to_thread(self.load_entity_states)
+
+    async def async_save_entity_states(self, states: Dict[str, dict]) -> None:
+        """Save entity states to storage (async, runs in thread)."""
+        await asyncio.to_thread(self.save_entity_states, states)
+
     def save_entity_state(self, entity_id: str, state: str, attributes: Optional[dict] = None, extra_data: Optional[dict] = None) -> None:
         """Save the state of a single entity.
 
@@ -108,6 +117,20 @@ class Storage:
         self.save_entity_states(states)
         _LOGGER.debug(f"Saved state for {entity_id}: {state}")
 
+    async def async_save_entity_state(self, entity_id: str, state: str, attributes: Optional[dict] = None, extra_data: Optional[dict] = None) -> None:
+        """Save the state of a single entity (async, runs in thread)."""
+        states = await self.async_load_entity_states()
+        entry = {
+            "state": state,
+            "attributes": attributes or {},
+            "last_updated": datetime.now().isoformat(),
+        }
+        if extra_data is not None:
+            entry["extra_data"] = extra_data
+        states[entity_id] = entry
+        await self.async_save_entity_states(states)
+        _LOGGER.debug(f"Saved state for {entity_id}: {state}")
+
     def load_entity_state(self, entity_id: str) -> Optional[dict]:
         """Load the saved state for a specific entity.
 
@@ -120,12 +143,25 @@ class Storage:
         states = self.load_entity_states()
         return states.get(entity_id)
 
+    async def async_load_entity_state(self, entity_id: str) -> Optional[dict]:
+        """Load the saved state for a specific entity (async, runs in thread)."""
+        states = await self.async_load_entity_states()
+        return states.get(entity_id)
+
     def remove_entity_state(self, entity_id: str) -> None:
         """Remove a saved entity state."""
         states = self.load_entity_states()
         if entity_id in states:
             del states[entity_id]
             self.save_entity_states(states)
+            _LOGGER.debug(f"Removed saved state for {entity_id}")
+
+    async def async_remove_entity_state(self, entity_id: str) -> None:
+        """Remove a saved entity state (async, runs in thread)."""
+        states = await self.async_load_entity_states()
+        if entity_id in states:
+            del states[entity_id]
+            await self.async_save_entity_states(states)
             _LOGGER.debug(f"Removed saved state for {entity_id}")
 
     # Integration Registry
