@@ -369,8 +369,9 @@ class ConfigEntries:
 
             # Import and setup the platform module
             try:
-                platform_module = importlib.import_module(
-                    f"custom_components.{entry.domain}.{platform_name}"
+                platform_module = await asyncio.to_thread(
+                    importlib.import_module,
+                    f"custom_components.{entry.domain}.{platform_name}",
                 )
                 if hasattr(platform_module, "async_setup_entry"):
                     # Track entities that need to be added

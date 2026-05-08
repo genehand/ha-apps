@@ -373,9 +373,9 @@ class TestApplicationCredentialsStorage:
         """Create a temporary storage instance."""
         return ApplicationCredentialsStorage(tmp_path)
 
-    def test_create_and_list(self, storage):
+    async def test_create_and_list(self, storage):
         """Test creating and listing credentials."""
-        storage.async_create_item({
+        await storage.async_create_item({
             "domain": "smartcar",
             "client_id": "my_client",
             "client_secret": "my_secret",
@@ -387,14 +387,14 @@ class TestApplicationCredentialsStorage:
         assert items[0]["domain"] == "smartcar"
         assert items[0]["client_id"] == "my_client"
 
-    def test_client_credentials_for_domain(self, storage):
+    async def test_client_credentials_for_domain(self, storage):
         """Test retrieving credentials for a specific domain."""
-        storage.async_create_item({
+        await storage.async_create_item({
             "domain": "smartcar",
             "client_id": "client1",
             "client_secret": "secret1",
         })
-        storage.async_create_item({
+        await storage.async_create_item({
             "domain": "other",
             "client_id": "client2",
             "client_secret": "secret2",
@@ -404,9 +404,9 @@ class TestApplicationCredentialsStorage:
         assert len(creds) == 1
         assert "client1" in [c.client_id for c in creds.values()]
 
-    def test_delete_item(self, storage):
+    async def test_delete_item(self, storage):
         """Test deleting a credential."""
-        storage.async_create_item({
+        await storage.async_create_item({
             "domain": "smartcar",
             "client_id": "client1",
             "client_secret": "secret1",
@@ -415,14 +415,14 @@ class TestApplicationCredentialsStorage:
         items = storage.async_items()
         item_id = items[0]["id"]
 
-        assert storage.async_delete_item(item_id) is True
+        assert await storage.async_delete_item(item_id) is True
         assert len(storage.async_items()) == 0
-        assert storage.async_delete_item(item_id) is False
+        assert await storage.async_delete_item(item_id) is False
 
-    def test_persistence(self, tmp_path):
+    async def test_persistence(self, tmp_path):
         """Test credentials persist to disk."""
         storage1 = ApplicationCredentialsStorage(tmp_path)
-        storage1.async_create_item({
+        await storage1.async_create_item({
             "domain": "smartcar",
             "client_id": "persist_client",
             "client_secret": "persist_secret",

@@ -23,6 +23,47 @@ from awesomeversion.exceptions import AwesomeVersionException
 from ..logging import get_logger
 from ..storage import Storage
 
+
+# ---------------------------------------------------------------------------
+# Thread-safe I/O helpers for use with asyncio.to_thread()
+# ---------------------------------------------------------------------------
+
+
+def _write_file(path: Path, data: bytes) -> None:
+    """Write bytes to a file (suitable for asyncio.to_thread)."""
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def _read_json(path: Path) -> dict:
+    """Read and parse a JSON file (suitable for asyncio.to_thread)."""
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def _extract_zip(path: Path, extract_dir: Path) -> None:
+    """Extract a zip archive (suitable for asyncio.to_thread)."""
+    with zipfile.ZipFile(path, "r") as zf:
+        zf.extractall(extract_dir)
+
+
+def _find_custom_components_dir(extract_dir: Path) -> Optional[Path]:
+    """Walk a directory tree looking for a custom_components folder."""
+    for root, dirs, files in os.walk(extract_dir):
+        if "custom_components" in dirs:
+            return Path(root) / "custom_components"
+    return None
+
+
+def _rmtree(path: Path) -> None:
+    """Recursively delete a directory tree."""
+    shutil.rmtree(path)
+
+
+def _copytree(src: Path, dst: Path) -> None:
+    """Recursively copy a directory tree."""
+    shutil.copytree(src, dst)
+
 _LOGGER = get_logger(__name__)
 
 # HACS CDN data endpoint
@@ -555,7 +596,7 @@ class IntegrationManager:
                             }
 
                         self._hacs_repos = repos
-                        self._save_hacs_cache()
+                        await asyncio.to_thread(self._save_hacs_cache)
                         _LOGGER.info(f"Fetched {len(repos)} HACS repositories from CDN")
                         return repos
                     else:
@@ -877,7 +918,7 @@ class IntegrationManager:
 
             info.last_checked = datetime.now().isoformat()
 
-        self._save_integrations()
+        await asyncio.to_thread(self._save_integrations)
         return updates_available
 
     def _compare_versions(self, current: str, latest: str) -> bool:
@@ -1306,7 +1347,9 @@ class IntegrationManager:
                 _LOGGER.debug(f"Updated task domain to {actual_domain} from manifest")
 
             # Load manifest from the actual domain folder
-            manifest = self._load_manifest(actual_domain)
+            manifest = await asyncio.to_thread(
+                self._load_manifest, actual_domain
+            )
             if not manifest:
                 _LOGGER.error(f"Failed to load manifest for {actual_domain}")
                 return False
@@ -1337,7 +1380,7 @@ class IntegrationManager:
             )
 
             self._integrations[actual_domain] = info
-            self._save_integrations()
+            await asyncio.to_thread(self._save_integrations)
 
             # Update status to installing while we install requirements
             if task:
@@ -1397,16 +1440,18 @@ class IntegrationManager:
                     download_url, timeout=aiohttp.ClientTimeout(total=60)
                 ) as response:
                     if response.status == 200:
-                        with open(zip_path, "wb") as f:
-                            f.write(await response.read())
+                        data = await response.read()
+                        await asyncio.to_thread(_write_file, zip_path, data)
                     else:
                         # Try master branch if main fails
                         if not version:
                             download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
                             async with session.get(download_url) as response2:
                                 if response2.status == 200:
-                                    with open(zip_path, "wb") as f:
-                                        f.write(await response2.read())
+                                    data = await response2.read()
+                                    await asyncio.to_thread(
+                                        _write_file, zip_path, data
+                                    )
                                 else:
                                     raise Exception(
                                         f"Failed to download: HTTP {response.status}"
@@ -1419,17 +1464,14 @@ class IntegrationManager:
             # Extract
             extract_dir = temp_dir / f"{domain}_extract"
             if extract_dir.exists():
-                shutil.rmtree(extract_dir)
+                await asyncio.to_thread(_rmtree, extract_dir)
 
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(extract_dir)
+            await asyncio.to_thread(_extract_zip, zip_path, extract_dir)
 
             # Find custom_components folder
-            custom_components_dir = None
-            for root, dirs, files in os.walk(extract_dir):
-                if "custom_components" in dirs:
-                    custom_components_dir = Path(root) / "custom_components"
-                    break
+            custom_components_dir = await asyncio.to_thread(
+                _find_custom_components_dir, extract_dir
+            )
 
             if not custom_components_dir:
                 raise Exception("No custom_components folder found in archive")
@@ -1451,16 +1493,15 @@ class IntegrationManager:
             if not manifest_path.exists():
                 raise Exception("No manifest.json found in integration folder")
 
-            with open(manifest_path, "r") as f:
-                manifest = json.load(f)
-                actual_domain = manifest.get("domain", domain)
+            manifest = await asyncio.to_thread(_read_json, manifest_path)
+            actual_domain = manifest.get("domain", domain)
 
             # Install using the actual domain as the folder name (HACS convention)
             integration_dir = self._integrations_dir / actual_domain
             if integration_dir.exists():
-                shutil.rmtree(integration_dir)
+                await asyncio.to_thread(_rmtree, integration_dir)
 
-            shutil.copytree(source_dir, integration_dir)
+            await asyncio.to_thread(_copytree, source_dir, integration_dir)
             _LOGGER.info(f"Installed {domain} as {actual_domain} from manifest")
 
             return actual_domain
@@ -1468,9 +1509,9 @@ class IntegrationManager:
         finally:
             # Cleanup
             if zip_path.exists():
-                zip_path.unlink()
+                await asyncio.to_thread(zip_path.unlink)
             if extract_dir and extract_dir.exists():
-                shutil.rmtree(extract_dir)
+                await asyncio.to_thread(_rmtree, extract_dir)
 
     def _load_manifest(self, domain: str) -> Optional[dict]:
         """Load manifest.json for an integration."""
@@ -1630,7 +1671,7 @@ class IntegrationManager:
             return False
 
         self._integrations[domain].enabled = True
-        self._save_integrations()
+        await asyncio.to_thread(self._save_integrations)
         _LOGGER.info(f"Enabled integration {domain}")
         return True
 
@@ -1641,7 +1682,7 @@ class IntegrationManager:
             return False
 
         self._integrations[domain].enabled = False
-        self._save_integrations()
+        await asyncio.to_thread(self._save_integrations)
         _LOGGER.info(f"Disabled integration {domain}")
         return True
 
@@ -1652,12 +1693,12 @@ class IntegrationManager:
 
         if domain in self._integrations:
             del self._integrations[domain]
-            self._save_integrations()
+            await asyncio.to_thread(self._save_integrations)
 
         # Remove files
         integration_dir = self._integrations_dir / domain
         if integration_dir.exists():
-            shutil.rmtree(integration_dir)
+            await asyncio.to_thread(_rmtree, integration_dir)
 
         _LOGGER.info(f"Removed integration {domain}")
         return True

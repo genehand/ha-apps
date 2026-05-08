@@ -557,8 +557,10 @@ class ShimManager:
             )
             if full_name:
                 # Store it for future updates
-                self._integration_manager.update_integration_field(
-                    domain, full_name=full_name
+                await asyncio.to_thread(
+                    self._integration_manager.update_integration_field,
+                    domain,
+                    full_name=full_name,
                 )
                 _LOGGER.info(f"Resolved and stored full_name for {domain}: {full_name}")
 
@@ -584,7 +586,9 @@ class ShimManager:
             info.update_available = False
             info.latest_version = None
             info._release_notes_cache = None
-            self._integration_manager._save_integrations()
+            await asyncio.to_thread(
+                self._integration_manager._save_integrations
+            )
 
             # Reload
             for entry in entries:
@@ -980,8 +984,9 @@ class ShimManager:
             import importlib
             from shim.config_entries import ConfigFlow
 
-            config_flow_module = importlib.import_module(
-                f"custom_components.{domain}.config_flow"
+            config_flow_module = await asyncio.to_thread(
+                importlib.import_module,
+                f"custom_components.{domain}.config_flow",
             )
             for attr_name in ("VERSION", "ENTRIES_VERSION"):
                 if hasattr(config_flow_module, attr_name):

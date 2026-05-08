@@ -13,6 +13,7 @@ The compatibility layer is organized into modular components:
 ```
 shim/
 ├── import_patch.py      # Orchestrates import patching (~240 lines)
+├── block_async_io.py    # Warn-only blocking call detection on the event loop
 ├── stubs/               # Home Assistant stub modules
 │   ├── base.py          # Shared utilities (make_module, simple_method)
 │   ├── coordinator.py   # DataUpdateCoordinator, UpdateFailed
@@ -40,6 +41,7 @@ shim/
 > OAuth2 and Application Credentials details → [`oauth.md`](docs/oauth.md)
 > Integration Reload Buttons → [`integration-reloads.md`](docs/integration-reloads.md)
 > State Restoration (RestoreEntity) → [`state-restore.md`](docs/state-restore.md)
+> Blocking Call Detection (warn-only) → [`blocking-calls.md`](docs/blocking-calls.md)
 
 ### Import patterns
 

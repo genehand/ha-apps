@@ -8,6 +8,7 @@ import sys
 import types
 from pathlib import Path
 
+from . import block_async_io
 from . import config_entries
 from . import core
 from . import entity
@@ -223,6 +224,9 @@ class ImportPatcher:
 
         # Patch asyncio socket options for macOS compatibility
         self._patch_asyncio_socket_options()
+
+        # Enable blocking call detection (warn-only)
+        block_async_io.enable()
 
         self._patched = True
         _LOGGER.debug("Import patching complete")

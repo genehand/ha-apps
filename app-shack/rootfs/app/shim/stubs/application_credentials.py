@@ -6,6 +6,7 @@ AuthorizationServer, ClientCredential, and credential storage.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import json
 import logging
@@ -47,10 +48,13 @@ class ApplicationCredentialsStorage:
     def __init__(self, storage_dir: Path):
         self._storage_file = storage_dir / f"{STORAGE_KEY}.json"
         self._data: dict[str, dict] = {}
-        self._load()
+        self._loaded = False
 
-    def _load(self) -> None:
-        """Load credentials from storage."""
+    def _ensure_loaded(self) -> None:
+        """Lazy-load credentials from storage on first access."""
+        if self._loaded:
+            return
+        self._loaded = True
         if self._storage_file.exists():
             try:
                 with open(self._storage_file, "r") as f:
@@ -58,8 +62,6 @@ class ApplicationCredentialsStorage:
             except (json.JSONDecodeError, OSError) as e:
                 _LOGGER.error("Failed to load application credentials: %s", e)
                 self._data = {}
-        else:
-            self._data = {}
 
     def _save(self) -> None:
         """Save credentials to storage."""
@@ -73,10 +75,12 @@ class ApplicationCredentialsStorage:
 
     def async_items(self) -> list[dict]:
         """Return all stored credential items."""
+        self._ensure_loaded()
         return list(self._data.values())
 
     def async_client_credentials(self, domain: str) -> dict[str, ClientCredential]:
         """Return ClientCredentials in storage for the specified domain."""
+        self._ensure_loaded()
         credentials = {}
         for item_id, item in self._data.items():
             if item.get("domain") != domain:
@@ -89,7 +93,7 @@ class ApplicationCredentialsStorage:
             )
         return credentials
 
-    def async_create_item(self, info: dict) -> str:
+    async def async_create_item(self, info: dict) -> str:
         """Create a new credential item."""
         domain = info["domain"]
         client_id = info["client_id"]
@@ -103,16 +107,16 @@ class ApplicationCredentialsStorage:
             "auth_domain": info.get(CONF_AUTH_DOMAIN, item_id),
             "name": info.get("name", DEFAULT_IMPORT_NAME),
         }
-        self._save()
+        await asyncio.to_thread(self._save)
         _LOGGER.debug("Created application credential %s for %s", item_id, domain)
         return item_id
 
-    def async_delete_item(self, item_id: str) -> bool:
+    async def async_delete_item(self, item_id: str) -> bool:
         """Delete a credential item."""
         if item_id not in self._data:
             return False
         del self._data[item_id]
-        self._save()
+        await asyncio.to_thread(self._save)
         _LOGGER.debug("Deleted application credential %s", item_id)
         return True
 
@@ -288,4 +292,4 @@ async def async_import_client_credential(
             and existing["client_id"] == credential.client_id
         ):
             return
-    storage.async_create_item(item)
+    await storage.async_create_item(item)

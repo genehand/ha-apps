@@ -104,7 +104,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 status_code=500, detail="Application credentials not initialized"
             )
 
-        storage.async_create_item({
+        await storage.async_create_item({
             "domain": domain,
             "client_id": form_data.get("client_id", "").strip(),
             "client_secret": form_data.get("client_secret", "").strip(),
@@ -129,7 +129,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 status_code=500, detail="Application credentials not initialized"
             )
 
-        if storage.async_delete_item(item_id):
+        if await storage.async_delete_item(item_id):
             return HTMLResponse(
                 '<tr><td colspan="3" class="alert alert-success">Credential deleted.</td></tr>'
             )

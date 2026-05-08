@@ -90,7 +90,9 @@ class IntegrationLoader:
             # Check for __init__.py
             init_file = custom_components_path / "__init__.py"
             if not init_file.exists():
-                init_file.write_text("# custom_components package\n")
+                await asyncio.to_thread(
+                    init_file.write_text, "# custom_components package\n"
+                )
                 _LOGGER.info(f"Created {init_file}")
 
             # Add the PARENT of custom_components to Python path
@@ -106,7 +108,9 @@ class IntegrationLoader:
             _LOGGER.debug(
                 f"Importing custom_components.{domain} from path: {custom_components_path}"
             )
-            module = importlib.import_module(f"custom_components.{domain}")
+            module = await asyncio.to_thread(
+                importlib.import_module, f"custom_components.{domain}"
+            )
             self._loaded_integrations[domain] = module
 
             # Patch select descriptions to add options_map for display value translation
@@ -125,7 +129,9 @@ class IntegrationLoader:
                 if Path(persistent_path).exists():
                     # List some packages to verify they exist
                     try:
-                        packages = list(Path(persistent_path).iterdir())[:10]
+                        packages = await asyncio.to_thread(
+                            lambda: list(Path(persistent_path).iterdir())[:10]
+                        )
                         _LOGGER.debug(
                             f"Packages in persistent path: {[p.name for p in packages]}"
                         )
@@ -171,8 +177,9 @@ class IntegrationLoader:
                     # Get the target version from the integration's config flow
                     target_version = None
                     try:
-                        config_flow_module = importlib.import_module(
-                            f"custom_components.{domain}.config_flow"
+                        config_flow_module = await asyncio.to_thread(
+                            importlib.import_module,
+                            f"custom_components.{domain}.config_flow",
                         )
                         # Common attribute names for config entry version (module level)
                         for attr_name in ("VERSION", "ENTRIES_VERSION"):
@@ -877,8 +884,9 @@ class IntegrationLoader:
 
             # Check for config flow module
             try:
-                config_flow_module = importlib.import_module(
-                    f"custom_components.{domain}.config_flow"
+                config_flow_module = await asyncio.to_thread(
+                    importlib.import_module,
+                    f"custom_components.{domain}.config_flow",
                 )
             except ImportError as e:
                 _LOGGER.error(f"Failed to import config_flow for {domain}: {e}")
@@ -1143,15 +1151,18 @@ class IntegrationLoader:
                 return None
 
             # Check manifest for config_flow support
-            manifest = self._integration_manager._load_manifest(domain)
+            manifest = await asyncio.to_thread(
+                self._integration_manager._load_manifest, domain
+            )
             if not manifest or not manifest.get("config_flow", False):
                 _LOGGER.error(f"Integration {domain} has no config flow (manifest)")
                 return None
 
             # Import config_flow module
             try:
-                config_flow_module = importlib.import_module(
-                    f"custom_components.{domain}.config_flow"
+                config_flow_module = await asyncio.to_thread(
+                    importlib.import_module,
+                    f"custom_components.{domain}.config_flow",
                 )
             except ImportError as e:
                 _LOGGER.error(f"Failed to import config_flow for {domain}: {e}")
