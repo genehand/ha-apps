@@ -303,11 +303,34 @@ class ConfigEntry(Generic[T]):
                 self.domain,
             )
 
-            await hass.config_entries.flow.async_init(
+            result = await hass.config_entries.flow.async_init(
                 self.domain,
                 context=flow_context,
                 data=self.data | (data or {}),
             )
+
+        # After releasing the lock, send a persistent notification if the
+        # flow is waiting for user input.  This mirrors HA's own behaviour
+        # of creating a repairs issue when a reauth flow starts.
+        _NOT_COMPLETE = {"form", "menu", "external", "external_done"}
+        if result.get("type") in _NOT_COMPLETE:
+            try:
+                from config import send_persistent_notification
+
+                notification_id = f"shack_reauth_{self.domain}"
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    send_persistent_notification,
+                    (
+                        f"The {self.title} ({self.domain}) integration has lost "
+                        "authentication and needs to be re-authenticated. "
+                        "Go to the Shack web UI to complete the reauthentication."
+                    ),
+                    f"Shack: {self.title} reauthentication required",
+                    notification_id,
+                )
+            except Exception:
+                _LOGGER.warning("Failed to send reauth notification", exc_info=True)
 
     def async_get_active_flows(
         self, hass: "HomeAssistant", sources: set

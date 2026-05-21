@@ -216,11 +216,29 @@ class ConfigEntries:
         self._save_entries()
         _LOGGER.info(f"Added config entry {entry.entry_id} for {entry.domain}")
 
+    def _abort_reauth_flows(self, entry: ConfigEntry) -> None:
+        """Abort any in-progress reauth flows for a config entry.
+
+        Mirrors HA's _abort_reauth_flows which is called when an entry is
+        removed or reloaded. Each aborted flow also dismisses the
+        corresponding persistent notification (see FlowManager.async_abort).
+        """
+        from .config_entries import SOURCE_REAUTH
+
+        for flow_data in self._hass.config_entries.flow.async_progress_by_handler(
+            entry.domain,
+            match_context={"entry_id": entry.entry_id, "source": SOURCE_REAUTH},
+        ):
+            flow_id = flow_data.get("flow_id")
+            if flow_id:
+                self._hass.config_entries.flow.async_abort(flow_id)
+
     async def async_remove(self, entry_id: str) -> None:
         """Remove an entry."""
         for domain, entries in self._entries.items():
             for i, entry in enumerate(entries):
                 if entry.entry_id == entry_id:
+                    self._abort_reauth_flows(entry)
                     entries.pop(i)
                     self._save_entries()
                     _LOGGER.info(f"Removed config entry {entry_id}")
@@ -785,6 +803,22 @@ class FlowManager:
             Abort result dict
         """
         if flow_id in self._config_entries._flow_progress:
+            flow = self._config_entries._flow_progress[flow_id]
+
+            # Dismiss reauth notification if this is a reauth flow
+            flow_context = getattr(flow, "context", None) or {}
+            if flow_context.get("source") == "reauth":
+                domain = getattr(flow, "handler", None)
+                if domain:
+                    from config import dismiss_persistent_notification
+
+                    notification_id = f"shack_reauth_{domain}"
+                    asyncio.ensure_future(
+                        asyncio.get_event_loop().run_in_executor(
+                            None, dismiss_persistent_notification, notification_id
+                        )
+                    )
+
             del self._config_entries._flow_progress[flow_id]
             _LOGGER.debug(f"Aborted config flow {flow_id}")
 

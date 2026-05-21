@@ -64,6 +64,15 @@ def _copytree(src: Path, dst: Path) -> None:
     """Recursively copy a directory tree."""
     shutil.copytree(src, dst)
 
+
+def _find_first_subdirectory(path: Path) -> Optional[Path]:
+    """Return the first subdirectory in a path (suitable for asyncio.to_thread)."""
+    for item in path.iterdir():
+        if item.is_dir():
+            return item
+    return None
+
+
 _LOGGER = get_logger(__name__)
 
 # HACS CDN data endpoint
@@ -1477,11 +1486,9 @@ class IntegrationManager:
                 raise Exception("No custom_components folder found in archive")
 
             # Find the integration folder in custom_components
-            source_dir = None
-            for item in custom_components_dir.iterdir():
-                if item.is_dir():
-                    source_dir = item
-                    break
+            source_dir = await asyncio.to_thread(
+                _find_first_subdirectory, custom_components_dir
+            )
 
             if not source_dir or not source_dir.exists():
                 raise Exception(

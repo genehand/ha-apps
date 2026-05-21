@@ -134,6 +134,64 @@ def send_persistent_notification(
         return False
 
 
+def dismiss_persistent_notification(notification_id: str) -> bool:
+    """Dismiss a persistent notification in Home Assistant via Supervisor API.
+
+    Args:
+        notification_id: The unique identifier of the notification to dismiss.
+
+    Returns:
+        True if notification was dismissed successfully, False otherwise.
+    """
+    token = _get_supervisor_token()
+    if not token:
+        logger.debug(
+            "SUPERVISOR_TOKEN not set, cannot dismiss persistent notification"
+        )
+        return False
+
+    try:
+        import urllib.request
+        import urllib.error
+
+        url = "http://supervisor/core/api/services/persistent_notification/dismiss"
+
+        payload = {"notification_id": notification_id}
+        data = json.dumps(payload).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            logger.debug("Persistent notification dismissed successfully")
+            return True
+
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8")
+        except Exception:
+            pass
+        logger.debug(
+            "Failed to dismiss persistent notification: %s %s - %s",
+            e.code,
+            e.reason,
+            error_body,
+        )
+        return False
+    except Exception as e:
+        logger.debug("Failed to dismiss persistent notification: %s", e)
+        return False
+
+
 def get_addon_slug() -> Optional[str]:
     """Get the add-on slug from the Supervisor API.
 

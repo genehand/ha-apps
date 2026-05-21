@@ -324,6 +324,18 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
 
         # Handle result
         if result.get("type") == "create_entry":
+            # Dismiss any reauth notification for this domain
+            if flow is not None and getattr(flow, "context", {}).get("source") == "reauth":
+                from config import dismiss_persistent_notification
+
+                asyncio.ensure_future(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        dismiss_persistent_notification,
+                        f"shack_reauth_{domain}",
+                    )
+                )
+
             entry_data = result.get("data", {})
             entry_options = result.get("options")
             entry = await shim_manager.create_config_entry(
@@ -369,6 +381,18 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                     '<div class="alert alert-error">Failed to continue OAuth flow</div>'
                 )
             if result.get("type") == "create_entry":
+                # Dismiss any reauth notification for this domain
+                if flow is not None and getattr(flow, "context", {}).get("source") == "reauth":
+                    from config import dismiss_persistent_notification
+
+                    asyncio.ensure_future(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            dismiss_persistent_notification,
+                            f"shack_reauth_{domain}",
+                        )
+                    )
+
                 entry_data = result.get("data", {})
                 entry_options = result.get("options")
                 entry = await shim_manager.create_config_entry(

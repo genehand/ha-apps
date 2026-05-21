@@ -294,6 +294,10 @@ class IntegrationLoader:
             set_current_integration(domain)
             _LOGGER.debug(f"Unloading {domain} (cleanup_mqtt={cleanup_mqtt})")
 
+            # Abort any in-progress reauth flows for this entry so stale
+            # flows (and their persistent notifications) are cleaned up
+            self._abort_reauth_flows(entry)
+
             # Set shutdown flag on hass so async_forward_entry_unload knows
             # not to clean up MQTT topics during server shutdown
             if not cleanup_mqtt:
@@ -621,6 +625,23 @@ class IntegrationLoader:
                 len(keys_to_remove),
                 domain,
             )
+
+    def _abort_reauth_flows(self, entry: ConfigEntry) -> None:
+        """Abort any in-progress reauth flows for a config entry.
+
+        Mirrors HA's _abort_reauth_flows which is called when an entry is
+        removed or reloaded. Each aborted flow also dismisses the
+        corresponding persistent notification (see FlowManager.async_abort).
+        """
+        from ..config_entries import SOURCE_REAUTH
+
+        for flow_data in self._hass.config_entries.flow.async_progress_by_handler(
+            entry.domain,
+            match_context={"entry_id": entry.entry_id, "source": SOURCE_REAUTH},
+        ):
+            flow_id = flow_data.get("flow_id")
+            if flow_id:
+                self._hass.config_entries.flow.async_abort(flow_id)
 
     async def remove_config_entry(self, entry: ConfigEntry) -> bool:
         """Remove a specific config entry and its entities."""
