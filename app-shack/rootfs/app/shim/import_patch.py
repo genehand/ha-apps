@@ -225,6 +225,9 @@ class ImportPatcher:
         # Patch asyncio socket options for macOS compatibility
         self._patch_asyncio_socket_options()
 
+        # Patch curl_cffi to strip Content-Encoding after auto-decompression
+        self._patch_curl_cffi_content_encoding()
+
         # Enable blocking call detection (warn-only)
         block_async_io.enable()
 
@@ -279,6 +282,36 @@ class ImportPatcher:
 
             socket.socket = PatchedSocket
             _LOGGER.debug("Patched asyncio _set_nodelay for macOS compatibility")
+
+    def _patch_curl_cffi_content_encoding(self) -> None:
+        """Patch curl_cffi to strip Content-Encoding after auto-decompression.
+
+        libcurl (and thus curl_cffi) automatically decompresses gzip, deflate,
+        and brotli content. However, unlike the ``requests`` library, curl_cffi
+        does **not** strip the ``Content-Encoding`` response header after
+        decompression. This causes any downstream code that reads that header
+        and attempts its own decompression (e.g., FlightRadarAPI, or any other
+        library using curl_cffi) to fail with a noisy warning.
+
+        This patch wraps the session's ``_parse_response`` to remove the
+        ``Content-Encoding`` header from the response, since libcurl has
+        already transparently handled the decompression.
+        """
+        try:
+            from curl_cffi.requests.session import Session
+        except ImportError:
+            return  # curl_cffi not installed
+
+        original_parse = Session._parse_response
+
+        def _patched_parse(self, curl, buffer, header_buffer, default_encoding, discard_cookies):
+            rsp = original_parse(self, curl, buffer, header_buffer, default_encoding, discard_cookies)
+            # libcurl already decompressed the body — this header is misleading
+            rsp.headers.pop('Content-Encoding', None)
+            return rsp
+
+        Session._parse_response = _patched_parse
+        _LOGGER.debug('Patched curl_cffi to strip Content-Encoding after auto-decompression')
 
     def unpatch(self) -> None:
         """Restore original modules."""

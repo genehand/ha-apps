@@ -646,6 +646,7 @@ class TestAllPlatformEntityDescriptions:
         from shim.platforms.climate import ClimateEntityDescription
         from shim.platforms.vacuum import VacuumEntityDescription
         from shim.platforms.humidifier import HumidifierEntityDescription
+        from shim.platforms.text import TextEntityDescription
 
         # All should be instantiable
         sensor = SensorEntityDescription(key="sensor", state_class="measurement")
@@ -658,6 +659,7 @@ class TestAllPlatformEntityDescriptions:
         climate = ClimateEntityDescription(key="climate")
         vacuum = VacuumEntityDescription(key="vacuum")
         humidifier = HumidifierEntityDescription(key="humidifier")
+        text = TextEntityDescription(key="text", pattern=".*")
 
         assert sensor.key == "sensor"
         assert switch.key == "switch"
@@ -667,6 +669,34 @@ class TestAllPlatformEntityDescriptions:
         assert climate.key == "climate"
         assert vacuum.key == "vacuum"
         assert humidifier.key == "humidifier"
+        assert text.key == "text"
+        assert text.pattern == ".*"
+
+    def test_text_entity_description_with_translation_key(self):
+        """Test that TextEntityDescription accepts translation_key.
+
+        This validates the flightradar24 integration pattern where a @dataclass
+        subclass passes translation_key as a keyword argument.
+        """
+        from shim.platforms.text import TextEntityDescription
+        from dataclasses import dataclass
+
+        @dataclass
+        class CustomTextDescription(TextEntityDescription):
+            extra: str = "default"
+
+        # This is the pattern used by flightradar24's FlightRadar24TextEntityDescription
+        desc = CustomTextDescription(
+            key="add_track",
+            translation_key="add_track",
+            icon="mdi:airplane-plus",
+            extra="custom",
+        )
+
+        assert desc.key == "add_track"
+        assert desc.translation_key == "add_track"
+        assert desc.icon == "mdi:airplane-plus"
+        assert desc.extra == "custom"
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Any, Dict, Optional
 from ..entity import (
     Entity,
+    EntityDescription,
     format_device_identifiers,
     get_device_info_attr,
     build_mqtt_device_config,
@@ -226,14 +227,11 @@ class TextEntity(Entity):
 from ..frozen_dataclass_compat import FrozenOrThawed
 
 
-class TextEntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
+class TextEntityDescription(
+    EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True
+):
     """A class that describes text entities."""
 
-    key: str
-    name: str | None = None
-    icon: str | None = None
-    entity_registry_enabled_default: bool = True
-    entity_category: str | None = None
     pattern: str | None = None
     mode: str = "text"
     min: int = 0
