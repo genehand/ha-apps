@@ -178,6 +178,39 @@ class TestStateMachine:
 
         assert state_machine.async_get_entity_id("unique_001") == "sensor.temperature"
 
+    def test_async_get_entity_id_from_unique_id(self, state_machine):
+        """Test EntityRegistry.async_get_entity_id finds entity_id from unique_id."""
+        from shim.entity import EntityRegistry, Entity
+
+        # Register an entity
+        entity = Entity()
+        entity.entity_id = "sensor.test_sensor"
+        entity._attr_unique_id = "unique_001"
+        entity._attr_config_entry_id = "entry_123"
+
+        registry = EntityRegistry()
+        registry.register(entity)
+
+        # Test that async_get_entity_id can find the entity_id
+        assert registry.async_get_entity_id("unique_001") == "sensor.test_sensor"
+
+    def test_async_get_entity_id_multiple_entities(self, state_machine):
+        """Test EntityRegistry.async_get_entity_id returns correct entity_id."""
+        from shim.entity import EntityRegistry, Entity
+
+        # Register multiple entities with unique unique_ids (simulating real scenario)
+        for i in range(3):
+            entity = Entity()
+            entity.entity_id = f"sensor.sensor_{i}"
+            entity._attr_unique_id = f"unique_sensor_{i}"
+            registry = EntityRegistry()
+            registry.register(entity)
+
+        # Verify we can find each entity by its unique_id
+        for i in range(3):
+            expected_entity_id = f"sensor.sensor_{i}"
+            assert registry.async_get_entity_id(f"unique_sensor_{i}") == expected_entity_id
+
 
 class TestServiceRegistry:
     """Test cases for ServiceRegistry class."""

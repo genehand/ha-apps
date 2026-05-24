@@ -356,6 +356,33 @@ class EntityRegistry:
         """Return registry entries for a config entry."""
         return list(self._entries_by_config_entry.get(config_entry_id, []))
 
+    def async_get_entity_id(
+        self, domain: str, platform: str, unique_id: str
+    ) -> Optional[str]:
+        """Get entity_id from domain, platform, and unique_id.
+
+        This method is called by integrations expecting Home Assistant's entity registry API.
+        Searches for an entity where: entity_id starts with domain.platform. and unique_id matches.
+        """
+        # Try to find entity by domain, platform, and unique_id
+        for entity_id, entity in self._entities.items():
+            expected_entity_id = f"{domain}.{platform}.{unique_id}"
+            # Check if this entity matches the domain.platform.unique_id pattern
+            if entity_id == expected_entity_id or (
+                entity_id.startswith(f"{domain}.{platform}.")
+                and getattr(entity, "unique_id", None) == unique_id
+            ):
+                return entity_id
+
+        # Also check entries by config entry
+        for config_entry_id, entries in self._entries_by_config_entry.items():
+            for entry in entries:
+                expected_entity_id = f"{domain}.{platform}.{entry.unique_id}"
+                if entry.entity_id == expected_entity_id:
+                    return entry.entity_id
+
+        return None
+
     def async_update_entity(
         self, entity_id: str, *, name: str = None, icon: str = None, **kwargs
     ):
