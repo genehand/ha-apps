@@ -721,29 +721,221 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     # storage
     storage = types.ModuleType("homeassistant.helpers.storage")
 
+    import json as _json
+    import os as _os
+
     class Store:
-        def __init__(self, hass, version, key):
+        """Persistent key-value store (stub matching homeassistant.helpers.storage.Store).
+
+        Data is saved to ``{hass.config_dir}/.storage/{key}`` in the same format
+        as the real HA implementation:
+
+        .. code-block:: json
+
+            {
+              "version": <int>,
+              "minor_version": <int>,
+              "key": "<key>",
+              "data": <user_data>
+            }
+
+        Thread-safe I/O is performed via the hass executor to avoid blocking
+        the event loop.
+        """
+
+        def __init__(
+            self,
+            hass,
+            version,
+            key,
+            private=False,
+            *,
+            atomic_writes=False,
+            encoder=None,
+            max_readable_version=None,
+            minor_version=1,
+            read_only=False,
+            **kwargs,
+        ):
+            """Initialize the store.
+
+            Args:
+                hass: HomeAssistant instance (must have ``hass.config.path``).
+                version: Storage version (for future migrations).
+                key: Unique key for this store, used as the filename in .storage/.
+                private: Reserved for future use; file permissions.
+                atomic_writes: If True, use atomic write (temp file + rename).
+                encoder: Custom JSON encoder (optional).
+                max_readable_version: Maximum readable version (defaults to version).
+                minor_version: Minor storage version.
+                read_only: If True, skip writes.
+            """
+            self.hass = hass
+            self.version = version
+            self.minor_version = minor_version
+            self.key = key
+            self._private = private
+            self._atomic_writes = atomic_writes
+            self._encoder = encoder
+            self._read_only = read_only
+            self._max_readable_version = (
+                max_readable_version if max_readable_version is not None else version
+            )
+            self._data: dict | None = None
+            self._delay_handle: asyncio.TimerHandle | None = None
+            self._write_lock = asyncio.Lock()
+
+        @property
+        def path(self):
+            """Return the full filesystem path for this store."""
+            return Path(str(self.hass.config.path(".storage", self.key)))
+
+        def make_read_only(self) -> None:
+            """Irreversibly make the store read-only."""
+            self._read_only = True
+
+        def set_load_empty(self) -> None:
+            """Skip loading from disk and become read-only."""
+            self._read_only = True
             self._data = {}
-            self._delay_handle = None
+
+        async def _async_load_json(self, filepath):
+            """Load JSON from file in executor thread. Returns None on failure."""
+            try:
+                return await self.hass.async_add_executor_job(
+                    self._load_json_sync, filepath
+                )
+            except Exception as exc:
+                _LOGGER.error("Error loading store %s: %s", self.key, exc)
+                return None
+
+        def _load_json_sync(self, filepath):
+            """Synchronous JSON load."""
+            if not filepath.exists():
+                return None
+            with open(filepath, "r") as f:
+                return _json.load(f)
+
+        async def _async_save_json(self, filepath, data):
+            """Save JSON to file atomically in executor thread."""
+            if self._read_only:
+                return
+            try:
+                await self.hass.async_add_executor_job(
+                    self._save_json_sync, filepath, data
+                )
+            except Exception as exc:
+                _LOGGER.error("Error saving store %s: %s", self.key, exc)
+
+        def _save_json_sync(self, filepath, data):
+            """Synchronous atomic JSON save."""
+            # Ensure directory exists
+            _os.makedirs(str(filepath.parent), exist_ok=True)
+            if self._atomic_writes:
+                # Atomic write: temp file + rename
+                tmp_path = filepath.with_suffix(".json.tmp")
+                with open(tmp_path, "w") as f:
+                    _json.dump(data, f, indent=2, default=str, cls=self._encoder)
+                tmp_path.rename(filepath)
+            else:
+                with open(filepath, "w") as f:
+                    _json.dump(data, f, indent=2, default=str, cls=self._encoder)
 
         async def async_load(self):
-            return self._data
+            """Load data from disk.
+
+            Returns the stored data dict, or None if the file doesn't exist
+            or can't be read.
+
+            This matches the real HA behaviour where a missing .storage file
+            returns None so the caller can fall back to defaults.
+            """
+            raw = await self._async_load_json(self.path)
+            if raw is None:
+                return None
+            stored = raw.get("data")
+            return stored
 
         async def async_save(self, data):
-            self._data = data
+            """Persist data to disk immediately.
 
-        def async_delay_save(self, data_func, delay):
-            async def _delayed_save():
-                await asyncio.sleep(delay)
-                data = data_func()
-                await self.async_save(data)
+            Wraps data in the standard HA storage envelope:
+            {version, minor_version, key, data}.
+            """
+            envelope = {
+                "version": self.version,
+                "minor_version": self.minor_version,
+                "key": self.key,
+                "data": data,
+            }
+            async with self._write_lock:
+                self._data = envelope
+                await self._async_save_json(self.path, envelope)
+
+        def async_delay_save(self, data_func, delay=0):
+            """Persist data to disk after a delay.
+
+            data_func is a callable that returns the data to save.
+            If called multiple times before the delay expires, only the
+            latest data_func is used.
+            """
+            if self._read_only:
+                return
+            self._data = {"data_func": data_func}
+            self._cancel_delayed_save()
+            loop = asyncio.get_running_loop()
+            self._delay_handle = loop.call_later(delay, self._async_delayed_save_cb)
+
+        def _cancel_delayed_save(self):
+            """Cancel a pending delayed save."""
+            if self._delay_handle is not None:
+                self._delay_handle.cancel()
                 self._delay_handle = None
 
-            if self._delay_handle:
-                self._delay_handle.cancel()
-            self._delay_handle = asyncio.create_task(_delayed_save())
+        def _async_delayed_save_cb(self):
+            """Callback triggered by the delayed save timer."""
+            self._delay_handle = None
+            # Schedule the actual save as a task so it can be awaited
+            asyncio.create_task(self._async_do_delayed_save())
+
+        async def _async_do_delayed_save(self):
+            """Execute the delayed save."""
+            async with self._write_lock:
+                if self._data is None:
+                    return
+                data_func = self._data.get("data_func")
+                if data_func is None:
+                    return
+                try:
+                    data = data_func()
+                except Exception as exc:
+                    _LOGGER.error(
+                        "Error in delayed save data_func for %s: %s", self.key, exc
+                    )
+                    return
+                self._data = None
+                envelope = {
+                    "version": self.version,
+                    "minor_version": self.minor_version,
+                    "key": self.key,
+                    "data": data,
+                }
+                await self._async_save_json(self.path, envelope)
+
+        async def async_remove(self):
+            """Delete the stored file from disk."""
+            self._cancel_delayed_save()
+            self._data = None
+            filepath = self.path
+            try:
+                await self.hass.async_add_executor_job(_os.unlink, str(filepath))
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                _LOGGER.error("Error removing store %s: %s", self.key, exc)
 
         def __class_getitem__(cls, item):
+            """Support generic type hint syntax (Store[MyType])."""
             return cls
 
     storage.Store = Store

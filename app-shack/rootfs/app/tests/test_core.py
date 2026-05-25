@@ -182,9 +182,9 @@ class TestStateMachine:
         """Test EntityRegistry.async_get_entity_id finds entity_id from unique_id."""
         from shim.entity import EntityRegistry, Entity
 
-        # Register an entity
+        # Register an entity with domain.platform.unique_id pattern
         entity = Entity()
-        entity.entity_id = "sensor.test_sensor"
+        entity.entity_id = "sensor.test.unique_001"
         entity._attr_unique_id = "unique_001"
         entity._attr_config_entry_id = "entry_123"
 
@@ -192,24 +192,24 @@ class TestStateMachine:
         registry.register(entity)
 
         # Test that async_get_entity_id can find the entity_id
-        assert registry.async_get_entity_id("unique_001") == "sensor.test_sensor"
+        assert registry.async_get_entity_id("sensor", "test", "unique_001") == "sensor.test.unique_001"
 
     def test_async_get_entity_id_multiple_entities(self, state_machine):
         """Test EntityRegistry.async_get_entity_id returns correct entity_id."""
         from shim.entity import EntityRegistry, Entity
 
-        # Register multiple entities with unique unique_ids (simulating real scenario)
+        # Register multiple entities with domain.platform.unique_id pattern
         for i in range(3):
             entity = Entity()
-            entity.entity_id = f"sensor.sensor_{i}"
+            entity.entity_id = f"sensor.test.unique_sensor_{i}"
             entity._attr_unique_id = f"unique_sensor_{i}"
             registry = EntityRegistry()
             registry.register(entity)
 
-        # Verify we can find each entity by its unique_id
+        # Verify we can find each entity by domain, platform, and unique_id
         for i in range(3):
-            expected_entity_id = f"sensor.sensor_{i}"
-            assert registry.async_get_entity_id(f"unique_sensor_{i}") == expected_entity_id
+            expected_entity_id = f"sensor.test.unique_sensor_{i}"
+            assert registry.async_get_entity_id("sensor", "test", f"unique_sensor_{i}") == expected_entity_id
 
 
 class TestServiceRegistry:

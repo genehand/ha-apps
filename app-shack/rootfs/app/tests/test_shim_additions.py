@@ -1,5 +1,6 @@
 """Tests for shim modules added in this session."""
 
+import asyncio
 import pytest
 from dataclasses import dataclass, FrozenInstanceError
 from pathlib import Path
@@ -2118,3 +2119,246 @@ class TestSensorEntityStateWithZero:
 
         # But None should be unavailable
         assert TestSensor(None).available is False
+
+
+class TestStorePersistence:
+    """Tests for the persistent Store stub (homeassistant.helpers.storage.Store).
+
+    Verifies that the Store correctly persists data to disk, matching the
+    behaviour of the real Home Assistant Store implementation.
+    """
+
+    @pytest.fixture
+    async def hass(self, tmp_path):
+        """Create a minimal HomeAssistant shim with a temp config_dir."""
+        from shim.core import HomeAssistant
+        return HomeAssistant(config_dir=tmp_path)
+
+    @pytest.fixture
+    async def store(self, hass):
+        """Create a Store for testing."""
+        from homeassistant.helpers.storage import Store
+        return Store(hass, version=1, key="test_store")
+
+    # --- Basic save / load ---
+
+    @pytest.mark.asyncio
+    async def test_save_and_load_round_trip(self, store):
+        """Save data, load it back, verify it matches."""
+        data = {"hello": "world", "nested": {"a": 1}}
+        await store.async_save(data)
+        loaded = await store.async_load()
+        assert loaded == data
+
+    @pytest.mark.asyncio
+    async def test_load_returns_none_when_file_does_not_exist(self, store):
+        """Before any save, async_load returns None."""
+        result = await store.async_load()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_load_returns_none_after_remove(self, store):
+        """After removing the store, async_load returns None."""
+        await store.async_save({"some": "data"})
+        await store.async_remove()
+        result = await store.async_load()
+        assert result is None
+
+    # --- Persistence across Store instances ---
+
+    @pytest.mark.asyncio
+    async def test_persistence_across_instances(self, hass):
+        """Data written with one Store instance can be read by another."""
+        from homeassistant.helpers.storage import Store
+
+        store_a = Store(hass, version=1, key="shared_test")
+        await store_a.async_save({"persisted": True})
+
+        store_b = Store(hass, version=1, key="shared_test")
+        loaded = await store_b.async_load()
+        assert loaded == {"persisted": True}
+
+    @pytest.mark.asyncio
+    async def test_different_keys_are_independent(self, hass):
+        """Stores with different keys should have independent files."""
+        from homeassistant.helpers.storage import Store
+
+        store_1 = Store(hass, version=1, key="key_one")
+        store_2 = Store(hass, version=1, key="key_two")
+
+        await store_1.async_save({"value": "from_one"})
+        await store_2.async_save({"value": "from_two"})
+
+        assert await store_1.async_load() == {"value": "from_one"}
+        assert await store_2.async_load() == {"value": "from_two"}
+
+    # --- File on disk verification ---
+
+    @pytest.mark.asyncio
+    async def test_file_exists_on_disk(self, hass, store):
+        """Verify that a .storage file is actually created on save."""
+        await store.async_save({"test": "data"})
+        filepath = hass.config.path(".storage", "test_store")
+        assert Path(filepath).exists()
+
+    @pytest.mark.asyncio
+    async def test_file_removed_on_async_remove(self, hass, store):
+        """Verify async_remove deletes the file."""
+        await store.async_save({"test": "data"})
+        filepath = hass.config.path(".storage", "test_store")
+        assert Path(filepath).exists()
+        await store.async_remove()
+        assert not Path(filepath).exists()
+
+    @pytest.mark.asyncio
+    async def test_file_format(self, hass, store):
+        """Verify the on-disk JSON structure matches HA's envelope format."""
+        import json
+
+        await store.async_save({"my": "data"})
+        filepath = hass.config.path(".storage", "test_store")
+        with open(filepath) as f:
+            raw = json.load(f)
+
+        assert raw["version"] == 1
+        assert raw["minor_version"] == 1
+        assert raw["key"] == "test_store"
+        assert raw["data"] == {"my": "data"}
+
+    # --- Delayed save ---
+
+    @pytest.mark.asyncio
+    async def test_delayed_save_persists_to_disk(self, hass, store):
+        """async_delay_save should eventually write data to disk."""
+        store.async_delay_save(lambda: {"delayed": True}, delay=0.01)
+        # Allow the delayed save to run
+        await asyncio.sleep(0.05)
+        loaded = await store.async_load()
+        assert loaded == {"delayed": True}
+
+    @pytest.mark.asyncio
+    async def test_delayed_save_cancels_previous(self, hass, store):
+        """A second async_delay_save should cancel the first."""
+        called = []
+
+        def first():
+            called.append("first")
+            return {"value": "first"}
+
+        def second():
+            called.append("second")
+            return {"value": "second"}
+
+        store.async_delay_save(first, delay=0.1)
+        store.async_delay_save(second, delay=0.01)
+        await asyncio.sleep(0.15)
+
+        # Only the second function should have been called
+        assert called == ["second"]
+        loaded = await store.async_load()
+        assert loaded == {"value": "second"}
+
+    # --- Version / minor_version are passed through ---
+
+    @pytest.mark.asyncio
+    async def test_custom_version_minor_version(self, hass):
+        """Verify version and minor_version are stored in the envelope."""
+        from homeassistant.helpers.storage import Store
+        import json
+
+        store = Store(hass, version=3, minor_version=2, key="versioned_test")
+        await store.async_save({"data": "x"})
+        filepath = hass.config.path(".storage", "versioned_test")
+        with open(filepath) as f:
+            raw = json.load(f)
+        assert raw["version"] == 3
+        assert raw["minor_version"] == 2
+
+    # --- async_remove is idempotent ---
+
+    @pytest.mark.asyncio
+    async def test_async_remove_idempotent(self, store):
+        """Calling async_remove on a non-existent file should not raise."""
+        await store.async_remove()  # no exception
+        await store.async_remove()  # still no exception
+
+    # --- read_only mode ---
+
+    @pytest.mark.asyncio
+    async def test_read_only_does_not_write(self, hass, store):
+        """In read-only mode, save should not write to disk."""
+        store.make_read_only()
+        await store.async_save({"should": "not persist"})
+        filepath = hass.config.path(".storage", "test_store")
+        assert not Path(filepath).exists()
+
+    @pytest.mark.asyncio
+    async def test_path_property(self, hass, store):
+        """The path property should point to .storage/{key}."""
+        expected = str(Path(hass.config.path(".storage", "test_store")))
+        assert str(store.path) == expected
+
+    # --- Real-world pattern: nest_protect session store ---
+
+    @pytest.mark.asyncio
+    async def test_nest_protect_session_pattern(self, hass):
+        """Simulate how nest_protect's NestSessionManager uses Store."""
+        from homeassistant.helpers.storage import Store
+
+        entry_id = "flow_nest_123"
+        store = Store(hass, version=1, key=f"nest_protect_{entry_id}")
+
+        # Simulate _async_persist() from session.py
+        session_data = {
+            "nest_session": {
+                "access_token": "tok_abc",
+                "email": "user@nest.com",
+                "expires_in": "Thu, 25-May-2026 16:00:00 UTC",
+                "userid": "user_001",
+                "is_superuser": False,
+                "language": "en",
+                "weave": {"key": "val"},
+                "user": "user_001",
+                "is_staff": False,
+            },
+            "transport_url": "https://transport.nest.com/",
+        }
+        await store.async_save(session_data)
+
+        # Simulate _async_try_persisted_session() from session.py
+        persisted = await store.async_load()
+        assert persisted is not None
+        assert persisted.get("nest_session") is not None
+        assert persisted["nest_session"]["access_token"] == "tok_abc"
+        assert persisted["transport_url"] == "https://transport.nest.com/"
+
+        # Verify file exists on disk (survives restart)
+        filepath = hass.config.path(".storage", f"nest_protect_{entry_id}")
+        assert Path(filepath).exists()
+
+        # Simulate async_remove_entry from __init__.py
+        await store.async_remove()
+        assert not Path(filepath).exists()
+        assert await store.async_load() is None
+
+    # --- Store subclass (like meross_lan's MerossProfileStore) ---
+
+    @pytest.mark.asyncio
+    async def test_store_subclass(self, hass):
+        """Verify that a Store subclass can save and load."""
+        from homeassistant.helpers.storage import Store
+
+        class CustomStore(Store):
+            """A custom store subclass (like meross_lan's MerossProfileStore)."""
+
+            def __init__(self, hass, profile_id):
+                super().__init__(hass, version=1, key=f"profile_{profile_id}")
+
+        custom = CustomStore(hass, profile_id="abc123")
+        await custom.async_save({"profile": "data", "token": "secret"})
+        loaded = await custom.async_load()
+        assert loaded == {"profile": "data", "token": "secret"}
+
+        # Clean up
+        await custom.async_remove()
+        assert await custom.async_load() is None
