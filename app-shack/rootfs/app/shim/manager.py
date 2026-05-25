@@ -807,7 +807,7 @@ class ShimManager:
         has_updates = update_count > 0
 
         # Get add-on slug for ingress URL (falls back to hardcoded if not available)
-        addon_slug = get_addon_slug()
+        addon_slug = await asyncio.to_thread(get_addon_slug)
         ingress_path = f"/app/{addon_slug}" if addon_slug else "/app/df3bd192_shack"
 
         # Build release summary listing all updates
