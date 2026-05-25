@@ -87,6 +87,42 @@
         </div>
     </div>
 
+    {% if releases %}
+    <div style="margin-top: 20px;">
+        <h3 style="margin-bottom: 1rem;">Available Versions</h3>
+        <form hx-post="../integrations/{{ integration.domain }}/install-version"
+              hx-target="body"
+              hx-swap="outerHTML"
+              hx-indicator="#install-version-spinner"
+              style="display: flex; flex-direction: column; gap: 1rem;">
+            <div>
+                <label for="version-select" style="font-size: 0.9rem; color: var(--pico-muted-color); display: block; margin-bottom: 0.5rem;">
+                    Select a version to install
+                </label>
+                <select id="version-select" name="version" required style="width: 100%;">
+                    {% for release in releases %}
+                    <option value="{{ release.version }}">
+                        {{ release.version }}
+                        {% if release.published_at %}({{ release.published_at }}){% endif %}
+                        {% if release.prerelease %}[beta]{% endif %}
+                        {% if release.version == integration.version %}[installed]{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <button type="submit" class="secondary">
+                    <span id="install-version-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                    <span class="button-text">Install Selected Version</span>
+                </button>
+                <span style="font-size: 0.8rem; color: var(--pico-muted-color);">
+                    Current: {{ integration.version }}
+                </span>
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
     <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
         {% if integration.enabled %}
         <button type="button" class="secondary"
@@ -133,11 +169,11 @@
     </div>
 </article>
 
-{% if releases %}
+{% if integration.update_available and release_notes %}
 <article>
     <h2>Release Notes</h2>
     <div style="display: flex; flex-direction: column; gap: 1rem;">
-        {% for release in releases %}
+        {% for release in release_notes %}
         <div style="border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius);">
             <div style="padding: 0.75rem 1rem; background: var(--pico-card-background-color); border-bottom: 1px solid var(--pico-form-element-border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
                 <strong style="font-size: 1rem;">{{ release.version }}</strong>

@@ -885,7 +885,11 @@ class IntegrationManager:
                 if info.repository_url in hacs_repos_by_url:
                     hacs_repo = hacs_repos_by_url[info.repository_url]
                     latest = hacs_repo.get("last_version")
-                    if latest and self._compare_versions(info.version, latest):
+                    if latest and self._is_prerelease(latest):
+                        _LOGGER.debug(
+                            f"Skipping beta notification for {domain}: {latest}"
+                        )
+                    elif latest and self._compare_versions(info.version, latest):
                         info.latest_version = latest
                         info.update_available = True
                         updates_available.append(info)
@@ -906,7 +910,11 @@ class IntegrationManager:
                     latest = await self._get_latest_version_from_github(
                         info.repository_url
                     )
-                    if latest and self._compare_versions(info.version, latest):
+                    if latest and self._is_prerelease(latest):
+                        _LOGGER.debug(
+                            f"Skipping beta notification for {domain}: {latest}"
+                        )
+                    elif latest and self._compare_versions(info.version, latest):
                         info.latest_version = latest
                         info.update_available = True
                         updates_available.append(info)
@@ -929,6 +937,17 @@ class IntegrationManager:
 
         await asyncio.to_thread(self._save_integrations)
         return updates_available
+
+    def _is_prerelease(self, version: str) -> bool:
+        """Detect beta/RC/alpha versions from version strings.
+
+        Returns True if the version looks like a prerelease.
+        """
+        v = version.lower()
+        return any(
+            marker in v
+            for marker in ("b", "beta", "rc", "alpha", "dev", "a")
+        )
 
     def _compare_versions(self, current: str, latest: str) -> bool:
         """Compare two versions using AwesomeVersion.
@@ -1144,12 +1163,18 @@ class IntegrationManager:
         return None
 
     async def _fetch_releases_from_github(
-        self, repo_url: str, current_version: str
+        self, repo_url: str, current_version: str, include_prerelease: bool = False
     ) -> List[Dict[str, Any]]:
         """Fetch releases newer than current_version from GitHub.
 
-        Returns a list of release dicts sorted newest-first, excluding prereleases.
-        Each dict has keys: version, body, published_at, url.
+        Args:
+            repo_url: GitHub repository URL
+            current_version: Only return releases newer than this version
+            include_prerelease: If True, include prerelease/beta versions
+
+        Returns:
+            A list of release dicts sorted newest-first.
+            Each dict has keys: version, body, published_at, url.
         """
         if "github.com" not in repo_url:
             return []
@@ -1173,7 +1198,7 @@ class IntegrationManager:
 
                         newer_releases = []
                         for rel in data:
-                            if rel.get("prerelease"):
+                            if rel.get("prerelease") and not include_prerelease:
                                 continue
                             tag = rel.get("tag_name", "").lstrip("v")
                             if not tag:
@@ -1188,6 +1213,7 @@ class IntegrationManager:
                                             "body": rel.get("body") or "",
                                             "published_at": rel.get("published_at", ""),
                                             "url": rel.get("html_url", ""),
+                                            "prerelease": rel.get("prerelease", False),
                                         }
                                     )
                             except AwesomeVersionException:
@@ -1232,6 +1258,26 @@ class IntegrationManager:
         )
         info._release_notes_cache = releases
         return releases
+
+    async def get_available_versions(
+        self, domain: str
+    ) -> List[Dict[str, Any]]:
+        """Get all available versions for an integration.
+
+        Returns a list of version dicts with: version, published_at, url.
+        """
+        info = self._integrations.get(domain)
+        if not info:
+            return []
+
+        if not info.repository_url:
+            return []
+
+        # Reuse existing release fetching logic to get all versions
+        # Include prereleases so users can install betas from the dropdown
+        return await self._fetch_releases_from_github(
+            info.repository_url, "0.0.0", include_prerelease=True
+        )
 
     async def install_integration(
         self,
@@ -1427,14 +1473,28 @@ class IntegrationManager:
 
         owner, repo = match.groups()
 
-        # Construct download URL
+        # Build list of URLs to try, in order of preference
+        urls_to_try = []
         if version:
-            download_url = (
+            # Release tags: try exact version, then with/without 'v' prefix
+            urls_to_try.append(
                 f"https://github.com/{owner}/{repo}/archive/refs/tags/{version}.zip"
             )
+            if not version.startswith("v"):
+                urls_to_try.append(
+                    f"https://github.com/{owner}/{repo}/archive/refs/tags/v{version}.zip"
+                )
+            else:
+                urls_to_try.append(
+                    f"https://github.com/{owner}/{repo}/archive/refs/tags/{version.lstrip('v')}.zip"
+                )
         else:
-            download_url = (
+            # Latest: try main then master branch
+            urls_to_try.append(
                 f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
+            )
+            urls_to_try.append(
+                f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
             )
 
         # Download to temp location
@@ -1443,32 +1503,29 @@ class IntegrationManager:
         zip_path = temp_dir / f"{domain}.zip"
         extract_dir: Path | None = None
 
+        last_error = None
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    download_url, timeout=aiohttp.ClientTimeout(total=60)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.read()
-                        await asyncio.to_thread(_write_file, zip_path, data)
-                    else:
-                        # Try master branch if main fails
-                        if not version:
-                            download_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
-                            async with session.get(download_url) as response2:
-                                if response2.status == 200:
-                                    data = await response2.read()
-                                    await asyncio.to_thread(
-                                        _write_file, zip_path, data
-                                    )
-                                else:
-                                    raise Exception(
-                                        f"Failed to download: HTTP {response.status}"
-                                    )
+                for download_url in urls_to_try:
+                    _LOGGER.debug(f"Trying download URL: {download_url}")
+                    async with session.get(
+                        download_url, timeout=aiohttp.ClientTimeout(total=60)
+                    ) as response:
+                        if response.status == 200:
+                            data = await response.read()
+                            await asyncio.to_thread(_write_file, zip_path, data)
+                            _LOGGER.info(f"Downloaded from {download_url}")
+                            break
                         else:
-                            raise Exception(
-                                f"Failed to download: HTTP {response.status}"
+                            _LOGGER.debug(
+                                f"Download failed for {download_url}: HTTP {response.status}"
                             )
+                            last_error = response.status
+                else:
+                    # None of the URLs worked
+                    raise Exception(
+                        f"Failed to download: HTTP {last_error}"
+                    )
 
             # Extract
             extract_dir = temp_dir / f"{domain}_extract"

@@ -138,8 +138,37 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             for e in entities
         ]
 
-        # Fetch and render release notes if an update is available
+        # Fetch all available versions for the dropdown (includes betas, old versions)
         releases = []
+        if info.repository_url:
+            try:
+                raw_releases = (
+                    await shim_manager.get_integration_manager().get_available_versions(
+                        domain
+                    )
+                )
+                for rel in raw_releases:
+                    body = rel.get("body") or ""
+                    releases.append(
+                        {
+                            "version": rel["version"],
+                            "body_html": markdown.markdown(body)
+                            if body
+                            else "<em>No release notes provided.</em>",
+                            "url": rel.get("url", ""),
+                            "published_at": (
+                                rel.get("published_at", "")[:10]
+                                if rel.get("published_at")
+                                else ""
+                            ),
+                            "prerelease": rel.get("prerelease", False),
+                        }
+                    )
+            except Exception as e:
+                _LOGGER.warning("Failed to fetch releases for %s: %s", domain, e)
+
+        # Fetch release notes only when there's an update (excludes betas, only newer versions)
+        release_notes = []
         if info.update_available and info.repository_url:
             try:
                 raw_releases = (
@@ -149,7 +178,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 )
                 for rel in raw_releases:
                     body = rel.get("body") or ""
-                    releases.append(
+                    release_notes.append(
                         {
                             "version": rel["version"],
                             "body_html": markdown.markdown(body)
@@ -175,6 +204,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             entities=entities_dicts,
             devices=devices,
             releases=releases,
+            release_notes=release_notes,
         )
         return HTMLResponse(content=html)
 
@@ -417,6 +447,57 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
         response = HTMLResponse(content=html)
         response.headers["HX-Redirect"] = get_detail_redirect(request, domain)
         return response
+
+    @app.post("/integrations/{domain}/install-version")
+    async def install_integration_version(
+        request: Request,
+        domain: str,
+        version: str = Form(...)
+    ):
+        """Install a specific version of an integration."""
+        loading_response = check_loading(shim_manager)
+        if loading_response:
+            return loading_response
+
+        # Check if integration is installed
+        info = shim_manager.get_integration_manager().get_integration(domain)
+        if not info:
+            return HTMLResponse(
+                f'<div class="alert alert-error">Integration {domain} not found</div>',
+                status_code=400,
+            )
+
+        # Check if this version is available
+        available_versions = await shim_manager.get_integration_manager().get_available_versions(domain)
+        version_obj = next((v for v in available_versions if v["version"] == version), None)
+        if not version_obj:
+            return HTMLResponse(
+                f'<div class="alert alert-error">Version {version} not available for {domain}</div>',
+                status_code=400,
+            )
+
+        # Install the specific version
+        success = await shim_manager.install_integration(
+            info.full_name or domain,
+            version=version,
+            source=info.source,
+            wait=True
+        )
+
+        if success:
+            html = (
+                f'<div class="alert alert-success">'
+                f"Installed version {version} of {domain} successfully!"
+                f"</div>"
+            )
+            response = HTMLResponse(content=html)
+            response.headers["HX-Redirect"] = get_detail_redirect(request, domain)
+            return response
+        else:
+            return HTMLResponse(
+                f'<div class="alert alert-error">Failed to install version {version} of {domain}</div>',
+                status_code=400,
+            )
 
     # ------------------------------------------------------------------ #
     #  Config entry enable / disable / remove

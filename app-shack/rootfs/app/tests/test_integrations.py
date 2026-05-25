@@ -720,6 +720,166 @@ class TestReleaseNotes:
 
         assert releases == []
 
+    @pytest.mark.asyncio
+    async def test_get_available_versions(self, integration_manager):
+        """Test that get_available_versions returns all available versions."""
+        mock_session = self._mock_aiohttp_session([
+            {
+                "tag_name": "v1.0.0",
+                "body": "Initial release",
+                "published_at": "2024-01-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.0.0",
+                "prerelease": False,
+            },
+            {
+                "tag_name": "v1.2.0",
+                "body": "Second release",
+                "published_at": "2024-02-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.2.0",
+                "prerelease": False,
+            },
+            {
+                "tag_name": "v1.1.0",
+                "body": "Middle release",
+                "published_at": "2024-01-15T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.1.0",
+                "prerelease": False,
+            },
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            info = IntegrationInfo(
+                domain="test_integration",
+                name="Test Integration",
+                version="1.0.0",
+                description="Test",
+                source="custom",
+                repository_url="https://github.com/owner/repo",
+                update_available=True,
+            )
+            integration_manager._integrations["test_integration"] = info
+
+            versions = await integration_manager.get_available_versions("test_integration")
+
+        assert len(versions) == 3
+        assert versions[0]["version"] == "1.2.0"
+        assert versions[1]["version"] == "1.1.0"
+        assert versions[2]["version"] == "1.0.0"
+
+    @pytest.mark.asyncio
+    async def test_get_available_versions_missing_integration(self, integration_manager):
+        """Test that get_available_versions returns empty list for missing integration."""
+        versions = await integration_manager.get_available_versions("nonexistent")
+        assert versions == []
+
+    @pytest.mark.asyncio
+    async def test_get_available_versions_always_fetches(self, integration_manager):
+        """Test that get_available_versions fetches versions even when no update is flagged."""
+        mock_session = self._mock_aiohttp_session([
+            {
+                "tag_name": "v1.0.0",
+                "body": "Initial release",
+                "published_at": "2024-01-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.0.0",
+                "prerelease": False,
+            },
+            {
+                "tag_name": "v1.2.0",
+                "body": "Second release",
+                "published_at": "2024-02-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.2.0",
+                "prerelease": False,
+            },
+        ])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            info = IntegrationInfo(
+                domain="test_integration",
+                name="Test Integration",
+                version="1.2.0",
+                description="Test",
+                source="custom",
+                repository_url="https://github.com/owner/repo",
+                update_available=False,
+            )
+            integration_manager._integrations["test_integration"] = info
+
+            versions = await integration_manager.get_available_versions("test_integration")
+
+        # Should return all versions even when update_available=False
+        assert len(versions) == 2
+        assert versions[0]["version"] == "1.2.0"
+        assert versions[1]["version"] == "1.0.0"
+
+    @pytest.mark.asyncio
+    async def test_install_version_integration(self, temp_data_dir, integration_manager):
+        """Test installing a specific version of an integration."""
+        # Create mock integration info
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.2.0",
+            description="Test",
+            source="hacs_default",
+            full_name="owner/repo",
+            repository_url="https://github.com/owner/repo",
+            update_available=True,
+        )
+        integration_manager._integrations["test_integration"] = info
+
+        # Mock the download
+        with patch.object(integration_manager, '_do_install', return_value=True) as mock_install:
+            result = await integration_manager.install_integration(
+                "test_integration",
+                version="1.2.0",
+                source="hacs_default",
+                wait=True
+            )
+
+            assert result is True
+            mock_install.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_install_version_not_available(self, temp_data_dir, integration_manager):
+        """Test installing a version that's not available."""
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.2.0",
+            description="Test",
+            source="hacs_default",
+            full_name="owner/repo",
+            repository_url="https://github.com/owner/repo",
+            update_available=True,
+        )
+        integration_manager._integrations["test_integration"] = info
+
+        # Try to install a version that doesn't exist in releases
+        with patch.object(integration_manager, '_fetch_releases_from_github', return_value=[]):
+            result = await integration_manager.install_integration(
+                "test_integration",
+                version="9.9.9",  # Version that doesn't exist
+                source="hacs_default",
+                wait=True
+            )
+
+            assert result is False
+
+    def test_is_prerelease_detects_betas(self, integration_manager):
+        """Test that _is_prerelease correctly identifies beta/RC/alpha versions."""
+        assert integration_manager._is_prerelease("1.34.0b1") is True
+        assert integration_manager._is_prerelease("1.2.0-beta") is True
+        assert integration_manager._is_prerelease("1.0.0rc1") is True
+        assert integration_manager._is_prerelease("2.0.0alpha1") is True
+        assert integration_manager._is_prerelease("1.0.0-dev") is True
+        assert integration_manager._is_prerelease("1.0.0a1") is True
+
+        # Stable versions should not be flagged
+        assert integration_manager._is_prerelease("1.34.0") is False
+        assert integration_manager._is_prerelease("1.2.3") is False
+        assert integration_manager._is_prerelease("2.0.0") is False
+        assert integration_manager._is_prerelease("1.0") is False
+
 
 if __name__ == "__main__":
     # Allow running this file directly for quick testing
