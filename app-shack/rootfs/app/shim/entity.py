@@ -834,7 +834,14 @@ class Entity:
             )
             return
 
-        state = self.state
+        try:
+            state = self.state
+        except Exception as exc:
+            _LOGGER.warning(
+                f"Error computing state for {self.entity_id}: {exc}; "
+                f"setting state to unavailable"
+            )
+            state = STATE_UNAVAILABLE
         _LOGGER.debug(f"  State value: {state}")
         _LOGGER.debug(f"  Has _mqtt_publish: {hasattr(self, '_mqtt_publish')}")
         if state is None:

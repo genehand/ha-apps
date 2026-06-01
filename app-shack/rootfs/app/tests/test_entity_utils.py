@@ -1853,3 +1853,36 @@ class TestEntityRegistryConfigEntryTracking:
         # Modifying the returned list should not affect the registry
         entries.clear()
         assert len(registry.async_entries_for_config_entry("entry_1")) == 1
+
+
+class TestAsyncWriteHaState:
+    """Tests for Entity.async_write_ha_state."""
+
+    def test_async_write_ha_state_fallback_on_bad_state(self):
+        """Test that async_write_ha_state falls back to unavailable when state raises."""
+        from shim.entity import Entity, STATE_UNAVAILABLE
+        from unittest.mock import MagicMock
+
+        class BadStateEntity(Entity):
+            @property
+            def state(self):
+                # Simulates the Rinnai integration bug: empty string from API
+                # causes float('') to raise ValueError
+                return float("")
+
+        mock_hass = MagicMock()
+        mock_hass.states.get.return_value = None
+
+        entity = BadStateEntity()
+        entity.hass = mock_hass
+        entity.entity_id = "sensor.bad_state"
+        entity._attr_unique_id = "bad_state_1"
+
+        # Should not raise; should write unavailable
+        entity.async_write_ha_state()
+
+        # Verify state machine was called with unavailable
+        mock_hass.states.async_set.assert_called_once()
+        call_args = mock_hass.states.async_set.call_args
+        assert call_args[0][0] == "sensor.bad_state"
+        assert call_args[0][1] == STATE_UNAVAILABLE
