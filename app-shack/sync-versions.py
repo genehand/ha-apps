@@ -51,13 +51,26 @@ def update_integration_versions(repo_status: dict) -> dict:
     with open(INTEGRATIONS_JSON) as f:
         integrations = json.load(f)
 
+    from urllib.parse import urlparse
+
     for domain, info in integrations.items():
-        full_name = info.get("full_name")
         tag_version = info.get("version")
-        if not full_name or not tag_version:
+        if not tag_version:
             continue
 
-        repo_key = repo_lookup.get(full_name.lower())
+        repo_key = None
+        full_name = info.get("full_name")
+        if full_name:
+            repo_key = repo_lookup.get(full_name.lower())
+
+        if not repo_key:
+            repo_url = info.get("repository_url")
+            if repo_url:
+                path = urlparse(repo_url).path.strip("/")
+                if path.count("/") >= 1:
+                    owner_repo = "/".join(path.split("/")[:2])
+                    repo_key = repo_lookup.get(owner_repo.lower())
+
         if not repo_key:
             continue
 

@@ -83,6 +83,7 @@ def create_components_stubs(hass, homeassistant, platforms):
     homeassistant.components.camera = platforms.camera
     homeassistant.components.siren = platforms.siren
     homeassistant.components.remote = platforms.remote
+    homeassistant.components.event = platforms.event
 
     # alarm_control_panel
     alarm_control_panel = types.ModuleType("homeassistant.components.alarm_control_panel")
@@ -284,6 +285,7 @@ def create_components_stubs(hass, homeassistant, platforms):
     sys.modules["homeassistant.components.camera"] = platforms.camera
     sys.modules["homeassistant.components.siren"] = platforms.siren
     sys.modules["homeassistant.components.remote"] = platforms.remote
+    sys.modules["homeassistant.components.event"] = platforms.event
 
     _LOGGER.debug("Platform modules patched")
 

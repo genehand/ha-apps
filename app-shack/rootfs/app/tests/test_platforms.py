@@ -892,6 +892,159 @@ class TestButtonEntityStateAndAvailable:
         assert entity.device_class == "restart"
 
 
+class TestEventEntity:
+    """Tests for event entity."""
+
+    def test_event_entity_initial_state_none(self):
+        """Test that EventEntity state is None before any event is triggered."""
+        from shim.platforms.event import EventEntity
+
+        class TestEvent(EventEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_event"
+                self._attr_name = "Test Event"
+                self._attr_event_types = ["press"]
+
+        entity = TestEvent()
+        assert entity.state is None
+
+    def test_event_entity_event_types_from_attr(self):
+        """Test that event_types returns _attr_event_types when set."""
+        from shim.platforms.event import EventEntity
+
+        class TestEvent(EventEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_event"
+                self._attr_name = "Test Event"
+                self._attr_event_types = ["press", "release"]
+
+        entity = TestEvent()
+        assert entity.event_types == ["press", "release"]
+
+    def test_event_entity_event_types_from_description(self):
+        """Test that event_types falls back to entity_description."""
+        from shim.platforms.event import EventEntity, EventEntityDescription
+
+        class TestEvent(EventEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_event"
+                self._attr_name = "Test Event"
+                self.entity_description = EventEntityDescription(
+                    key="event",
+                    event_types=["press"],
+                )
+
+        entity = TestEvent()
+        assert entity.event_types == ["press"]
+
+    def test_event_entity_device_class_from_attr(self):
+        """Test that device_class returns _attr_device_class when set."""
+        from shim.platforms.event import EventEntity, EventDeviceClass
+
+        class TestEvent(EventEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_event"
+                self._attr_name = "Test Event"
+                self._attr_event_types = ["press"]
+                self._attr_device_class = EventDeviceClass.BUTTON
+
+        entity = TestEvent()
+        assert entity.device_class == EventDeviceClass.BUTTON
+
+    def test_event_entity_device_class_from_description(self):
+        """Test that device_class falls back to entity_description."""
+        from shim.platforms.event import EventEntity, EventEntityDescription, EventDeviceClass
+
+        class TestEvent(EventEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_event"
+                self._attr_name = "Test Event"
+                self.entity_description = EventEntityDescription(
+                    key="event",
+                    device_class=EventDeviceClass.BUTTON,
+                    event_types=["press"],
+                )
+
+        entity = TestEvent()
+        assert entity.device_class == EventDeviceClass.BUTTON
+
+    def test_trigger_event_sets_state(self):
+        """Test that _trigger_event updates state and attributes."""
+        from shim.platforms.event import EventEntity
+
+        class TestEvent(EventEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_event"
+                self._attr_name = "Test Event"
+                self._attr_event_types = ["press"]
+
+        entity = TestEvent()
+        entity._trigger_event("press", {"button": 1})
+
+        # State should now be a timestamp string
+        assert entity.state is not None
+        # Extra state attributes should include event_type
+        attrs = entity.extra_state_attributes
+        assert attrs["event_type"] == "press"
+        assert attrs["button"] == 1
+
+    def test_trigger_event_invalid_type_raises(self):
+        """Test that _trigger_event raises ValueError for invalid event type."""
+        from shim.platforms.event import EventEntity
+
+        class TestEvent(EventEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_event"
+                self._attr_name = "Test Event"
+                self._attr_event_types = ["press"]
+
+        entity = TestEvent()
+        import pytest
+
+        with pytest.raises(ValueError):
+            entity._trigger_event("invalid_type")
+
+    def test_event_entity_description_frozen(self):
+        """Test that EventEntityDescription can be frozen (Leviton style)."""
+        from dataclasses import dataclass
+
+        from shim.platforms.event import EventEntityDescription
+
+        @dataclass(frozen=True)
+        class LevitonEventDescription(EventEntityDescription):
+            """Leviton event description."""
+
+            custom_field: str = "default"
+
+        desc = LevitonEventDescription(
+            key="event",
+            event_types=["press"],
+            custom_field="test",
+        )
+        assert desc.key == "event"
+        assert desc.event_types == ["press"]
+        assert desc.custom_field == "test"
+
+    def test_event_entity_description_non_frozen(self):
+        """Test that EventEntityDescription can be non-frozen (Dreo style)."""
+        from dataclasses import dataclass
+
+        from shim.platforms.event import EventEntityDescription
+
+        @dataclass
+        class CustomEventDescription(EventEntityDescription):
+            """Custom event description."""
+
+            custom_field: str = "default"
+
+        desc = CustomEventDescription(key="event", event_types=["press"])
+        assert desc.key == "event"
+        assert desc.event_types == ["press"]
+        # Should be modifiable
+        desc.custom_field = "modified"
+        assert desc.custom_field == "modified"
+
+
 class TestTextEntityStateAndAvailable:
     """Tests for text entity state and available properties."""
 
@@ -1426,6 +1579,7 @@ class TestComponentDomains:
             ("homeassistant.components.camera", "camera"),
             ("homeassistant.components.siren", "siren"),
             ("homeassistant.components.remote", "remote"),
+            ("homeassistant.components.event", "event"),
             ("homeassistant.components.cover", "cover"),
             ("homeassistant.components.alarm_control_panel", "alarm_control_panel"),
             ("homeassistant.components.scene", "scene"),

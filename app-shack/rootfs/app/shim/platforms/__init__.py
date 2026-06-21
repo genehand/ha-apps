@@ -22,6 +22,7 @@ from . import water_heater
 from . import camera
 from . import siren
 from . import remote
+from . import event
 
 __all__ = [
     "fan",
@@ -43,4 +44,5 @@ __all__ = [
     "camera",
     "siren",
     "remote",
+    "event",
 ]
