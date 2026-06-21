@@ -2,11 +2,13 @@
 
 A collection of vibed coded apps to optimize your HA setup.
 
-| App  |     | Description |
-|------|-----|-------------|
-| **[Dasher](app-dasher/)** | ![](app-dasher/logo.png) | WebSocket proxy that filters state updates for dashboard entities, improving performance for low-powered devices |
-| **[Greenroom](app-greenroom/)** | ![](app-greenroom/logo.png)| Spotify Connect monitor that publishes playback info to MQTT without requiring the Web API |
-| **[Shack](app-shack/)** | ![](app-shack/logo.png) | Run HACS integrations outside HA core via MQTT discovery |
+## Apps
+
+| App | Logo | Description |
+|-----|------|-------------|
+| **[Dasher](app-dasher/)** | <img src="app-dasher/logo.png" width="64"> | WebSocket proxy that filters state updates for dashboard entities, improving performance for low-powered devices |
+| **[Greenroom](app-greenroom/)** | <img src="app-greenroom/logo.png" width="64"> | Spotify Connect monitor that publishes playback info to MQTT without requiring the Web API |
+| **[Shack](app-shack/)** | <img src="app-shack/logo.png" width="64"> | Run HACS integrations outside HA core via MQTT discovery |
 
 ## Use of AI
 
