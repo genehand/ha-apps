@@ -31,7 +31,7 @@
       "version": "0.4.3"
     },
     "JeffSteinbok/hass-dreo": {
-      "version": "v1.9.16"
+      "version": "v1.9.22"
     },
     "krahabb/meross_lan": {
       "version": "v5.8.0"
@@ -43,7 +43,7 @@
       "version": "1.13.3"
     },
     "schmittx/home-assistant-leviton-decora-smart-wifi": {
-      "version": "2.0.0",
+      "version": "2.1.1",
       "notes": "Leviton Decora Smart WiFi switches (custom repo)"
     },
     "wbyoung/smartcar": {

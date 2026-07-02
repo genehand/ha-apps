@@ -85,6 +85,8 @@ cd app-shack/rootfs/app/
 
 **When using the Bash tool:** Either use the `workdir` parameter or include the `cd` in the command. The examples throughout this file include the proper `cd` prefix.
 
+**Exception:** the fetch scripts (`scripts/fetch_ha_files.py`, `scripts/fetch_hacs_files.py`) live in `app-shack/scripts/` and are run from there — see [How to Use](#how-to-use). They are standalone stdlib scripts that compute paths relative to their own location.
+
 ## Upstream Code Reference
 
 We maintain scripts to fetch code from upstream Home Assistant and HACS repositories for reference and reuse:
@@ -118,19 +120,32 @@ The shim layer (in `shim/`) is where we add compatibility code, bridges, and wor
 
 ### How to Use
 
+The fetch scripts live in `app-shack/scripts/` (not `rootfs/app/scripts/`) and compute their destination relative to their own location, so run them from that directory:
+
 ```bash
 # Fetch latest HA release files
-cd app-shack/rootfs/app && python3 scripts/fetch_ha_files.py
+cd app-shack/scripts && python3 fetch_ha_files.py
 
 # Fetch latest HACS release files
-cd app-shack/rootfs/app && python3 scripts/fetch_hacs_files.py
+cd app-shack/scripts && python3 fetch_hacs_files.py
+
+# Pin a specific HA version (e.g. when latest isn't desired)
+cd app-shack/scripts && python3 fetch_ha_files.py --version 2026.7.0
 
 # Preview without downloading
-cd app-shack/rootfs/app && python3 scripts/fetch_ha_files.py --dry-run
-cd app-shack/rootfs/app && python3 scripts/fetch_hacs_files.py --dry-run
+cd app-shack/scripts && python3 fetch_ha_files.py --dry-run
+cd app-shack/scripts && python3 fetch_hacs_files.py --dry-run
 ```
 
 Files are written to `shim/ha_fetched/` and `shim/hacs_fetched/` with necessary import path adjustments.
+
+### Maintaining `clean_const_py()`
+
+`ha_fetched/const.py` is loaded by `import_patch.py` as a standalone module (`ha_fetched.const`), so HA's relative imports (`.generated.entity_platforms`, `.helpers.deprecation`, `.util.*`) would resolve against the non-existent `ha_fetched.helpers` / `ha_fetched.util` packages and fail at load time. `clean_const_py()` must convert **every** relative import in `const.py` to absolute `homeassistant.*` form — `import_patch.py` injects those stub modules into `sys.modules` *before* loading const. There is no try/except fallback; the runtime patch is the contract.
+
+When HA adds a new relative import to `const.py` (the 2026.7.0 breakage was `.helpers.deprecation`), add the corresponding regex to `clean_const_py()` or the fetch will silently produce a broken file that only fails at test collection with `ModuleNotFoundError: No module named 'ha_fetched'`.
+
+The same contract applies to the dependency stubs in `ha_fetched/_stub_*.py`: `const.py` now invokes the deprecation machinery at module bottom (`__getattr__` / `__dir__` / `__all__`), so `_stub_helpers_deprecation.py` must implement PEP 562 semantics correctly — raise `AttributeError` for missing names, return the real keys for `dir()` / `__all__`, and resolve `_DEPRECATED_*` entries to their values.
 
 ## Build Commands
 

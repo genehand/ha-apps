@@ -1,65 +1,21 @@
 """Constants used by Home Assistant components."""
 
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, Final
 
-try:
-    from homeassistant.generated.entity_platforms import EntityPlatforms
-    from homeassistant.util.event_type import EventType
-    from homeassistant.util.hass_dict import HassKey as _HassKey
-    HassKey = _HassKey
-    from homeassistant.util.signal_type import SignalType as _SignalType
-    SignalType = _SignalType
-except ImportError:
-    # Shim: fallback stubs for standalone use outside HA core
-    class EntityPlatforms(StrEnum):
-        """Shim: EntityPlatforms for standalone use outside HA core."""
-
-        BINARY_SENSOR = "binary_sensor"
-        BUTTON = "button"
-        CALENDAR = "calendar"
-        CAMERA = "camera"
-        CLIMATE = "climate"
-        COVER = "cover"
-        DEVICE_TRACKER = "device_tracker"
-        FAN = "fan"
-        HUMIDIFIER = "humidifier"
-        IMAGE = "image"
-        LAWN_MOWER = "lawn_mower"
-        LIGHT = "light"
-        LOCK = "lock"
-        MEDIA_PLAYER = "media_player"
-        NOTIFY = "notify"
-        NUMBER = "number"
-        REMOTE = "remote"
-        SCENE = "scene"
-        SELECT = "select"
-        SENSOR = "sensor"
-        SIREN = "siren"
-        SWITCH = "switch"
-        TEXT = "text"
-        TIME = "time"
-        UPDATE = "update"
-        VACUUM = "vacuum"
-        VALVE = "valve"
-        WATER_HEATER = "water_heater"
-        WEATHER = "weather"
-
-    class _StubType:
-        """Shim: generic type wrapper for standalone use outside HA core."""
-
-        def __init__(self, name: str):
-            self._name = name
-
-        def __class_getitem__(cls, item):
-            return item
-
-        def __call__(self, *args, **kwargs):
-            return self
-
-    EventType = _StubType("EventType")
-    HassKey = _StubType("HassKey")
-    SignalType = _StubType("SignalType")
+from homeassistant.generated.entity_platforms import EntityPlatforms
+from homeassistant.helpers.deprecation import (
+    DeprecatedConstant,
+    all_with_deprecated_constants,
+    check_if_deprecated_constant,
+    dir_with_deprecated_constants,
+)
+from homeassistant.util.event_type import EventType
+from homeassistant.util.hass_dict import HassKey as _HassKey
+HassKey = _HassKey
+from homeassistant.util.signal_type import SignalType as _SignalType
+SignalType = _SignalType
 
 if TYPE_CHECKING:
     from typing import Any, Mapping
@@ -67,8 +23,8 @@ if TYPE_CHECKING:
 
 APPLICATION_NAME: Final = "HomeAssistant"
 MAJOR_VERSION: Final = 2026
-MINOR_VERSION: Final = 6
-PATCH_VERSION: Final = "4"
+MINOR_VERSION: Final = 7
+PATCH_VERSION: Final = "0"
 __short_version__: Final = f"{MAJOR_VERSION}.{MINOR_VERSION}"
 __version__: Final = f"{__short_version__}.{PATCH_VERSION}"
 REQUIRED_PYTHON_VER: Final[tuple[int, int, int]] = (3, 14, 2)
@@ -501,6 +457,26 @@ ATTR_TEMPERATURE: Final = "temperature"
 ATTR_PERSONS: Final = "persons"
 
 
+class EntityCapabilityAttribute(StrEnum):
+    """Capability attributes shared by all entities."""
+
+    GROUP_ENTITIES = "group_entities"
+
+
+class EntityStateAttribute(StrEnum):
+    """State attributes shared by all entities."""
+
+    ASSUMED_STATE = "assumed_state"
+    ATTRIBUTION = "attribution"
+    DEVICE_CLASS = "device_class"
+    ENTITY_PICTURE = "entity_picture"
+    FRIENDLY_NAME = "friendly_name"
+    ICON = "icon"
+    RESTORED = "restored"
+    SUPPORTED_FEATURES = "supported_features"
+    UNIT_OF_MEASUREMENT = "unit_of_measurement"
+
+
 # #### UNITS OF MEASUREMENT ####
 # Apparent power units
 class UnitOfApparentPower(StrEnum):
@@ -754,9 +730,6 @@ LIGHT_LUX: Final = "lx"
 # UV Index units
 UV_INDEX: Final = "UV index"
 
-# Percentage units
-PERCENTAGE: Final = "%"
-
 # Rotational speed units
 REVOLUTIONS_PER_MINUTE: Final = "rpm"
 
@@ -806,14 +779,43 @@ class UnitOfPrecipitationDepth(StrEnum):
     """Derived from cm³/cm²"""
 
 
+class UnitOfDensity(StrEnum):
+    """Density units.
+
+    Ratio of a substance's mass to its volume.
+    """
+
+    GRAMS_PER_CUBIC_METER = "g/m³"
+    MILLIGRAMS_PER_CUBIC_METER = "mg/m³"
+    MICROGRAMS_PER_CUBIC_METER = "μg/m³"
+    MICROGRAMS_PER_CUBIC_FOOT = "μg/ft³"
+
+
+class UnitOfRatio(StrEnum):
+    """Ratio units."""
+
+    PARTS_PER_MILLION = "ppm"
+    PARTS_PER_BILLION = "ppb"
+    PERCENTAGE = "%"
+
+
 # Concentration units
-CONCENTRATION_GRAMS_PER_CUBIC_METER: Final = "g/m³"
-CONCENTRATION_MILLIGRAMS_PER_CUBIC_METER: Final = "mg/m³"
-CONCENTRATION_MICROGRAMS_PER_CUBIC_METER: Final = "μg/m³"
-CONCENTRATION_MICROGRAMS_PER_CUBIC_FOOT: Final = "μg/ft³"
-CONCENTRATION_PARTS_PER_CUBIC_METER: Final = "p/m³"
-CONCENTRATION_PARTS_PER_MILLION: Final = "ppm"
-CONCENTRATION_PARTS_PER_BILLION: Final = "ppb"
+CONCENTRATION_GRAMS_PER_CUBIC_METER: Final = UnitOfDensity.GRAMS_PER_CUBIC_METER.value
+CONCENTRATION_MILLIGRAMS_PER_CUBIC_METER: Final = (
+    UnitOfDensity.MILLIGRAMS_PER_CUBIC_METER.value
+)
+CONCENTRATION_MICROGRAMS_PER_CUBIC_METER: Final = (
+    UnitOfDensity.MICROGRAMS_PER_CUBIC_METER.value
+)
+CONCENTRATION_MICROGRAMS_PER_CUBIC_FOOT: Final = (
+    UnitOfDensity.MICROGRAMS_PER_CUBIC_FOOT.value
+)
+_DEPRECATED_CONCENTRATION_PARTS_PER_CUBIC_METER = DeprecatedConstant(
+    "p/m³", "p/m³", "2027.7"
+)
+CONCENTRATION_PARTS_PER_MILLION: Final = UnitOfRatio.PARTS_PER_MILLION.value
+CONCENTRATION_PARTS_PER_BILLION: Final = UnitOfRatio.PARTS_PER_BILLION.value
+PERCENTAGE: Final = UnitOfRatio.PERCENTAGE.value
 
 
 class UnitOfBloodGlucoseConcentration(StrEnum):
@@ -1045,3 +1047,10 @@ FORMAT_DATETIME: Final = f"{FORMAT_DATE} {FORMAT_TIME}"
 # This is not a hard limit, but caches and other
 # data structures will be pre-allocated to this size
 MAX_EXPECTED_ENTITY_IDS: Final = 16384
+
+# These can be removed if no deprecated constants are in this module anymore
+__getattr__ = partial(check_if_deprecated_constant, module_globals=globals())
+__dir__ = partial(
+    dir_with_deprecated_constants, module_globals_keys=[*globals().keys()]
+)
+__all__ = all_with_deprecated_constants(globals())
