@@ -87,6 +87,11 @@ HACS_CACHE_DURATION_HOURS = 6
 # Check for updates every 4 hours
 UPDATE_CHECK_INTERVAL_HOURS = 4
 
+# Bound the per-request GitHub retry delay so a malicious/odd Retry-After
+# can't stall the event loop indefinitely. HACS uses 60s; we match.
+GITHUB_RETRY_MAX_DELAY = 60
+GITHUB_RETRY_MAX_ATTEMPTS = 5
+
 
 @dataclass
 class InstallTask:
@@ -243,10 +248,128 @@ class IntegrationManager:
         # Callback for when updates are found (set externally, e.g., by ShimManager)
         self._on_updates_found: Optional[callable] = None
 
+        # GitHub OAuth token (set by ShimManager from GitHubAuth). When set,
+        # api.github.com requests carry `Authorization: Bearer <token>` and
+        # 429 / rate-limit 403 responses are retried with bounded backoff,
+        # mirroring HACS's `async_download_file` rate-limit handling.
+        self._github_token: Optional[str] = None
+
         self._load_integrations()
         self._load_custom_repos()
         self._load_unsupported_repos()
         self._load_hacs_cache()
+
+    # ------------------------------------------------------------------ #
+    #  GitHub API auth + rate-limit handling
+    # ------------------------------------------------------------------ #
+
+    def set_github_token(self, token: Optional[str]) -> None:
+        """Set (or clear) the GitHub OAuth token used for api.github.com."""
+        self._github_token = token
+        _LOGGER.info(
+            "GitHub token %s",
+            "set - authenticated API requests enabled"
+            if token
+            else "cleared - using anonymous API requests",
+        )
+
+    @property
+    def github_token(self) -> Optional[str]:
+        """The currently configured GitHub token, or None."""
+        return self._github_token
+
+    def _github_headers(self) -> Dict[str, str]:
+        """Build headers for an api.github.com request."""
+        headers = {"User-Agent": "ha-apps/shack", "Accept": "application/vnd.github+json"}
+        if self._github_token:
+            headers["Authorization"] = f"Bearer {self._github_token}"
+        return headers
+
+    async def _github_api_get(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        *,
+        timeout: int = 10,
+    ) -> Tuple[Optional[int], Any]:
+        """GET an api.github.com URL with auth + bounded 429 retry.
+
+        Returns a (status, data) tuple where:
+        - status is the final HTTP status code (int) or None on network error
+        - data is the parsed JSON body (dict/list) or None on error / non-JSON
+
+        Retries 429 (and 403 with `X-RateLimit-Remaining: 0`) up to
+        `GITHUB_RETRY_MAX_ATTEMPTS` times, honoring `Retry-After` (capped
+        to `GITHUB_RETRY_MAX_DELAY` seconds), matching HACS behavior.
+        """
+        headers = self._github_headers()
+        max_attempts = GITHUB_RETRY_MAX_ATTEMPTS
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    # Retry on rate-limit responses
+                    if response.status in (429, 403) and attempt < max_attempts:
+                        is_ratelimited = response.status == 429 or (
+                            response.headers.get("X-RateLimit-Remaining") == "0"
+                        )
+                        if is_ratelimited:
+                            retry_after_raw = (
+                                response.headers.get("Retry-After") or "10"
+                            )
+                            try:
+                                retry_after = int(retry_after_raw)
+                            except ValueError:
+                                retry_after = 10
+                            delay = min(
+                                max(retry_after, 5),
+                                GITHUB_RETRY_MAX_DELAY,
+                            )
+                            _LOGGER.warning(
+                                f"GitHub API rate-limited on {url} "
+                                f"(status {response.status}), retrying in {delay}s "
+                                f"(attempt {attempt}/{max_attempts})"
+                            )
+                            # Drain the body so the connection can be reused
+                            try:
+                                await response.read()
+                            except Exception:
+                                pass
+                            await asyncio.sleep(delay)
+                            continue
+
+                    # Non-retryable response: parse JSON best-effort
+                    try:
+                        data = await response.json()
+                    except Exception:
+                        data = None
+                    return response.status, data
+            except asyncio.TimeoutError:
+                if attempt < max_attempts:
+                    _LOGGER.warning(
+                        f"Timeout fetching {url}, retrying "
+                        f"(attempt {attempt}/{max_attempts})"
+                    )
+                    await asyncio.sleep(2)
+                    continue
+                _LOGGER.warning(
+                    f"Timeout fetching {url} after {max_attempts} attempts"
+                )
+                return None, None
+            except aiohttp.ClientError as e:
+                _LOGGER.warning(f"Network error fetching {url}: {e}")
+                return None, None
+            except Exception as e:
+                _LOGGER.warning(f"Error fetching {url}: {e}")
+                return None, None
+
+        _LOGGER.warning(
+            f"GitHub API rate-limit retries exhausted for {url}"
+        )
+        return None, None
 
     def _load_integrations(self) -> None:
         """Load installed integrations from storage."""
@@ -804,15 +927,9 @@ class IntegrationManager:
     ) -> List[dict]:
         """Fetch repository tree using GitHub API."""
         url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-        try:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("tree", [])
-        except Exception:
-            pass
+        status, data = await self._github_api_get(session, url, timeout=10)
+        if status == 200 and isinstance(data, dict):
+            return data.get("tree", [])
         return []
 
     def _find_custom_components_dir(self, tree: List[dict]) -> Optional[str]:
@@ -1151,20 +1268,17 @@ class IntegrationManager:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    api_url, timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get("tag_name", "").lstrip("v")
-                    elif response.status == 404:
-                        # No releases, try tags
-                        tags_url = f"https://api.github.com/repos/{owner}/{repo}/tags"
-                        async with session.get(tags_url) as tags_response:
-                            if tags_response.status == 200:
-                                tags = await tags_response.json()
-                                if tags:
-                                    return tags[0]["name"].lstrip("v")
+                status, data = await self._github_api_get(session, api_url, timeout=10)
+                if status == 200 and isinstance(data, dict):
+                    return data.get("tag_name", "").lstrip("v")
+                if status == 404:
+                    # No releases, try tags
+                    tags_url = f"https://api.github.com/repos/{owner}/{repo}/tags"
+                    t_status, t_data = await self._github_api_get(
+                        session, tags_url
+                    )
+                    if t_status == 200 and isinstance(t_data, list) and t_data:
+                        return t_data[0]["name"].lstrip("v")
         except Exception as e:
             _LOGGER.debug(f"Error fetching latest version: {e}")
 
@@ -1196,49 +1310,43 @@ class IntegrationManager:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    api_url, timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if not isinstance(data, list):
-                            return []
+                status, data = await self._github_api_get(session, api_url, timeout=10)
+                if status == 200 and isinstance(data, list):
+                    newer_releases = []
+                    for rel in data:
+                        if rel.get("prerelease") and not include_prerelease:
+                            continue
+                        tag = rel.get("tag_name", "").lstrip("v")
+                        if not tag:
+                            continue
+                        try:
+                            tag_ver = AwesomeVersion(tag)
+                            cur_ver = AwesomeVersion(current_version)
+                            if tag_ver > cur_ver:
+                                newer_releases.append(
+                                    {
+                                        "version": tag,
+                                        "body": rel.get("body") or "",
+                                        "published_at": rel.get("published_at", ""),
+                                        "url": rel.get("html_url", ""),
+                                        "prerelease": rel.get("prerelease", False),
+                                    }
+                                )
+                        except AwesomeVersionException:
+                            continue
 
-                        newer_releases = []
-                        for rel in data:
-                            if rel.get("prerelease") and not include_prerelease:
-                                continue
-                            tag = rel.get("tag_name", "").lstrip("v")
-                            if not tag:
-                                continue
-                            try:
-                                tag_ver = AwesomeVersion(tag)
-                                cur_ver = AwesomeVersion(current_version)
-                                if tag_ver > cur_ver:
-                                    newer_releases.append(
-                                        {
-                                            "version": tag,
-                                            "body": rel.get("body") or "",
-                                            "published_at": rel.get("published_at", ""),
-                                            "url": rel.get("html_url", ""),
-                                            "prerelease": rel.get("prerelease", False),
-                                        }
-                                    )
-                            except AwesomeVersionException:
-                                continue
-
-                        newer_releases.sort(
-                            key=lambda r: AwesomeVersion(r["version"]), reverse=True
-                        )
-                        return newer_releases
-                    elif response.status in (403, 429):
-                        _LOGGER.warning(
-                            f"GitHub API rate limited for {owner}/{repo}"
-                        )
-                    else:
-                        _LOGGER.debug(
-                            f"GitHub releases API returned {response.status} for {owner}/{repo}"
-                        )
+                    newer_releases.sort(
+                        key=lambda r: AwesomeVersion(r["version"]), reverse=True
+                    )
+                    return newer_releases
+                elif status in (403, 429):
+                    _LOGGER.warning(
+                        f"GitHub API rate limited for {owner}/{repo}"
+                    )
+                elif status is not None:
+                    _LOGGER.debug(
+                        f"GitHub releases API returned {status} for {owner}/{repo}"
+                    )
         except Exception as e:
             _LOGGER.warning(f"Error fetching releases from GitHub: {e}")
 
@@ -1264,47 +1372,41 @@ class IntegrationManager:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    api_url, timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if not isinstance(data, list):
-                            return []
-
-                        tags = []
-                        for tag in data:
-                            name = tag.get("name", "")
-                            if not name:
-                                continue
-                            version = name.lstrip("v")
-                            # Skip non-version tags (e.g. "nightly", "latest")
-                            # that would break AwesomeVersion sorting.
-                            if not version or not version[0].isdigit():
-                                continue
-                            try:
-                                AwesomeVersion(version)
-                            except AwesomeVersionException:
-                                continue
-                            tags.append(
-                                {
-                                    "version": version,
-                                    "body": "",
-                                    "published_at": "",
-                                    "url": "",
-                                    "prerelease": self._is_prerelease(version),
-                                    "tag_only": True,
-                                }
-                            )
-                        return tags
-                    elif response.status in (403, 429):
-                        _LOGGER.warning(
-                            f"GitHub API rate limited for {owner}/{repo} (tags)"
+                status, data = await self._github_api_get(session, api_url, timeout=10)
+                if status == 200 and isinstance(data, list):
+                    tags = []
+                    for tag in data:
+                        name = tag.get("name", "")
+                        if not name:
+                            continue
+                        version = name.lstrip("v")
+                        # Skip non-version tags (e.g. "nightly", "latest")
+                        # that would break AwesomeVersion sorting.
+                        if not version or not version[0].isdigit():
+                            continue
+                        try:
+                            AwesomeVersion(version)
+                        except AwesomeVersionException:
+                            continue
+                        tags.append(
+                            {
+                                "version": version,
+                                "body": "",
+                                "published_at": "",
+                                "url": "",
+                                "prerelease": self._is_prerelease(version),
+                                "tag_only": True,
+                            }
                         )
-                    else:
-                        _LOGGER.debug(
-                            f"GitHub tags API returned {response.status} for {owner}/{repo}"
-                        )
+                    return tags
+                elif status in (403, 429):
+                    _LOGGER.warning(
+                        f"GitHub API rate limited for {owner}/{repo} (tags)"
+                    )
+                elif status is not None:
+                    _LOGGER.debug(
+                        f"GitHub tags API returned {status} for {owner}/{repo}"
+                    )
         except Exception as e:
             _LOGGER.warning(f"Error fetching tags from GitHub: {e}")
 
@@ -1330,13 +1432,9 @@ class IntegrationManager:
         default_branch = None
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    api_url, timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if isinstance(data, dict):
-                            default_branch = data.get("default_branch")
+                status, data = await self._github_api_get(session, api_url, timeout=10)
+                if status == 200 and isinstance(data, dict):
+                    default_branch = data.get("default_branch")
         except Exception as e:
             _LOGGER.debug(f"Error fetching default branch: {e}")
 

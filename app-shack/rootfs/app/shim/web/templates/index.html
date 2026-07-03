@@ -4,8 +4,22 @@
 {% block header_title %}🏚️ HACS Shack{% endblock %}
 
 {% block header_extra %}
-<div hx-get="mqtt-status-fragment" hx-trigger="load, every 5s" hx-swap="innerHTML">
-    <div class="spinner" style="width: 16px; height: 16px; border-color: rgba(255,255,255,0.3); border-top-color: white;"></div>
+<div style="display: flex; align-items: center; gap: 1rem;">
+  <a href="github/auth" role="button"
+     class="outline"
+     style="background: rgba(255,255,255,0.15); color: white; border-color: rgba(255,255,255,0.5); font-size: 0.85rem; height: 2.25rem; padding: 0 0.85rem;"
+     title="GitHub authentication status">
+    {% if github_authenticated %}
+      <span class="status-enabled status-indicator"
+            style="background: #6cc24a; margin-right: 6px;"></span>GitHub
+    {% else %}
+      <span class="status-disabled status-indicator"
+            style="background: #ffd24a; margin-right: 6px;"></span>GitHub
+    {% endif %}
+  </a>
+  <div hx-get="mqtt-status-fragment" hx-trigger="load, every 5s" hx-swap="innerHTML">
+      <div class="spinner" style="width: 16px; height: 16px; border-color: rgba(255,255,255,0.3); border-top-color: white;"></div>
+  </div>
 </div>
 {% endblock %}
 

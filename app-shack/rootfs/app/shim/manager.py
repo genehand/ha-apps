@@ -20,6 +20,7 @@ from .import_patch import setup_import_patching
 from .entity import EntityRegistry, get_mqtt_object_id
 from .integrations.manager import InstallTask, IntegrationManager
 from .integrations.loader import IntegrationLoader
+from .github import GitHubAuth
 
 if TYPE_CHECKING:
     from ..mqtt_bridge import MqttBridge
@@ -55,6 +56,10 @@ class ShimManager:
             self._hass.shim_dir,
         )
 
+        # Initialize GitHub device-flow auth (token persisted to shim_dir).
+        # Loaded here so the IntegrationManager can pick it up at start().
+        self._github_auth = GitHubAuth(self._hass.shim_dir)
+
         # Initialize integration loader
         self._integration_loader = IntegrationLoader(
             self._hass, self._integration_manager
@@ -88,6 +93,20 @@ class ShimManager:
         """
         _LOGGER.debug("Starting Shim Manager (phase 1 - fast setup)")
         self._running = True
+
+        # Load cached GitHub token (if any) and hand it to the
+        # IntegrationManager so api.github.com requests are authenticated.
+        if self._github_auth.is_authenticated():
+            self._integration_manager.set_github_token(
+                self._github_auth.get_token()
+            )
+            _LOGGER.info("GitHub token loaded from disk")
+        else:
+            _LOGGER.info(
+                "No GitHub token configured - using anonymous API "
+                "requests (rate-limited to 60/hour). Visit the Shack "
+                "web UI Settings to sign in."
+            )
 
         # Setup application credentials storage
         from .stubs.application_credentials import (
@@ -908,6 +927,10 @@ class ShimManager:
     def get_integration_loader(self) -> IntegrationLoader:
         """Get the integration loader."""
         return self._integration_loader
+
+    def get_github_auth(self) -> GitHubAuth:
+        """Get the GitHub auth manager."""
+        return self._github_auth
 
     async def install_integration(self, full_name_or_domain: str, **kwargs):
         """Install an integration.

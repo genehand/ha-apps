@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}GitHub Sign-in · HACS Shack{% endblock %}
+{% block header_title %}🏚️ HACS Shack{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ul>
+    <li><a href="../">Integrations</a></li>
+    <li>GitHub Sign-in</li>
+  </ul>
+</nav>
+
+<h1>GitHub Authentication</h1>
+<p class="pico-color-muted">
+  Shack calls the GitHub API (releases, tags, repository trees) to install and
+  update integrations. Without a token those calls are rate-limited to
+  <strong>60 requests/hour</strong>. Signing in with GitHub raises that to
+  <strong>5,000/hour</strong>, mirroring the device flow HACS uses.
+</p>
+
+{% if authenticated %}
+<section>
+  <h2>Status</h2>
+  <article>
+    <div class="info-row">
+      <span class="info-label">Signed in</span>
+      <span class="info-value">
+        <span class="status-badge status-enabled">✓ Authenticated</span>
+      </span>
+    </div>
+    {% if rate_limit %}
+      {% if rate_limit.invalid %}
+      <div class="info-row">
+        <span class="info-label">Token</span>
+        <span class="info-value pico-color-red-500">
+          Invalid or revoked. Sign out and sign in again.
+        </span>
+      </div>
+      {% else %}
+      <div class="info-row">
+        <span class="info-label">Rate limit</span>
+        <span class="info-value">
+          {{ rate_limit.remaining }} / {{ rate_limit.limit }} requests remaining
+        </span>
+      </div>
+      {% endif %}
+    {% endif %}
+  </article>
+
+  <form hx-post="auth/logout" hx-target="main" hx-swap="innerHTML"
+        hx-confirm="Sign out of GitHub? API requests will be rate-limited again."
+        style="margin-top: 1rem;">
+    <button type="submit" class="secondary">Sign out</button>
+  </form>
+</section>
+
+{% elif activation_status and activation_status.status == 'pending' %}
+<section>
+  <h2>Waiting for confirmation</h2>
+  {# Defer to the poll endpoint so the actual code/URI lives in one place. #}
+  <div hx-get="./auth/poll" hx-trigger="load" hx-target="this"
+       hx-swap="outerHTML"></div>
+</section>
+
+{% else %}
+<section>
+  <h2>Sign in</h2>
+  <article>
+    <p>Click the button below to start the device-flow sign-in. You'll be
+    given a one-time code to enter at
+    <a href="https://github.com/login/device" target="_blank"
+       rel="noopener noreferrer">github.com/login/device</a>.</p>
+    <form hx-post="auth/start" hx-target="main" hx-swap="innerHTML"
+          hx-indicator="#github-auth-spinner">
+      <button type="submit">Sign in with GitHub</button>
+      <span id="github-auth-spinner" class="htmx-indicator spinner"></span>
+    </form>
+  </article>
+</section>
+{% endif %}
+{% endblock %}

@@ -40,6 +40,7 @@ class WebUI:
         from .routes.integrations import register_routes as reg_integrations
         from .routes.config_flows import register_routes as reg_config_flows
         from .routes.credentials import register_routes as reg_credentials
+        from .routes.github_auth import register_routes as reg_github_auth
         from .routes.auth import register_routes as reg_auth
         from .routes.api import register_routes as reg_api
         from .routes.fragments import register_routes as reg_fragments
@@ -47,6 +48,7 @@ class WebUI:
         reg_integrations(self._app, self._shim_manager, self._template_dir)
         reg_config_flows(self._app, self._shim_manager, self._template_dir)
         reg_credentials(self._app, self._shim_manager, self._template_dir)
+        reg_github_auth(self._app, self._shim_manager, self._template_dir)
         reg_auth(self._app, self._shim_manager, self._template_dir)
         reg_api(self._app, self._shim_manager, self._template_dir)
         reg_fragments(self._app, self._shim_manager, self._template_dir)

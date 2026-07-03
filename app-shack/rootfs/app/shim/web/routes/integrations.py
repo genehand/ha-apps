@@ -75,6 +75,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             available=available_dicts,
             custom_repos=custom_repos,
             is_loading=shim_manager.is_loading,
+            github_authenticated=shim_manager.get_github_auth().is_authenticated(),
         )
         return HTMLResponse(content=html)
 
