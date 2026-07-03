@@ -105,6 +105,7 @@
                         {{ release.version }}
                         {% if release.published_at %}({{ release.published_at }}){% endif %}
                         {% if release.prerelease %}[beta]{% endif %}
+                        {% if release.branch %}[branch]{% elif release.tag_only %}[tag]{% endif %}
                         {% if release.version == integration.version %}[installed]{% endif %}
                     </option>
                     {% endfor %}
@@ -117,6 +118,28 @@
                 </button>
                 <span style="font-size: 0.8rem; color: var(--pico-muted-color);">
                     Current: {{ integration.version }}
+                </span>
+            </div>
+        </form>
+        <form hx-post="../integrations/{{ integration.domain }}/install-ref"
+              hx-target="body"
+              hx-swap="outerHTML"
+              hx-indicator="#install-ref-spinner"
+              style="display: flex; flex-direction: column; gap: 0.5rem;">
+            <div>
+                <label for="ref-input" style="font-size: 0.9rem; color: var(--pico-muted-color); display: block; margin-bottom: 0.5rem;">
+                    Install by tag, branch, or commit SHA
+                </label>
+                <input id="ref-input" name="ref" type="text" placeholder="e.g. v1.7.0, main, or 40-char SHA"
+                       required style="width: 100%;" />
+            </div>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <button type="submit" class="secondary">
+                    <span id="install-ref-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
+                    <span class="button-text">Install Ref</span>
+                </button>
+                <span style="font-size: 0.75rem; color: var(--pico-muted-color);">
+                    For unreleased tags or specific commits
                 </span>
             </div>
         </form>

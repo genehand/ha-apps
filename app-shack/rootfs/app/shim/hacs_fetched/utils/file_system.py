@@ -6,7 +6,7 @@ import os
 import shutil
 from typing import TypeAlias
 
-from ..hass import HomeAssistant
+from ..core import HomeAssistant
 
 # From typeshed
 StrOrBytesPath: TypeAlias = str | bytes | os.PathLike[str] | os.PathLike[bytes]

@@ -162,6 +162,8 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                                 else ""
                             ),
                             "prerelease": rel.get("prerelease", False),
+                            "tag_only": rel.get("tag_only", False),
+                            "branch": rel.get("branch", False),
                         }
                     )
             except Exception as e:
@@ -496,6 +498,59 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
         else:
             return HTMLResponse(
                 f'<div class="alert alert-error">Failed to install version {version} of {domain}</div>',
+                status_code=400,
+            )
+
+    @app.post("/integrations/{domain}/install-ref")
+    async def install_integration_ref(
+        request: Request,
+        domain: str,
+        ref: str = Form(...),
+    ):
+        """Install an integration from an arbitrary git ref.
+
+        Accepts a tag name, branch name (e.g. "main"), or a 40-char commit
+        SHA. Unlike install-version, this does not require the ref to be
+        listed in the available versions dropdown, so unreleased tags and
+        commit SHAs can be installed.
+        """
+        loading_response = check_loading(shim_manager)
+        if loading_response:
+            return loading_response
+
+        ref = ref.strip()
+        if not ref:
+            return HTMLResponse(
+                '<div class="alert alert-error">A ref (tag, branch, or SHA) is required.</div>',
+                status_code=400,
+            )
+
+        info = shim_manager.get_integration_manager().get_integration(domain)
+        if not info:
+            return HTMLResponse(
+                f'<div class="alert alert-error">Integration {domain} not found</div>',
+                status_code=400,
+            )
+
+        success = await shim_manager.install_integration(
+            info.full_name or domain,
+            version=ref,
+            source=info.source,
+            wait=True,
+        )
+
+        if success:
+            html = (
+                f'<div class="alert alert-success">'
+                f"Installed ref {ref} of {domain} successfully!"
+                f"</div>"
+            )
+            response = HTMLResponse(content=html)
+            response.headers["HX-Redirect"] = get_detail_redirect(request, domain)
+            return response
+        else:
+            return HTMLResponse(
+                f'<div class="alert alert-error">Failed to install ref {ref} of {domain}</div>',
                 status_code=400,
             )
 

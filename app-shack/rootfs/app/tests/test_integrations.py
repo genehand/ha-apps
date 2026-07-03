@@ -881,6 +881,198 @@ class TestReleaseNotes:
         assert integration_manager._is_prerelease("1.0") is False
 
 
+class TestAvailableVersionsAndDownload:
+    """Tests for tag/branch version listing and the download URL builder."""
+
+    @pytest.fixture
+    def integration_manager(self, temp_data_dir):
+        """Create an IntegrationManager with mocked storage."""
+        mock_storage = MagicMock()
+        mock_storage.load_integrations.return_value = {}
+        manager = IntegrationManager(mock_storage, temp_data_dir / "shim")
+        return manager
+
+    def _make_info(self, manager, repository_url="https://github.com/owner/repo"):
+        info = IntegrationInfo(
+            domain="test_integration",
+            name="Test Integration",
+            version="1.5.7",
+            description="Test",
+            source="custom",
+            repository_url=repository_url,
+            update_available=False,
+        )
+        manager._integrations["test_integration"] = info
+        return info
+
+    @pytest.mark.asyncio
+    async def test_fetch_tags_strips_v_and_skips_nonversions(self, integration_manager):
+        """_fetch_tags_from_github strips 'v', skips non-version tag names."""
+        tags_payload = [
+            {"name": "v1.7.0"},
+            {"name": "v1.5.7"},
+            {"name": "nightly"},  # not a version -> skipped
+            {"name": "1.4.0"},
+        ]
+
+        class MockResponse:
+            status = 200
+
+            async def json(self):
+                return tags_payload
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        class MockSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def get(self, *args, **kwargs):
+                return MockResponse()
+
+        with patch("aiohttp.ClientSession", return_value=MockSession()):
+            tags = await integration_manager._fetch_tags_from_github(
+                "https://github.com/owner/repo"
+            )
+
+        versions = [t["version"] for t in tags]
+        assert "1.7.0" in versions
+        assert "1.5.7" in versions
+        assert "1.4.0" in versions
+        assert "nightly" not in versions
+        assert all(t.get("tag_only") is True for t in tags)
+
+    @pytest.mark.asyncio
+    async def test_get_available_versions_merges_tags_releases_and_branch(
+        self, integration_manager
+    ):
+        """get_available_versions merges releases + tags (deduped) + default branch."""
+        self._make_info(integration_manager)
+
+        async def fake_releases(repo, current, include_prerelease=False):
+            return [
+                {"version": "1.5.7", "body": "r", "published_at": "2024-01-01",
+                 "url": "u", "prerelease": False},
+            ]
+
+        async def fake_tags(repo):
+            # 1.5.7 is also a tag -> should be deduped (release wins)
+            # 1.7.0 is tag-only (no release)
+            return [
+                {"version": "1.5.7", "body": "", "published_at": "", "url": "",
+                 "prerelease": False, "tag_only": True},
+                {"version": "1.7.0", "body": "", "published_at": "", "url": "",
+                 "prerelease": False, "tag_only": True},
+            ]
+
+        async def fake_default_branch(repo):
+            return "main"
+
+        with patch.object(
+            integration_manager, "_fetch_releases_from_github", fake_releases
+        ), patch.object(
+            integration_manager, "_fetch_tags_from_github", fake_tags
+        ), patch.object(
+            integration_manager, "_fetch_default_branch", fake_default_branch
+        ):
+            versions = await integration_manager.get_available_versions(
+                "test_integration"
+            )
+
+        by_version = {v["version"]: v for v in versions}
+        # 1.7.0 (tag-only) present
+        assert by_version["1.7.0"].get("tag_only") is True
+        # 1.5.7 deduped: release wins (not tag_only)
+        assert by_version["1.5.7"].get("tag_only") is not True
+        assert by_version["1.5.7"]["body"] == "r"
+        # default branch appended
+        assert by_version["main"].get("branch") is True
+        # newest first (1.7.0 before 1.5.7), branch last
+        assert versions[-1]["version"] == "main"
+        assert versions[0]["version"] == "1.7.0"
+
+    def test_build_download_urls_version_tries_tags_then_heads(self, integration_manager):
+        """For a version, try tags (with v variants) then heads fallback."""
+        urls = integration_manager._build_download_urls("owner", "repo", "1.7.0")
+        assert urls[0] == "https://github.com/owner/repo/archive/refs/tags/1.7.0.zip"
+        assert "refs/tags/v1.7.0.zip" in urls[1]
+        assert urls[-1] == "https://github.com/owner/repo/archive/refs/heads/1.7.0.zip"
+
+    def test_build_download_urls_v_prefix_version(self, integration_manager):
+        """A version already prefixed with 'v' tries the stripped variant too."""
+        urls = integration_manager._build_download_urls("owner", "repo", "v1.7.0")
+        assert urls[0] == "https://github.com/owner/repo/archive/refs/tags/v1.7.0.zip"
+        assert "refs/tags/1.7.0.zip" in urls[1]
+        assert urls[-1] == "https://github.com/owner/repo/archive/refs/heads/v1.7.0.zip"
+
+    def test_build_download_urls_sha_uses_bare_archive(self, integration_manager):
+        """A 40-char SHA downloads a specific commit directly."""
+        sha = "a" * 40
+        urls = integration_manager._build_download_urls("owner", "repo", sha)
+        assert urls == ["https://github.com/owner/repo/archive/" + sha + ".zip"]
+
+    def test_build_download_urls_no_version_tries_default_branches(
+        self, integration_manager
+    ):
+        """No version tries main then master."""
+        urls = integration_manager._build_download_urls("owner", "repo", None)
+        assert urls == [
+            "https://github.com/owner/repo/archive/refs/heads/main.zip",
+            "https://github.com/owner/repo/archive/refs/heads/master.zip",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_install_requirements_recovers_from_manifest(self, integration_manager):
+        """install_requirements re-reads the manifest when info.requirements is empty."""
+        info = self._make_info(integration_manager)
+        info.requirements = []  # stale storage: no requirements cached
+
+        manifest = {"requirements": ["libdyson-neon==1.6.0"]}
+
+        call_log = []
+
+        class FakeProc:
+            def __init__(self, returncode):
+                self.returncode = returncode
+
+            async def communicate(self):
+                return (b"Name: libdyson-neon\nVersion: 1.6.0\n", b"")
+
+        async def fake_exec(*args, **kwargs):
+            call_log.append(args)
+            # "uv pip show" -> not installed (rc=1); "uv pip install" -> success (rc=0)
+            if "show" in args:
+                return FakeProc(1)
+            return FakeProc(0)
+
+        with patch.object(
+            integration_manager, "_load_manifest", return_value=manifest
+        ), patch.object(
+            integration_manager, "_save_integrations"
+        ), patch(
+            "shim.integrations.manager.asyncio.create_subprocess_exec",
+            side_effect=fake_exec,
+        ), patch(
+            "shim.integrations.manager.importlib.invalidate_caches"
+        ):
+            result = await integration_manager.install_requirements("test_integration")
+
+        assert result is True
+        # Requirements recovered from manifest
+        assert info.requirements == ["libdyson-neon==1.6.0"]
+        # uv pip install was invoked with the recovered requirement
+        install_calls = [c for c in call_log if "install" in c]
+        assert len(install_calls) == 1
+        assert "libdyson-neon==1.6.0" in install_calls[0]
+
+
 if __name__ == "__main__":
     # Allow running this file directly for quick testing
     pytest.main([__file__, "-v", "-m", "integration"])

@@ -24,6 +24,11 @@ from ..logging import get_logger
 from ..storage import Storage
 
 
+# Matches a 40-character git commit SHA, used to download a specific commit
+# directly via the GitHub archive endpoint (mirrors HACS's github_archive util).
+_GIT_SHA = re.compile(r"^[a-fA-F0-9]{40}$")
+
+
 # ---------------------------------------------------------------------------
 # Thread-safe I/O helpers for use with asyncio.to_thread()
 # ---------------------------------------------------------------------------
@@ -223,6 +228,9 @@ class IntegrationManager:
         self._integrations: Dict[str, IntegrationInfo] = {}  # domain -> info
         self._hacs_etag: Optional[str] = None  # ETag for CDN caching
         self._hacs_last_fetched: Optional[datetime] = None  # Last fetch time
+        # Cache of repository_url -> default branch (e.g. "main"), so we can
+        # offer "default branch" as an installable version like HACS does.
+        self._default_branch_cache: Dict[str, Optional[str]] = {}
 
         # Async install queue
         self._install_queue: asyncio.Queue[InstallTask] = asyncio.Queue()
@@ -1236,6 +1244,105 @@ class IntegrationManager:
 
         return []
 
+    async def _fetch_tags_from_github(self, repo_url: str) -> List[Dict[str, Any]]:
+        """Fetch git tags (not only releases) from GitHub.
+
+        Tags that are not associated with a GitHub release (e.g. a ``v1.7.0``
+        tag with no release) are returned here so they can be installed from
+        the version dropdown. Each dict has the same shape as
+        ``_fetch_releases_from_github`` plus ``tag_only=True``.
+        """
+        if "github.com" not in repo_url:
+            return []
+
+        match = re.match(r"https?://github\.com/([^/]+)/([^/]+)", repo_url)
+        if not match:
+            return []
+
+        owner, repo = match.groups()
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/tags?per_page=100"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    api_url, timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if not isinstance(data, list):
+                            return []
+
+                        tags = []
+                        for tag in data:
+                            name = tag.get("name", "")
+                            if not name:
+                                continue
+                            version = name.lstrip("v")
+                            # Skip non-version tags (e.g. "nightly", "latest")
+                            # that would break AwesomeVersion sorting.
+                            if not version or not version[0].isdigit():
+                                continue
+                            try:
+                                AwesomeVersion(version)
+                            except AwesomeVersionException:
+                                continue
+                            tags.append(
+                                {
+                                    "version": version,
+                                    "body": "",
+                                    "published_at": "",
+                                    "url": "",
+                                    "prerelease": self._is_prerelease(version),
+                                    "tag_only": True,
+                                }
+                            )
+                        return tags
+                    elif response.status in (403, 429):
+                        _LOGGER.warning(
+                            f"GitHub API rate limited for {owner}/{repo} (tags)"
+                        )
+                    else:
+                        _LOGGER.debug(
+                            f"GitHub tags API returned {response.status} for {owner}/{repo}"
+                        )
+        except Exception as e:
+            _LOGGER.warning(f"Error fetching tags from GitHub: {e}")
+
+        return []
+
+    async def _fetch_default_branch(self, repo_url: str) -> Optional[str]:
+        """Fetch the default branch (e.g. 'main') for a repository, cached."""
+        if repo_url in self._default_branch_cache:
+            return self._default_branch_cache[repo_url]
+
+        if "github.com" not in repo_url:
+            self._default_branch_cache[repo_url] = None
+            return None
+
+        match = re.match(r"https?://github\.com/([^/]+)/([^/]+)", repo_url)
+        if not match:
+            self._default_branch_cache[repo_url] = None
+            return None
+
+        owner, repo = match.groups()
+        api_url = f"https://api.github.com/repos/{owner}/{repo}"
+
+        default_branch = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    api_url, timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if isinstance(data, dict):
+                            default_branch = data.get("default_branch")
+        except Exception as e:
+            _LOGGER.debug(f"Error fetching default branch: {e}")
+
+        self._default_branch_cache[repo_url] = default_branch
+        return default_branch
+
     async def get_release_notes(
         self, domain: str
     ) -> List[Dict[str, Any]]:
@@ -1265,6 +1372,9 @@ class IntegrationManager:
         """Get all available versions for an integration.
 
         Returns a list of version dicts with: version, published_at, url.
+        Includes git tags (even without a release) and the repository's
+        default branch so they can be installed from the dropdown, mirroring
+        HACS which allows installing the default branch.
         """
         info = self._integrations.get(domain)
         if not info:
@@ -1275,9 +1385,48 @@ class IntegrationManager:
 
         # Reuse existing release fetching logic to get all versions
         # Include prereleases so users can install betas from the dropdown
-        return await self._fetch_releases_from_github(
+        releases = await self._fetch_releases_from_github(
             info.repository_url, "0.0.0", include_prerelease=True
         )
+
+        # Also fetch git tags so unreleased tags (e.g. v1.7.0 with no release)
+        # can be installed. Dedupe against releases by version string.
+        tags = await self._fetch_tags_from_github(info.repository_url)
+
+        by_version: Dict[str, Dict[str, Any]] = {}
+        for entry in releases + tags:
+            version = entry.get("version")
+            if not version:
+                continue
+            # Release entries win over tag-only entries (they carry body/url).
+            existing = by_version.get(version)
+            if existing is not None and existing.get("tag_only") is not True:
+                continue
+            by_version[version] = entry
+
+        merged = list(by_version.values())
+        merged.sort(
+            key=lambda r: AwesomeVersion(r["version"]), reverse=True
+        )
+
+        # Offer the default branch (e.g. "main") as an installable option,
+        # like HACS. The download path falls back from tags -> heads, so a
+        # branch name resolves correctly.
+        default_branch = await self._fetch_default_branch(info.repository_url)
+        if default_branch:
+            merged.append(
+                {
+                    "version": default_branch,
+                    "body": "",
+                    "published_at": "",
+                    "url": "",
+                    "prerelease": False,
+                    "tag_only": False,
+                    "branch": True,
+                }
+            )
+
+        return merged
 
     async def install_integration(
         self,
@@ -1445,7 +1594,15 @@ class IntegrationManager:
                 )
 
             # Install requirements
-            await self.install_requirements(actual_domain)
+            requirements_ok = await self.install_requirements(actual_domain)
+            if not requirements_ok:
+                _LOGGER.error(
+                    f"Failed to install requirements for {actual_domain}; "
+                    f"integration will not function until dependencies are installed"
+                )
+                # Still mark as installed so the user can see/configure it,
+                # but surface the failure prominently.
+                return False
 
             _LOGGER.info(f"Successfully installed {actual_domain}@{info.version}")
             return True
@@ -1458,6 +1615,45 @@ class IntegrationManager:
         """Fetch repo info for custom URL."""
         async with aiohttp.ClientSession() as session:
             return await self._fetch_repo_info(session, repo_url)
+
+    def _build_download_urls(
+        self, owner: str, repo: str, version: Optional[str]
+    ) -> List[str]:
+        """Build the ordered list of archive download URLs to try.
+
+        For a specific version we try the ``refs/tags`` endpoint (with and
+        without a ``v`` prefix), then fall back to ``refs/heads`` so a branch
+        name can also be supplied. A 40-char git SHA downloads a specific
+        commit directly via the bare archive endpoint. With no version we try
+        the common default branches.
+        """
+        base = f"https://github.com/{owner}/{repo}/archive"
+
+        # Direct commit download (e.g. a 40-char SHA).
+        if version and _GIT_SHA.match(version):
+            return [f"{base}/{version}.zip"]
+
+        if not version:
+            # No version: try the common default branches.
+            return [
+                f"{base}/refs/heads/main.zip",
+                f"{base}/refs/heads/master.zip",
+            ]
+
+        urls: List[str] = []
+        # Tags first (exact, then v-prefix variants).
+        urls.append(f"{base}/refs/tags/{version}.zip")
+        if version.startswith("v"):
+            stripped = version.lstrip("v")
+            if stripped and stripped != version:
+                urls.append(f"{base}/refs/tags/{stripped}.zip")
+        else:
+            urls.append(f"{base}/refs/tags/v{version}.zip")
+
+        # Heads fallback so a branch name (e.g. "main") also resolves.
+        urls.append(f"{base}/refs/heads/{version}.zip")
+
+        return urls
 
     async def _download_integration(
         self, repo_url: str, domain: str, version: Optional[str] = None
@@ -1473,29 +1669,11 @@ class IntegrationManager:
 
         owner, repo = match.groups()
 
-        # Build list of URLs to try, in order of preference
-        urls_to_try = []
-        if version:
-            # Release tags: try exact version, then with/without 'v' prefix
-            urls_to_try.append(
-                f"https://github.com/{owner}/{repo}/archive/refs/tags/{version}.zip"
-            )
-            if not version.startswith("v"):
-                urls_to_try.append(
-                    f"https://github.com/{owner}/{repo}/archive/refs/tags/v{version}.zip"
-                )
-            else:
-                urls_to_try.append(
-                    f"https://github.com/{owner}/{repo}/archive/refs/tags/{version.lstrip('v')}.zip"
-                )
-        else:
-            # Latest: try main then master branch
-            urls_to_try.append(
-                f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
-            )
-            urls_to_try.append(
-                f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
-            )
+        # Build list of URLs to try, in order of preference.
+        # Mirrors HACS's download_repository_zip: for a given ref we try the
+        # tags endpoint first, then fall back to the heads (branch) endpoint.
+        # A 40-char git SHA downloads a specific commit directly.
+        urls_to_try = self._build_download_urls(owner, repo, version)
 
         # Download to temp location
         temp_dir = self._shim_dir / "temp"
@@ -1784,6 +1962,21 @@ class IntegrationManager:
         if not info:
             _LOGGER.warning(f"Integration {domain} not found in _integrations")
             return True
+
+        # The manifest is the source of truth for requirements. Storage can be
+        # stale (e.g. an entry created before requirements were tracked, or a
+        # manifest that gained requirements after the install). Re-read it and
+        # backfill the cached info so subsequent calls skip the extra work.
+        if not info.requirements:
+            manifest = await asyncio.to_thread(self._load_manifest, domain)
+            manifest_reqs = (manifest or {}).get("requirements", [])
+            if manifest_reqs:
+                info.requirements = list(manifest_reqs)
+                _LOGGER.info(
+                    f"Recovered {len(info.requirements)} requirements from "
+                    f"manifest for {domain} (storage was empty)"
+                )
+                await asyncio.to_thread(self._save_integrations)
 
         if not info.requirements:
             _LOGGER.debug(f"Integration {domain} has no requirements to install")
