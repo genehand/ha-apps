@@ -290,7 +290,7 @@
 
         // Refresh the Available tab content in the background
         document.body.addEventListener('refreshAvailable', function() {
-            htmx.ajax('GET', '/api/available-fragment', {target: '#available', swap: 'innerHTML'});
+            htmx.ajax('GET', 'api/available-fragment', {target: '#available', swap: 'innerHTML'});
         });
 
         function showTab(tabName) {

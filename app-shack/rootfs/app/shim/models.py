@@ -152,12 +152,36 @@ class ConfigEntry(Generic[T]):
 
         return remove_listener
 
-    def async_create_task(self, hass, target, name=None):
+    def async_create_task(self, hass, target, name=None, eager_start=True):
         """Create a task to track for this config entry.
 
         The task is stored on the entry and will be cancelled when the entry is unloaded.
         """
-        task = hass.async_create_background_task(target, name)
+        task = hass.async_create_task(
+            target, f"{name} {self.title} {self.domain} {self.entry_id}", eager_start
+        )
+        if not task.done():
+            if not hasattr(self, "_tasks"):
+                self._tasks: Set[asyncio.Task] = set()
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        self._on_unload_callbacks.append(
+            lambda: task.cancel() if not task.done() else None
+        )
+        return task
+
+    def async_create_background_task(self, hass, target, name, eager_start=True):
+        """Create a background task tied to the config entry lifecycle.
+
+        Background tasks are automatically cancelled when the entry is unloaded.
+        Mirrors homeassistant.config_entries.ConfigEntry.async_create_background_task.
+        """
+        task = hass.async_create_background_task(target, name, eager_start)
+        if not task.done():
+            if not hasattr(self, "_background_tasks"):
+                self._background_tasks: Set[asyncio.Task] = set()
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         self._on_unload_callbacks.append(
             lambda: task.cancel() if not task.done() else None
         )

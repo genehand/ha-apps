@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
-from awesomeversion import AwesomeVersion
+from awesomeversion import AwesomeVersion, AwesomeVersionStrategy
 from awesomeversion.exceptions import AwesomeVersionException
 
 from ..logging import get_logger
@@ -27,6 +27,26 @@ from ..storage import Storage
 # Matches a 40-character git commit SHA, used to download a specific commit
 # directly via the GitHub archive endpoint (mirrors HACS's github_archive util).
 _GIT_SHA = re.compile(r"^[a-fA-F0-9]{40}$")
+
+
+def _version_sort_key(version_str: str):
+    """Sort key that tolerates AwesomeVersion comparison failures.
+
+    AwesomeVersion raises ``AwesomeVersionException`` when asked to compare
+    versions whose strategies differ (e.g. a SemVer tag versus an unknown
+    tag like ``1.9.0_revert``). Sorting then aborts the whole releases fetch.
+
+    To stay crash-proof we bucket recognized versions first (sorted by their
+    AwesomeVersion) and push unknown-strategy versions to the end (sorted
+    lexicographically), so the dropdown still surfaces every tag.
+    """
+    try:
+        av = AwesomeVersion(version_str)
+        if av.strategy != AwesomeVersionStrategy.UNKNOWN:
+            return (0, av)
+    except AwesomeVersionException:
+        pass
+    return (1, version_str)
 
 
 # ---------------------------------------------------------------------------
@@ -1336,7 +1356,7 @@ class IntegrationManager:
                             continue
 
                     newer_releases.sort(
-                        key=lambda r: AwesomeVersion(r["version"]), reverse=True
+                        key=lambda r: _version_sort_key(r["version"]), reverse=True
                     )
                     return newer_releases
                 elif status in (403, 429):
@@ -1504,7 +1524,7 @@ class IntegrationManager:
 
         merged = list(by_version.values())
         merged.sort(
-            key=lambda r: AwesomeVersion(r["version"]), reverse=True
+            key=lambda r: _version_sort_key(r["version"]), reverse=True
         )
 
         # Offer the default branch (e.g. "main") as an installable option,
