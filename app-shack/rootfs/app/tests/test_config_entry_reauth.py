@@ -306,3 +306,87 @@ class TestConfigEntryReauth:
         )
         await asyncio.sleep(0)
         assert flow_init_called
+
+
+class TestConfigEntryCreateTasks:
+    """Tests for ConfigEntry.async_create_task / async_create_background_task.
+
+    Reproduces the localtuya failure where ``entry.async_create_background_task``
+    was missing and ``hass.async_create_background_task`` rejected the
+    ``eager_start`` keyword added by the entry-level wrapper.
+    """
+
+    def _make_entry(self):
+        return ConfigEntry(
+            entry_id="test_tasks_1",
+            version=1,
+            domain="localtuya",
+            title="Local Tuya",
+        )
+
+    def test_async_create_background_task_exists(self):
+        """ConfigEntry should expose async_create_background_task (matches HA)."""
+        entry = self._make_entry()
+        assert hasattr(entry, "async_create_background_task")
+        assert callable(entry.async_create_background_task)
+
+    def test_async_create_background_task_delegates_with_eager_start(self):
+        """entry.async_create_background_task forwards eager_start to hass."""
+        entry = self._make_entry()
+        hass = MagicMock()
+        sentinel_task = MagicMock()
+        sentinel_task.done.return_value = False
+        hass.async_create_background_task.return_value = sentinel_task
+
+        async def coro():
+            pass
+
+        result = entry.async_create_background_task(
+            hass, coro(), "localtuya-cloudAPI"
+        )
+
+        hass.async_create_background_task.assert_called_once()
+        args, kwargs = hass.async_create_background_task.call_args
+        assert args[1] == "localtuya-cloudAPI"
+        assert kwargs.get("eager_start") is True
+        assert result is sentinel_task
+        assert sentinel_task in entry._background_tasks
+
+    def test_async_create_background_task_cancel_on_unload(self):
+        """The task is cancelled via the registered unload callback."""
+        entry = self._make_entry()
+        hass = MagicMock()
+        sentinel_task = MagicMock()
+        sentinel_task.done.return_value = False
+        hass.async_create_background_task.return_value = sentinel_task
+
+        async def coro():
+            pass
+
+        entry.async_create_background_task(hass, coro(), "cloud")
+
+        sentinel_task.done.return_value = False
+        for cb in entry._on_unload_callbacks:
+            cb()
+        sentinel_task.cancel.assert_called_once()
+
+    def test_async_create_task_enriches_name(self):
+        """entry.async_create_task names the task with title/domain/entry_id."""
+        entry = self._make_entry()
+        hass = MagicMock()
+        sentinel_task = MagicMock()
+        sentinel_task.done.return_value = False
+        hass.async_create_task.return_value = sentinel_task
+
+        async def coro():
+            pass
+
+        result = entry.async_create_task(hass, coro(), "my-task")
+
+        hass.async_create_task.assert_called_once()
+        args, kwargs = hass.async_create_task.call_args
+        assert "Local Tuya" in args[1]
+        assert "localtuya" in args[1]
+        assert "test_tasks_1" in args[1]
+        assert result is sentinel_task
+        assert sentinel_task in entry._tasks

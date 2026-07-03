@@ -138,6 +138,7 @@ class HomeAssistant:
         self,
         target: asyncio.coroutine,
         name: Optional[str] = None,
+        eager_start: bool = False,
     ) -> asyncio.Task:
         """Create a background task.
 
@@ -147,11 +148,12 @@ class HomeAssistant:
         Args:
             target: The coroutine to run
             name: Optional task name (for debugging)
+            eager_start: If True, eagerly start the task (HA 2024.3+)
 
         Returns:
             The created asyncio.Task
         """
-        return self.async_create_task(target, name)
+        return self.async_create_task(target, name, eager_start)
 
     def async_add_job(self, target: Callable, *args) -> asyncio.Future:
         """Add a job."""

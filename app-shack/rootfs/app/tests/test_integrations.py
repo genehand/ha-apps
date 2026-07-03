@@ -1005,6 +1005,70 @@ class TestAvailableVersionsAndDownload:
         assert "refs/tags/v1.7.0.zip" in urls[1]
         assert urls[-1] == "https://github.com/owner/repo/archive/refs/heads/1.7.0.zip"
 
+    def test_version_sort_key_tolerates_unknown_strategy(self):
+        """_version_sort_key tolerates UNKNOWN-strategy versions like 1.9.0_revert.
+
+        AwesomeVersion raises AwesomeVersionException when asked to compare
+        UNKNOWN and SemVer strategies; the sort key buckets recognized
+        versions first and pushes unknown ones to the end so the releases
+        dropdown never crashes with "Can't compare".
+        """
+        from shim.integrations.manager import _version_sort_key
+
+        items = ["1.0.2", "2.0.0", "1.9.0_revert", "1.10.0", "1.9.0_revert2"]
+        sorted_items = sorted(items, key=_version_sort_key, reverse=True)
+        # SemVer versions sort numerically (2.0.0 > 1.10.0 > 1.0.2)
+        assert sorted_items[:3] == ["2.0.0", "1.10.0", "1.0.2"]
+        # UNKNOWN-strategy versions land at the end (lexicographic, reversed)
+        assert "1.9.0_revert2" in sorted_items[3:]
+        assert "1.9.0_revert" in sorted_items[3:]
+
+    @pytest.mark.asyncio
+    async def test_get_available_versions_sorts_with_unknown_strategy_tag(
+        self, integration_manager
+    ):
+        """get_available_versions does not crash when a tag like 1.9.0_revert exists.
+
+        Reproduces the localtuya "Can't compare <unknown 1.9.0_revert> and
+        <SemVer 1.0.2>" failure during the releases fetch on the detail page.
+        """
+        self._make_info(integration_manager)
+
+        async def fake_releases(repo, current, include_prerelease=False):
+            return [
+                {"version": "1.9.0_revert", "body": "", "published_at": "",
+                 "url": "", "prerelease": True},
+            ]
+
+        async def fake_tags(repo):
+            return [
+                {"version": "1.0.2", "body": "", "published_at": "", "url": "",
+                 "prerelease": False, "tag_only": True},
+                {"version": "2.0.0", "body": "", "published_at": "", "url": "",
+                 "prerelease": False, "tag_only": True},
+            ]
+
+        async def fake_default_branch(repo):
+            return None
+
+        with patch.object(
+            integration_manager, "_fetch_releases_from_github", fake_releases
+        ), patch.object(
+            integration_manager, "_fetch_tags_from_github", fake_tags
+        ), patch.object(
+            integration_manager, "_fetch_default_branch", fake_default_branch
+        ):
+            versions = await integration_manager.get_available_versions(
+                "test_integration"
+            )
+
+        version_strings = [v["version"] for v in versions]
+        assert "1.9.0_revert" in version_strings
+        assert "1.0.2" in version_strings
+        assert "2.0.0" in version_strings
+        # SemVer 2.0.0 sorts before 1.0.2; unknown tag lands after both
+        assert version_strings.index("2.0.0") < version_strings.index("1.0.2")
+
     def test_build_download_urls_v_prefix_version(self, integration_manager):
         """A version already prefixed with 'v' tries the stripped variant too."""
         urls = integration_manager._build_download_urls("owner", "repo", "v1.7.0")

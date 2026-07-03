@@ -158,7 +158,9 @@ class ConfigEntry(Generic[T]):
         The task is stored on the entry and will be cancelled when the entry is unloaded.
         """
         task = hass.async_create_task(
-            target, f"{name} {self.title} {self.domain} {self.entry_id}", eager_start
+            target,
+            f"{name} {self.title} {self.domain} {self.entry_id}",
+            eager_start=eager_start,
         )
         if not task.done():
             if not hasattr(self, "_tasks"):
@@ -176,7 +178,7 @@ class ConfigEntry(Generic[T]):
         Background tasks are automatically cancelled when the entry is unloaded.
         Mirrors homeassistant.config_entries.ConfigEntry.async_create_background_task.
         """
-        task = hass.async_create_background_task(target, name, eager_start)
+        task = hass.async_create_background_task(target, name, eager_start=eager_start)
         if not task.done():
             if not hasattr(self, "_background_tasks"):
                 self._background_tasks: Set[asyncio.Task] = set()

@@ -43,10 +43,12 @@ def _version_sort_key(version_str: str):
     try:
         av = AwesomeVersion(version_str)
         if av.strategy != AwesomeVersionStrategy.UNKNOWN:
-            return (0, av)
+            # Recognized versions sort higher (newest first when reverse=True).
+            return (1, av)
     except AwesomeVersionException:
         pass
-    return (1, version_str)
+    # Unknown-strategy versions sort lower (pushed to the end under reverse=True).
+    return (0, version_str)
 
 
 # ---------------------------------------------------------------------------
