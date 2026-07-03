@@ -20,7 +20,7 @@ from .const import (
     PICO_CSS_URL,
 )
 from .schema import is_undefined, parse_schema
-from .translations import apply_field_translations, load_integration_translations
+from .translations import apply_field_translations, async_load_integration_translations
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def get_detail_redirect(request: Request, domain: str) -> str:
     return f"./integrations/{domain}"
 
 
-def render_config_step(
+async def render_config_step(
     shim_manager,
     request: Request,
     domain: str,
@@ -130,7 +130,7 @@ def render_config_step(
             flow._last_form_schema = schema
 
     # Load translations for field labels and error messages
-    translations = load_integration_translations(
+    translations = await async_load_integration_translations(
         shim_manager._integration_manager, domain
     )
 

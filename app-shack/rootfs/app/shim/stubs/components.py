@@ -296,11 +296,67 @@ def create_additional_stubs(hass, homeassistant):
     """Create additional stub modules for HA dependencies."""
 
     # zeroconf
+    # Mirror HA's homeassistant.components.zeroconf package: async_get_instance
+    # returns a shared HaZeroconf (a Zeroconf subclass whose close() is a no-op
+    # so integrations cannot kill the singleton). Cached at hass.data[DOMAIN].
+    try:
+        from zeroconf import Zeroconf as _Zeroconf
+        from zeroconf.asyncio import AsyncZeroconf as _AsyncZeroconf
+    except ImportError:  # pragma: no cover - zeroconf is a hard dep
+        _LOGGER.warning("zeroconf package not available; zeroconf stub disabled")
+        _Zeroconf = None
+        _AsyncZeroconf = None
+
+    if _Zeroconf is not None:
+
+        class _HaZeroconf(_Zeroconf):
+            """Zeroconf that cannot be closed (mirrors HA's HaZeroconf)."""
+
+            def close(self) -> None:
+                """No-op: integrations must not close the shared instance."""
+
+            ha_close = _Zeroconf.close
+
+        class _HaAsyncZeroconf(_AsyncZeroconf):
+            """Home Assistant version of AsyncZeroconf (async_close is no-op)."""
+
+            async def async_close(self) -> None:
+                """No-op: integrations must not close the shared instance."""
+
+            ha_async_close = _AsyncZeroconf.async_close
+
+        async def _async_get_zeroconf_instance(hass=None):
+            """Get or create the shared HaZeroconf instance.
+
+            Cached at hass.data["zeroconf"] when a hass object is supplied,
+            mirroring HA's _async_get_instance caching behavior. Returns a
+            fresh instance per call when called without hass.
+            """
+            if hass is not None:
+                data = getattr(hass, "data", None)
+                if data is not None:
+                    cached = data.get("zeroconf")
+                    if cached is not None:
+                        return cached
+                    instance = _HaZeroconf()
+                    data["zeroconf"] = instance
+                    return instance
+            return _HaZeroconf()
+
+    else:  # pragma: no cover - zeroconf package is expected present
+
+        async def _async_get_zeroconf_instance(hass=None):
+            return None
+
+        _HaZeroconf = None
+        _HaAsyncZeroconf = None
+
     zeroconf_stub = types.ModuleType("homeassistant.components.zeroconf")
     zeroconf_stub.DOMAIN = "zeroconf"
-    zeroconf_stub.Zeroconf = lambda *args, **kwargs: None
-    zeroconf_stub.async_get_instance = lambda *args, **kwargs: None
-    zeroconf_stub.HaZeroconf = lambda *args, **kwargs: None
+    zeroconf_stub.Zeroconf = _Zeroconf
+    zeroconf_stub.HaZeroconf = _HaZeroconf
+    zeroconf_stub.HaAsyncZeroconf = _HaAsyncZeroconf
+    zeroconf_stub.async_get_instance = _async_get_zeroconf_instance
     homeassistant.components.zeroconf = zeroconf_stub
     sys.modules["homeassistant.components.zeroconf"] = zeroconf_stub
 

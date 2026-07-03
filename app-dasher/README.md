@@ -25,4 +25,5 @@ Filtering is automatically disabled for non-dashboard pages (Settings, Developer
 
 ## Similar Projects
 
-- [ha-ws-proxy](https://github.com/DragonHunter274/homeassistant-entity-filter-proxy) 
+- [ha-ws-proxy](https://github.com/DragonHunter274/homeassistant-entity-filter-proxy)
+- [HA WebSocket Stripper](https://github.com/GabrielGoldsteinAnidea/HA-Websocket-Stripper)

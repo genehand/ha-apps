@@ -103,7 +103,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 content=f'<div class="alert alert-error">Aborted: {reason}</div>'
             )
 
-        return render_config_step(
+        return await render_config_step(
             shim_manager, request, domain, result, template_dir
         )
 
@@ -356,7 +356,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 )
 
         elif result.get("type") == "form":
-            return render_config_step(
+            return await render_config_step(
                 shim_manager, request, domain, result, template_dir
             )
 
@@ -411,7 +411,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                         '<div class="alert alert-error">Failed to create entry</div>'
                     )
             elif result.get("type") == "form":
-                return render_config_step(
+                return await render_config_step(
                     shim_manager, request, domain, result, template_dir
                 )
             elif result.get("type") == "abort":
@@ -419,7 +419,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                     f'<div class="alert alert-error">Aborted: {result.get("reason")}</div>'
                 )
             else:
-                return render_config_step(
+                return await render_config_step(
                     shim_manager, request, domain, result, template_dir
                 )
 
@@ -471,7 +471,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 request, domain, result, is_options_flow=True, entry_id=entry_id
             )
         else:
-            return render_config_step(
+            return await render_config_step(
                 shim_manager, request, domain, result, template_dir,
                 is_options_flow=True, entry_id=entry_id
             )
@@ -673,7 +673,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             return response
 
         elif result.get("type") == "form":
-            return render_config_step(
+            return await render_config_step(
                 shim_manager, request, domain, result, template_dir,
                 is_options_flow=True, entry_id=entry_id
             )

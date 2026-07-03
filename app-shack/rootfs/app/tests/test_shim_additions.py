@@ -1070,9 +1070,12 @@ class TestWebUITranslations:
         ).exists(),
         reason="cryptoinfo integration not installed in data/shim/custom_components/",
     )
-    def test_load_integration_translations(self):
+    async def test_load_integration_translations(self):
         """Test loading translations for an integration."""
-        from shim.web.translations import load_integration_translations
+        from shim.web.translations import (
+            async_load_integration_translations,
+            _translations_cache,
+        )
         from pathlib import Path
 
         # Create a mock integration manager that returns the actual path
@@ -1087,8 +1090,13 @@ class TestWebUITranslations:
                     / domain
                 )
 
+        # Ensure a cold cache for this domain
+        _translations_cache.pop("cryptoinfo", None)
+
         # Test with cryptoinfo integration (which has translations)
-        translations = load_integration_translations(MockIntegrationManager(), "cryptoinfo")
+        translations = await async_load_integration_translations(
+            MockIntegrationManager(), "cryptoinfo"
+        )
 
         assert "config" in translations
         assert "step" in translations["config"]
@@ -1096,17 +1104,76 @@ class TestWebUITranslations:
         assert "data" in translations["config"]["step"]["user"]
         assert "id" in translations["config"]["step"]["user"]["data"]
 
-    def test_load_integration_translations_missing_integration(self):
+    async def test_load_integration_translations_missing_integration(self):
         """Test loading translations for non-existent integration."""
-        from shim.web.translations import load_integration_translations
+        from shim.web.translations import async_load_integration_translations
 
         # Create a mock integration manager that returns None for missing integrations
         class MockIntegrationManager:
             def get_integration_path(self, domain):
                 return None
 
-        translations = load_integration_translations(MockIntegrationManager(), "nonexistent")
+        translations = await async_load_integration_translations(
+            MockIntegrationManager(), "nonexistent"
+        )
         assert translations == {}
+
+    @pytest.mark.skipif(
+        not (
+            Path(__file__).parent.parent
+            / "data"
+            / "shim"
+            / "custom_components"
+            / "cryptoinfo"
+            / "translations"
+            / "en.json"
+        ).exists(),
+        reason="cryptoinfo integration not installed in data/shim/custom_components/",
+    )
+    async def test_load_integration_translations_caches(self):
+        """Test that translations are cached after the first load.
+
+        Regression test for the blocking-I/O warning at translations.py:39:
+        the second call should be a cache hit and must not touch the file
+        system again.
+        """
+        from shim.web.translations import (
+            async_load_integration_translations,
+            _translations_cache,
+        )
+        from unittest.mock import patch
+
+        # Create a mock integration manager that returns the actual path
+        class MockIntegrationManager:
+            def get_integration_path(self, domain):
+                return (
+                    Path(__file__).parent.parent
+                    / "data"
+                    / "shim"
+                    / "custom_components"
+                    / domain
+                )
+
+        # Ensure a cold cache for this domain
+        _translations_cache.pop("cryptoinfo", None)
+
+        # First call: real file read via asyncio.to_thread
+        first = await async_load_integration_translations(
+            MockIntegrationManager(), "cryptoinfo"
+        )
+        assert first, "expected cryptoinfo translations to load"
+
+        # Second call should be a cache hit: the sync file reader must
+        # not be invoked again.
+        with patch(
+            "shim.web.translations._load_translation_file_sync"
+        ) as mock_load:
+            second = await async_load_integration_translations(
+                MockIntegrationManager(), "cryptoinfo"
+            )
+            mock_load.assert_not_called()
+
+        assert second is first
 
     def test_apply_field_translations_labels(self):
         """Test applying field labels from translations."""

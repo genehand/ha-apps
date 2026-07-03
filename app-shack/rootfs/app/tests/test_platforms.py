@@ -1,6 +1,8 @@
 """Tests for shim platform additions."""
 
+import asyncio
 import dataclasses
+import inspect
 import sys
 
 import pytest
@@ -1628,3 +1630,107 @@ class TestComponentDomains:
                 )
             except ImportError:
                 pytest.skip(f"{module_name} not available")
+
+
+class _FakeHass:
+    """Minimal hass stub with a dict-like data attribute."""
+
+    def __init__(self):
+        self.data = {}
+
+
+class TestZeroconfStub:
+    """Tests for the homeassistant.components.zeroconf stub.
+
+    Regression coverage for the dyson_local "IP is optional" config flow
+    path, which previously crashed with::
+
+        TypeError: 'NoneType' object can't be awaited
+
+    because ``async_get_instance`` was a synchronous lambda returning ``None``.
+    """
+
+    def _get_zeroconf_module(self):
+        import importlib
+
+        mod = sys.modules.get("homeassistant.components.zeroconf")
+        if mod is None:
+            mod = importlib.import_module("homeassistant.components.zeroconf")
+        return mod
+
+    def test_domain_constant(self):
+        """Stub module exposes DOMAIN == 'zeroconf'."""
+        mod = self._get_zeroconf_module()
+        assert mod.DOMAIN == "zeroconf"
+
+    def test_async_get_instance_is_coroutine_function(self):
+        """async_get_instance must be awaitable (regression for the NoneType crash)."""
+        mod = self._get_zeroconf_module()
+        assert inspect.iscoroutinefunction(mod.async_get_instance), (
+            "async_get_instance must be a coroutine function; a synchronous "
+            "lambda that returns None raises TypeError when awaited"
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_get_instance_returns_zeroconf(self):
+        """Awaiting async_get_instance yields a real Zeroconf instance."""
+        mod = self._get_zeroconf_module()
+        instance = await mod.async_get_instance(_FakeHass())
+        from zeroconf import Zeroconf
+
+        assert isinstance(instance, Zeroconf)
+
+    @pytest.mark.asyncio
+    async def test_async_get_instance_returns_hazeroconf(self):
+        """Returned instance is HaZeroconf whose close() is a no-op (mirrors HA)."""
+        mod = self._get_zeroconf_module()
+        instance = await mod.async_get_instance(_FakeHass())
+        assert isinstance(instance, mod.HaZeroconf)
+        # close() must be an overridden no-op distinct from the base Zeroconf.close.
+        assert mod.HaZeroconf.close is not mod.Zeroconf.close
+        instance.close()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_async_get_instance_caches_per_hass(self):
+        """Repeated calls with the same hass return the same singleton."""
+        mod = self._get_zeroconf_module()
+        hass = _FakeHass()
+        first = await mod.async_get_instance(hass)
+        second = await mod.async_get_instance(hass)
+        assert first is second
+        assert hass.data.get("zeroconf") is first
+
+    @pytest.mark.asyncio
+    async def test_async_get_instance_no_hass_returns_fresh_instance(self):
+        """Without a hass object, each call returns a fresh HaZeroconf."""
+        mod = self._get_zeroconf_module()
+        first = await mod.async_get_instance(None)
+        second = await mod.async_get_instance(None)
+        assert isinstance(first, mod.HaZeroconf)
+        assert isinstance(second, mod.HaZeroconf)
+        assert first is not second
+
+    @pytest.mark.asyncio
+    async def test_hazeroconf_close_does_not_kill_instance(self):
+        """A flow that calls zc.close() (e.g. libdyson DysonDiscovery.stop_discovery)
+        must not invalidate the shared singleton for subsequent callers."""
+        mod = self._get_zeroconf_module()
+        hass = _FakeHass()
+        instance = await mod.async_get_instance(hass)
+        instance.close()
+        again = await mod.async_get_instance(hass)
+        assert again is instance, "close() must not have evicted the cached instance"
+
+    def test_hazeroconf_ha_close_is_real_close(self):
+        """HaZeroconf.ha_close must keep pointing at the real Zeroconf.close
+        so internal cleanup paths (if any) can still shut the instance down."""
+        mod = self._get_zeroconf_module()
+        assert mod.HaZeroconf.ha_close is mod.Zeroconf.close
+
+    @pytest.mark.asyncio
+    async def test_regression_await_does_not_raise_none_awaited(self):
+        """Direct regression: ``await async_get_instance(hass)`` must not raise
+        ``TypeError: 'NoneType' object can't be awaited``."""
+        mod = self._get_zeroconf_module()
+        result = await mod.async_get_instance(_FakeHass())
+        assert result is not None
