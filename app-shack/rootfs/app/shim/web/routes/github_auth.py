@@ -78,9 +78,11 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
     async def github_auth_poll():
         """Poll the activation status; HTMX polls this every 2s.
 
-        On `success`: refresh the page so the user sees the authenticated
-        state. On `error`: show the error and a retry link. On `pending`:
-        return the polling fragment again (HTMX keeps polling).
+        On `success`: reload the auth page via HX-Redirect so the user
+        sees the authenticated state. On `error`: show the error and a
+        retry link. On `pending`: return only the trigger div (NOT the
+        full code display) so the user can select/copy the code without
+        the DOM being swapped out from under them every 2 seconds.
         """
         github_auth = shim_manager.get_github_auth()
         status = github_auth.get_activation_status()
@@ -93,7 +95,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 github_auth.get_token()
             )
             # Reload the whole auth page so the rate-limit info shows up.
-            response = HTMLResponse(content='<div hx-get="./auth" hx-trigger="load" hx-target="main" hx-swap="innerHTML"></div>')
+            response = HTMLResponse(content="")
             response.headers["HX-Redirect"] = "./auth"
             return response
 
@@ -108,28 +110,15 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 )
             )
 
-        # Pending — keep polling. Re-render the fragment with the latest
-        # user_code (in case the flow was restarted) so the user always
-        # sees a valid code.
-        registration = (
-            shim_manager.get_github_auth()._registration  # noqa: SLF001
-        )
-        user_code = (registration or {}).get("user_code", "")
-        verification_uri = (registration or {}).get(
-            "verification_uri", "https://github.com/login/device"
-        )
-        expires_in = (registration or {}).get("expires_in", 900)
-        return HTMLResponse(
-            content=_render_polling_fragment(
-                user_code, verification_uri, expires_in
-            )
-        )
+        # Pending — return only the trigger div so the code display
+        # above it stays untouched and selectable.
+        return HTMLResponse(content=_render_poll_trigger())
 
     @app.post("/github/auth/logout", response_class=HTMLResponse)
     async def github_auth_logout():
         """Clear the stored GitHub token."""
         github_auth = shim_manager.get_github_auth()
-        github_auth.clear_token()
+        await github_auth.async_clear_token()
         # Tell the IntegrationManager to drop the token too.
         shim_manager.get_integration_manager().set_github_token(None)
         response = HTMLResponse(
@@ -147,7 +136,14 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
 def _render_polling_fragment(
     user_code: str, verification_uri: str, expires_in: int
 ) -> str:
-    """Render the HTMX fragment shown while waiting for the user."""
+    """Render the full fragment shown when the device flow starts.
+
+    Contains two parts:
+    1. A static code-display block (never replaced during polling, so
+       the user can select/copy the code without interruption).
+    2. A trigger div that polls ``./auth/poll`` every 2s, replacing only
+       itself (``hx-target="this"`` + ``hx-swap="outerHTML"``).
+    """
     return f"""
     <div class="alert alert-info" role="alert" style="text-align: center;">
         <h3 style="margin: 0 0 0.5rem 0;">Enter this code at GitHub:</h3>
@@ -155,19 +151,39 @@ def _render_polling_fragment(
                     padding: 0.5rem 1rem; background: var(--pico-card-background-color);
                     border: 1px solid var(--pico-muted-border-color);
                     border-radius: var(--pico-border-radius);
-                    display: inline-block; margin: 0.5rem 0;">
+                    display: inline-block; margin: 0.5rem 0;
+                    user-select: all; cursor: text;"
+             onclick="navigator.clipboard.writeText('{user_code}')">
             {user_code}
         </div>
+        <p style="margin: 0.5rem 0;">
+            <button type="button" class="outline secondary" style="font-size: 0.85rem;"
+                    onclick="navigator.clipboard.writeText('{user_code}')">
+                Copy code
+            </button>
+        </p>
         <p style="margin: 1rem 0;">
             <a href="{verification_uri}" target="_blank" rel="noopener noreferrer"
-               class="btn btn-primary" role="button">
+               role="button">
                 Open {verification_uri}
             </a>
         </p>
         <p class="pico-color-muted" style="font-size: 0.85rem; margin: 0;">
             Code expires in {expires_in} seconds. Waiting for you to confirm...
-            <span class="spinner" style="width: 14px; height: 14px; margin-left: 6px; vertical-align: middle;"></span>
         </p>
     </div>
-    <div hx-get="./auth/poll" hx-trigger="every 2s" hx-target="main" hx-swap="innerHTML"></div>
+    {_render_poll_trigger()}
     """
+
+
+def _render_poll_trigger() -> str:
+    """Render just the polling trigger div.
+
+    Returned by the poll endpoint on each pending cycle so only this div
+    is swapped (via ``hx-target="this"`` + ``hx-swap="outerHTML"``),
+    leaving the code display above it untouched and selectable.
+    """
+    return (
+        '<div hx-get="./auth/poll" hx-trigger="every 2s" '
+        'hx-target="this" hx-swap="outerHTML"></div>'
+    )

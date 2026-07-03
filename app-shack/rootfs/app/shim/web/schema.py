@@ -423,6 +423,24 @@ def convert_form_value(value: str, validator, field_name: str = "") -> Any:
     if validator_class == "Boolean":
         return value.lower() in ("true", "1", "yes", "on")
 
+    # Handle HA selector instances (NumberSelector, BooleanSelector, ...)
+    # These mirror real HA's selector __call__ coercion semantics.
+    if validator_class.endswith("Selector") and hasattr(validator, "config"):
+        config = getattr(validator, "config", {}) or {}
+        if validator_class == "NumberSelector":
+            try:
+                num = float(value)
+            except (ValueError, TypeError):
+                return value
+            if "min" in config and num < config["min"]:
+                return value
+            if "max" in config and num > config["max"]:
+                return value
+            return num
+        if validator_class == "BooleanSelector":
+            return value.lower() in ("true", "1", "yes", "on")
+        # SelectSelector, TextSelector, EntitySelector, ... return string as-is
+
     # Handle Range validator (wrapper around another validator)
     if validator_class == "Range" and hasattr(validator, "schema"):
         return convert_form_value(value, validator.schema, field_name)

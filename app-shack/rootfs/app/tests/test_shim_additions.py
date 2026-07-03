@@ -1055,6 +1055,73 @@ class TestWebUISchemaParsing:
         assert "description" not in field
 
 
+class TestWebUIConvertFormValue:
+    """Tests for shim.web.schema.convert_form_value type coercion."""
+
+    def test_number_selector_coerces_string_to_float(self):
+        """NumberSelector should coerce string form values to float (mirrors HA)."""
+        from shim.web.schema import convert_form_value
+        from shim.selectors import NumberSelector, NumberSelectorConfig
+
+        selector = NumberSelector(
+            NumberSelectorConfig(min=1, max=60, step=1, unit_of_measurement="minutes")
+        )
+        # Regression: leviton_decora_smart_wifi passes scan_interval to timedelta(minutes=...)
+        assert convert_form_value("10", selector, "scan_interval") == 10.0
+        assert isinstance(convert_form_value("10", selector, "scan_interval"), float)
+
+    def test_number_selector_out_of_range_returns_raw_value(self):
+        """Out-of-range values are returned as-is (form validation handles errors)."""
+        from shim.web.schema import convert_form_value
+        from shim.selectors import NumberSelector, NumberSelectorConfig
+
+        selector = NumberSelector(NumberSelectorConfig(min=1, max=60))
+        # 100 exceeds max — return original string so the flow can surface the error
+        assert convert_form_value("100", selector, "scan_interval") == "100"
+
+    def test_number_selector_invalid_string_returns_raw_value(self):
+        """Non-numeric strings are returned as-is rather than raising."""
+        from shim.web.schema import convert_form_value
+        from shim.selectors import NumberSelector, NumberSelectorConfig
+
+        selector = NumberSelector(NumberSelectorConfig(min=1, max=60))
+        assert convert_form_value("abc", selector, "scan_interval") == "abc"
+
+    def test_boolean_selector_coerces_to_bool(self):
+        """BooleanSelector should coerce string form values to bool."""
+        from shim.web.schema import convert_form_value
+        from shim.selectors import BooleanSelector
+
+        selector = BooleanSelector()
+        assert convert_form_value("on", selector, "save_responses") is True
+        assert convert_form_value("true", selector, "save_responses") is True
+        assert convert_form_value("1", selector, "save_responses") is True
+        assert convert_form_value("yes", selector, "save_responses") is True
+        assert convert_form_value("false", selector, "save_responses") is False
+
+    def test_text_selector_returns_string_as_is(self):
+        """TextSelector (and other selectors) return string values unchanged."""
+        from shim.web.schema import convert_form_value
+        from shim.selectors import TextSelector, TextSelectorConfig
+
+        selector = TextSelector(TextSelectorConfig(type="text"))
+        assert convert_form_value("hello", selector, "name") == "hello"
+
+    def test_leviton_scan_interval_can_be_passed_to_timedelta(self):
+        """End-to-end regression: scan_interval coercion must work with timedelta."""
+        from datetime import timedelta
+        from shim.web.schema import convert_form_value
+        from shim.selectors import NumberSelector, NumberSelectorConfig
+
+        selector = NumberSelector(
+            NumberSelectorConfig(min=1, max=60, step=1, unit_of_measurement="minutes")
+        )
+        converted = convert_form_value("5", selector, "scan_interval")
+        # This used to raise "unsupported type for timedelta minutes component: str"
+        delta = timedelta(minutes=converted)
+        assert delta == timedelta(minutes=5)
+
+
 class TestWebUITranslations:
     """Tests for web UI translation loading and application."""
 

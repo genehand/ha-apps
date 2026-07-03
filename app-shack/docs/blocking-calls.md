@@ -64,6 +64,56 @@ These are suppressed via `check_allowed` predicates that inspect the caller's st
 | **Stack attribution** | `get_integration_frame()` (identifies custom integration) | `sys._getframe(2)` (reports file + line) |
 | **Deduplication** | `(integration, file, line)` | `(file, line)` |
 
+## Fixing Blocking Call Warnings
+
+When you see a `WARNING: shim.block_async_io - Detected blocking call to
+open ...` in the logs, the call stack points to sync file I/O (or
+`time.sleep`, `importlib`, etc.) running on the event loop. Fix it with
+`asyncio.to_thread()`:
+
+### Pattern: sync primitive + async wrapper
+
+Keep the I/O function synchronous (so it can be used from `__init__`
+and tests), then wrap it at the async call site:
+
+```python
+class MyManager:
+    def _save_data(self, data: dict) -> None:
+        """Sync I/O primitive — safe from __init__ and tests."""
+        tmp = self._path.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:           # blocking, but runs in a thread
+            json.dump(data, f)
+        tmp.rename(self._path)
+
+    async def _async_save(self, data: dict) -> None:
+        """Async-safe wrapper for route handlers and event-loop code."""
+        await asyncio.to_thread(self._save_data, data)
+```
+
+### When to use `asyncio.to_thread`
+
+| Call site | Approach |
+|-----------|----------|
+| `__init__`, sync tests | Call the sync method directly (no event loop running) |
+| Route handlers (`async def`) | `await asyncio.to_thread(self._sync_method, ...)` |
+| Background `asyncio.Task` | Same — wrap the I/O call |
+| Integration code (`async_setup_entry`) | Not our code — fix in the shim layer, not the integration |
+
+### Existing examples
+
+| Module | Sync primitive | Async wrapper |
+|--------|----------------|---------------|
+| `shim/storage.py` | `save_entity_states()` | `async_save_entity_states()` |
+| `shim/github/auth.py` | `_save_token()` | called via `asyncio.to_thread()` in `_wait_for_activation()` |
+| `shim/github/auth.py` | `_delete_token_file()` | `async_clear_token()` |
+
+### The `storage.py` allow-list
+
+`_check_file_allowed()` in `block_async_io.py` silently allows file I/O
+from `shim/storage.py` (line 94). This is a legacy allow-list for the
+storage layer's own JSON methods. **New modules should not rely on this**
+— they should use `asyncio.to_thread()` explicitly.
+
 ## Code Reference
 
 | Component | File |

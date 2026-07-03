@@ -111,14 +111,29 @@ class GitHubAuth:
         self._token = token
 
     def clear_token(self) -> None:
-        """Delete the persisted token and cancel any pending flow."""
+        """Delete the persisted token and cancel any pending flow.
+
+        Synchronous — use from ``__init__`` or tests. For async callers
+        (route handlers), use ``async_clear_token`` instead to avoid
+        blocking the event loop.
+        """
+        self._delete_token_file()
+        self._token = None
+        self.cancel_activation()
+
+    async def async_clear_token(self) -> None:
+        """Async-safe version of ``clear_token`` for route handlers."""
+        await asyncio.to_thread(self._delete_token_file)
+        self._token = None
+        self.cancel_activation()
+
+    def _delete_token_file(self) -> None:
+        """Delete the token file from disk (blocking I/O)."""
         try:
             self._token_file.unlink(missing_ok=True)
             _LOGGER.info("Cleared GitHub token")
         except Exception as e:
             _LOGGER.warning(f"Failed to delete GitHub token file: {e}")
-        self._token = None
-        self.cancel_activation()
 
     def get_token(self) -> Optional[str]:
         """Return the cached token, or None if not authenticated."""
@@ -175,7 +190,8 @@ class GitHubAuth:
         try:
             response = await self._device_api.activation(device_code=device_code)
             token = response.data.access_token
-            self._save_token(token)  # also sets self._token
+            # Wrap sync file I/O in to_thread to avoid blocking the event loop
+            await asyncio.to_thread(self._save_token, token)
             self._activation_result = {"status": "success"}
             _LOGGER.info("GitHub device activation succeeded")
         except asyncio.CancelledError:

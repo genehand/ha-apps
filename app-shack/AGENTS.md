@@ -256,6 +256,26 @@ async def proxy_handler(request):
     return await proxy_websocket_filtered(request, client_ip)
 ```
 
+### Blocking I/O on the event loop
+
+Never call `open()`, `time.sleep()`, `Path.read_text()`, etc. directly
+from `async def` code — the blocking-call detector will warn. Keep sync
+I/O methods sync (so they work from `__init__` and tests), then wrap
+them with `asyncio.to_thread()` at the async call site:
+
+```python
+def _save_data(self, data: dict) -> None:
+    """Sync I/O primitive — safe from __init__ and tests."""
+    with open(self._path, "w") as f:
+        json.dump(data, f)
+
+async def _async_save(self, data: dict) -> None:
+    """Async-safe wrapper for route handlers and tasks."""
+    await asyncio.to_thread(self._save_data, data)
+```
+
+See [`docs/blocking-calls.md`](docs/blocking-calls.md#fixing-blocking-call-warnings) for the full pattern and examples.
+
 ## MQTT Topic Naming
 
 MQTT topics used for Home Assistant discovery must follow specific naming conventions:

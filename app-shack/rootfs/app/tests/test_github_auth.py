@@ -81,6 +81,21 @@ class TestGitHubAuthTokenPersistence:
         # A fresh instance also reports unauthenticated
         assert GitHubAuth(temp_shim_dir).is_authenticated() is False
 
+
+@pytest.mark.asyncio
+async def test_async_clear_token_is_non_blocking(temp_shim_dir):
+    """async_clear_token should delete the file and clear memory without
+    blocking the event loop (file I/O runs in a thread)."""
+    auth = GitHubAuth(temp_shim_dir)
+    auth._save_token("gho_async_clear")
+    assert auth.is_authenticated()
+
+    await auth.async_clear_token()
+
+    assert not auth.is_authenticated()
+    assert auth.get_token() is None
+    assert not (temp_shim_dir / "github_token.json").exists()
+
     def test_corrupt_token_file_is_ignored(self, temp_shim_dir):
         token_path = temp_shim_dir / "github_token.json"
         token_path.write_text("not json at all")
