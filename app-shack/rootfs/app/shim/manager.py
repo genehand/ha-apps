@@ -368,20 +368,52 @@ class ShimManager:
                         _LOGGER.warning(
                             f"Entity {entity.entity_id} has no turn_off method"
                         )
-                # Refresh state after ON/OFF/PRESS/SET_VALUE command
+                elif hasattr(entity, "async_set_native_value"):
+                    # Number entity set value
+                    if not payload:
+                        _LOGGER.warning(
+                            f"Ignoring empty payload for number {entity.entity_id}"
+                        )
+                        return
+                    try:
+                        value = float(payload)
+                    except ValueError as exc:
+                        _LOGGER.warning(
+                            f"Invalid number payload for {entity.entity_id}: {payload!r} ({exc})"
+                        )
+                        return
+                    _LOGGER.debug(
+                        f"Setting native value for {entity.entity_id} to {value}"
+                    )
+                    await entity.async_set_native_value(value)
+                else:
+                    _LOGGER.warning(
+                        f"No handler for set command on {entity.entity_id} (payload: {payload!r})"
+                    )
+                # Refresh state after ON/OFF/PRESS/SET_VALUE/NUMBER command
                 await self._refresh_entity_state(entity)
 
             elif command_type == "percentage_set":
                 # Fan speed
-                _LOGGER.debug(
-                    f"  Routing percentage_set: payload='{payload}', int={int(payload)}"
-                )
+                if not payload:
+                    _LOGGER.warning(
+                        f"Ignoring empty payload for percentage_set on {entity.entity_id}"
+                    )
+                    return
+                try:
+                    pct = int(payload)
+                except ValueError:
+                    _LOGGER.warning(
+                        f"Invalid percentage payload for {entity.entity_id}: {payload!r}"
+                    )
+                    return
+                _LOGGER.debug(f"  Routing percentage_set: payload='{payload}', int={pct}")
                 if hasattr(entity, "async_set_percentage"):
-                    _LOGGER.debug(f"  Calling async_set_percentage with {int(payload)}")
-                    await entity.async_set_percentage(int(payload))
+                    _LOGGER.debug(f"  Calling async_set_percentage with {pct}")
+                    await entity.async_set_percentage(pct)
                 elif hasattr(entity, "set_percentage"):
-                    _LOGGER.debug(f"  Calling set_percentage with {int(payload)}")
-                    entity.set_percentage(int(payload))
+                    _LOGGER.debug(f"  Calling set_percentage with {pct}")
+                    entity.set_percentage(pct)
                 await self._refresh_entity_state(entity)
 
             elif command_type == "preset_mode_set":
@@ -402,18 +434,42 @@ class ShimManager:
 
             elif command_type == "brightness_set":
                 # Light brightness
+                if not payload:
+                    _LOGGER.warning(
+                        f"Ignoring empty payload for brightness_set on {entity.entity_id}"
+                    )
+                    return
+                try:
+                    brightness = int(payload)
+                except ValueError:
+                    _LOGGER.warning(
+                        f"Invalid brightness payload for {entity.entity_id}: {payload!r}"
+                    )
+                    return
                 if hasattr(entity, "async_turn_on"):
-                    await entity.async_turn_on(brightness=int(payload))
+                    await entity.async_turn_on(brightness=brightness)
                 elif hasattr(entity, "turn_on"):
-                    entity.turn_on(brightness=int(payload))
+                    entity.turn_on(brightness=brightness)
                 await self._refresh_entity_state(entity)
 
             elif command_type == "temperature_set":
                 # Climate or water heater temperature
+                if not payload:
+                    _LOGGER.warning(
+                        f"Ignoring empty payload for temperature_set on {entity.entity_id}"
+                    )
+                    return
+                try:
+                    temp = float(payload)
+                except ValueError:
+                    _LOGGER.warning(
+                        f"Invalid temperature payload for {entity.entity_id}: {payload!r}"
+                    )
+                    return
                 if hasattr(entity, "async_set_temperature"):
-                    await entity.async_set_temperature(temperature=float(payload))
+                    await entity.async_set_temperature(temperature=temp)
                 elif hasattr(entity, "set_temperature"):
-                    entity.set_temperature(temperature=float(payload))
+                    entity.set_temperature(temperature=temp)
                 # Refresh state after temperature change
                 await self._refresh_entity_state(entity)
 

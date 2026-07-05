@@ -728,6 +728,133 @@ class TestNumberEntityValueClamping:
         clamped_value = max(min_val, min(max_val, value))
         assert clamped_value == 25.0
 
+    def test_number_entity_string_value_clamping(self):
+        """Test that string native_value is coerced to float before clamping."""
+        from unittest.mock import MagicMock
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self.entity_id = "number.test_string"
+                self._attr_native_value = "150.0"  # string from localtuya
+                self._attr_native_min_value = 0.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        entity = TestNumber()
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = MagicMock(attributes={})
+        entity.hass = mock_hass
+
+        entity._mqtt_publish()
+
+        # Should clamp string "150.0" to 100 and publish it (integer trimmed)
+        mock_mqtt.publish.assert_called()
+        state_calls = [
+            call for call in mock_mqtt.publish.call_args_list
+            if call.args[0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        assert state_calls[0].args[1] == "100"
+
+    def test_number_entity_integer_value_trimmed(self):
+        """Test that whole-number floats are published as integers (HA upstream pattern)."""
+        from unittest.mock import MagicMock
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self.entity_id = "number.test_int"
+                self._attr_native_value = 42.0
+                self._attr_native_min_value = 0.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        entity = TestNumber()
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = MagicMock(attributes={})
+        entity.hass = mock_hass
+
+        entity._mqtt_publish()
+
+        state_calls = [
+            call for call in mock_mqtt.publish.call_args_list
+            if call.args[0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        assert state_calls[0].args[1] == "42"
+
+    def test_number_entity_string_min_max_clamping(self):
+        """Test that string min/max values are coerced to float before clamping."""
+        from unittest.mock import MagicMock
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self.entity_id = "number.test_string_bounds"
+                self._attr_native_value = 200
+                self._attr_native_min_value = "0"    # string bound
+                self._attr_native_max_value = "100"  # string bound
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        entity = TestNumber()
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = MagicMock(attributes={})
+        entity.hass = mock_hass
+
+        entity._mqtt_publish()
+
+        state_calls = [
+            call for call in mock_mqtt.publish.call_args_list
+            if call.args[0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        assert state_calls[0].args[1] == "100"
+
+    def test_number_entity_non_numeric_string_published_raw(self):
+        """Test that non-numeric strings are published as-is without crashing."""
+        from unittest.mock import MagicMock
+        from shim.platforms.number import NumberEntity
+
+        class TestNumber(NumberEntity):
+            def __init__(self):
+                self.entity_id = "number.test_bad_string"
+                self._attr_native_value = "not_a_number"
+                self._attr_native_min_value = 0.0
+                self._attr_native_max_value = 100.0
+                self._attr_unique_id = "test_number"
+                self._attr_name = "Test Number"
+
+        entity = TestNumber()
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = MagicMock(attributes={})
+        entity.hass = mock_hass
+
+        # Should not raise
+        entity._mqtt_publish()
+
+        state_calls = [
+            call for call in mock_mqtt.publish.call_args_list
+            if call.args[0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        assert state_calls[0].args[1] == "not_a_number"
+
     def test_number_entity_state_property(self):
         """Test that NumberEntity state property returns native_value as string."""
         from shim.platforms.number import NumberEntity
@@ -1734,3 +1861,63 @@ class TestZeroconfStub:
         mod = self._get_zeroconf_module()
         result = await mod.async_get_instance(_FakeHass())
         assert result is not None
+
+
+class TestSelectorUpdates:
+    """Tests for selector compatibility updates after d5e7323."""
+
+    def test_select_selector_custom_value(self):
+        """Test SelectSelector accepts custom_value (used by localtuya)."""
+        from shim.selectors import SelectSelector, SelectSelectorConfig
+
+        sel = SelectSelector(
+            SelectSelectorConfig(
+                options=[{"value": "a", "label": "A"}],
+                custom_value=True,
+            )
+        )
+        assert sel.config["custom_value"] is True
+
+    def test_select_selector_custom_value_false_by_default(self):
+        """Test SelectSelector custom_value defaults to False."""
+        from shim.selectors import SelectSelector, SelectSelectorConfig
+
+        sel = SelectSelector(SelectSelectorConfig(options=["a", "b"]))
+        assert sel.config.get("custom_value") is False
+
+    def test_number_selector_mode_auto(self):
+        """Test NumberSelectorMode has AUTO (matching HA upstream)."""
+        from shim.selectors import NumberSelectorMode
+
+        assert NumberSelectorMode.AUTO == "auto"
+
+    def test_text_selector_type_new_values(self):
+        """Test TextSelectorType includes modern HA types."""
+        from shim.selectors import TextSelectorType
+
+        assert TextSelectorType.COLOR == "color"
+        assert TextSelectorType.DATE == "date"
+        assert TextSelectorType.DATETIME_LOCAL == "datetime-local"
+        assert TextSelectorType.MONTH == "month"
+        assert TextSelectorType.SEARCH == "search"
+        assert TextSelectorType.TIME == "time"
+        assert TextSelectorType.WEEK == "week"
+
+    def test_text_selector_number_coercion(self):
+        """Test TextSelector with type='number' coerces to float in convert_form_value."""
+        from shim.web.schema import convert_form_value
+        from shim.selectors import TextSelector, TextSelectorConfig
+
+        selector = TextSelector(TextSelectorConfig(type="number"))
+        result = convert_form_value("42.5", selector)
+        assert result == 42.5
+        assert isinstance(result, float)
+
+    def test_text_selector_number_invalid_returns_string(self):
+        """Test TextSelector with type='number' falls back to string on invalid input."""
+        from shim.web.schema import convert_form_value
+        from shim.selectors import TextSelector, TextSelectorConfig
+
+        selector = TextSelector(TextSelectorConfig(type="number"))
+        result = convert_form_value("not_a_number", selector)
+        assert result == "not_a_number"

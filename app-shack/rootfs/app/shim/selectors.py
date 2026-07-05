@@ -24,17 +24,25 @@ class SelectSelectorMode(str, Enum):
 class TextSelectorType(str, Enum):
     """Enum for text selector types."""
 
-    TEXT = "text"
-    PASSWORD = "password"
+    COLOR = "color"
+    DATE = "date"
+    DATETIME_LOCAL = "datetime-local"
     EMAIL = "email"
-    URL = "url"
-    TEL = "tel"
+    MONTH = "month"
     NUMBER = "number"
+    PASSWORD = "password"
+    SEARCH = "search"
+    TEL = "tel"
+    TEXT = "text"
+    TIME = "time"
+    URL = "url"
+    WEEK = "week"
 
 
 class NumberSelectorMode(str, Enum):
     """Enum for number selector modes."""
 
+    AUTO = "auto"
     BOX = "box"
     SLIDER = "slider"
 
@@ -149,16 +157,19 @@ class TextSelector(Selector):
         self,
         config: Optional[Dict[str, Any]] = None,
         *,
-        type: str = "text",  # "text", "password", "email", "url", "tel"
+        type: str = "text",
         autocomplete: Optional[str] = None,
         multiple: bool = False,
     ):
         """Initialize text selector."""
         super().__init__(config)
-        self.config["type"] = type
-        if autocomplete:
+        # Only set defaults if not already provided in config dict
+        if "type" not in self.config:
+            self.config["type"] = type
+        if autocomplete and "autocomplete" not in self.config:
             self.config["autocomplete"] = autocomplete
-        self.config["multiple"] = multiple
+        if "multiple" not in self.config:
+            self.config["multiple"] = multiple
 
 
 class SelectSelector(Selector):
@@ -172,6 +183,7 @@ class SelectSelector(Selector):
         multiple: bool = False,
         mode: str = "list",  # "list" or "dropdown"
         translation_key: Optional[str] = None,
+        custom_value: bool = False,
     ):
         """Initialize select selector."""
         super().__init__(config)
@@ -179,9 +191,13 @@ class SelectSelector(Selector):
         self.config["options"] = (
             options if options is not None else self.config.get("options", [])
         )
-        self.config["multiple"] = multiple
-        self.config["mode"] = mode
-        if translation_key:
+        if "multiple" not in self.config:
+            self.config["multiple"] = multiple
+        if "mode" not in self.config:
+            self.config["mode"] = mode
+        if "custom_value" not in self.config:
+            self.config["custom_value"] = custom_value
+        if translation_key and "translation_key" not in self.config:
             self.config["translation_key"] = translation_key
 
 

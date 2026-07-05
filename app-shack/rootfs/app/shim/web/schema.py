@@ -215,6 +215,7 @@ def parse_field(key, validator) -> Optional[Dict[str, Any]]:
                         )
                 field["options"] = parsed_options
                 field["multiple"] = multiple
+                field["custom_value"] = config.get("custom_value", False)
                 _LOGGER.debug(
                     "Parsed %d options for field %s",
                     len(field["options"]),
@@ -224,19 +225,26 @@ def parse_field(key, validator) -> Optional[Dict[str, Any]]:
                 _LOGGER.debug("SelectSelector has no config attribute")
         elif validator_class == "TextSelector":
             # Handle TextSelector from homeassistant.helpers.selector
+            # Map HA TextSelectorType to HTML5 input types
+            _TEXT_TYPE_MAP = {
+                "text": "text",
+                "password": "password",
+                "email": "email",
+                "url": "url",
+                "tel": "tel",
+                "number": "number",
+                "color": "color",
+                "date": "date",
+                "datetime-local": "datetime-local",
+                "month": "month",
+                "search": "search",
+                "time": "time",
+                "week": "week",
+            }
             if hasattr(validator, "config"):
                 config = validator.config
                 selector_type = config.get("type", "text")
-                if selector_type == "password":
-                    field["type"] = "password"
-                elif selector_type == "email":
-                    field["type"] = "email"
-                elif selector_type == "url":
-                    field["type"] = "url"
-                elif selector_type == "tel":
-                    field["type"] = "tel"
-                else:
-                    field["type"] = "text"
+                field["type"] = _TEXT_TYPE_MAP.get(selector_type, "text")
             else:
                 field["type"] = "text"
         elif validator_class == "NumberSelector":
@@ -439,7 +447,17 @@ def convert_form_value(value: str, validator, field_name: str = "") -> Any:
             return num
         if validator_class == "BooleanSelector":
             return value.lower() in ("true", "1", "yes", "on")
-        # SelectSelector, TextSelector, EntitySelector, ... return string as-is
+        if validator_class == "TextSelector":
+            # TextSelector with type="number" should still coerce to float
+            # (the browser shows a number input, but the data is a string)
+            text_type = config.get("type", "text")
+            if text_type == "number":
+                try:
+                    return float(value)
+                except (ValueError, TypeError):
+                    return value
+            return value
+        # SelectSelector, EntitySelector, ... return string as-is
 
     # Handle Range validator (wrapper around another validator)
     if validator_class == "Range" and hasattr(validator, "schema"):

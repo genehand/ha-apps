@@ -130,14 +130,26 @@ class NumberEntity(Entity):
         value = self.native_value
         if value is not None:
             # Clamp value to min/max range to avoid MQTT rejection
-            min_val = self.native_min_value
-            max_val = self.native_max_value
+            # Coerce to float because some integrations (e.g. localtuya) pass strings
+            try:
+                value = float(value)
+                min_val = float(self.native_min_value)
+                max_val = float(self.native_max_value)
+            except (TypeError, ValueError) as exc:
+                _LOGGER.warning(
+                    f"Cannot clamp {self.entity_id} value {value!r}: {exc}"
+                )
+                mqtt.publish(state_topic, str(value), qos=0, retain=True)
+                return
             clamped_value = max(min_val, min(max_val, value))
             if clamped_value != value:
                 _LOGGER.debug(
                     f"Clamping {self.entity_id} value from {value} to {clamped_value} "
                     f"(range {min_val} - {max_val})"
                 )
+            # Match HA upstream: publish integers without .0 for cleaner payloads
+            if clamped_value.is_integer():
+                clamped_value = int(clamped_value)
             mqtt.publish(state_topic, str(clamped_value), qos=0, retain=True)
         else:
             mqtt.publish(state_topic, "", qos=0, retain=True)

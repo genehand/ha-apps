@@ -215,6 +215,109 @@ class TestManagerCommandRouting:
         entity.async_turn_on.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_route_command_number_set_value(self):
+        """Test that number entity set commands are properly routed."""
+        manager = self._create_manager()
+
+        # Create a mock entity with async_set_native_value but no text/set_value
+        class MockNumber:
+            entity_id = "number.test_entity"
+
+            async def async_set_native_value(self, value):
+                pass
+
+        entity = Mock(spec=MockNumber)
+        entity.entity_id = "number.test_entity"
+        entity.async_set_native_value = AsyncMock()
+
+        # Route a set command with a numeric payload
+        await manager._route_command(entity, "set", "42.5")
+
+        # Verify async_set_native_value was called with the parsed float
+        entity.async_set_native_value.assert_called_once_with(42.5)
+
+    @pytest.mark.asyncio
+    async def test_route_command_number_empty_payload(self):
+        """Test that empty payloads for number entities are ignored."""
+        manager = self._create_manager()
+
+        class MockNumber:
+            entity_id = "number.test_entity"
+
+            async def async_set_native_value(self, value):
+                pass
+
+        entity = Mock(spec=MockNumber)
+        entity.entity_id = "number.test_entity"
+        entity.async_set_native_value = AsyncMock()
+
+        # Route a set command with an empty payload
+        await manager._route_command(entity, "set", "")
+
+        # Verify async_set_native_value was NOT called
+        entity.async_set_native_value.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_command_number_invalid_payload(self):
+        """Test that invalid payloads for number entities are ignored."""
+        manager = self._create_manager()
+
+        class MockNumber:
+            entity_id = "number.test_entity"
+
+            async def async_set_native_value(self, value):
+                pass
+
+        entity = Mock(spec=MockNumber)
+        entity.entity_id = "number.test_entity"
+        entity.async_set_native_value = AsyncMock()
+
+        # Route a set command with a non-numeric payload
+        await manager._route_command(entity, "set", "not_a_number")
+
+        # Verify async_set_native_value was NOT called
+        entity.async_set_native_value.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_command_percentage_set_empty_payload(self):
+        """Test that empty payloads for percentage_set are ignored."""
+        manager = self._create_manager()
+
+        entity = MagicMock()
+        entity.entity_id = "fan.test_entity"
+        entity.async_set_percentage = AsyncMock()
+
+        await manager._route_command(entity, "percentage_set", "")
+
+        entity.async_set_percentage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_command_brightness_set_empty_payload(self):
+        """Test that empty payloads for brightness_set are ignored."""
+        manager = self._create_manager()
+
+        entity = MagicMock()
+        entity.entity_id = "light.test_entity"
+        entity.async_turn_on = AsyncMock()
+
+        await manager._route_command(entity, "brightness_set", "")
+
+        entity.async_turn_on.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_command_temperature_set_empty_payload(self):
+        """Test that empty payloads for temperature_set are ignored."""
+        manager = self._create_manager()
+
+        entity = MagicMock()
+        entity.entity_id = "climate.test_entity"
+        entity.async_set_temperature = AsyncMock()
+
+        await manager._route_command(entity, "temperature_set", "")
+
+        entity.async_set_temperature.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_route_command_fallback_to_sync_method(self):
         """Test that sync methods are used as fallback when async methods don't exist."""
         manager = self._create_manager()
