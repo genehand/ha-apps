@@ -87,62 +87,14 @@
         </div>
     </div>
 
-    {% if releases %}
-    <div style="margin-top: 20px;">
-        <h3 style="margin-bottom: 1rem;">Available Versions</h3>
-        <form hx-post="../integrations/{{ integration.domain }}/install-version"
-              hx-target="body"
-              hx-swap="outerHTML"
-              hx-indicator="#install-version-spinner"
-              style="display: flex; flex-direction: column; gap: 1rem;">
-            <div>
-                <label for="version-select" style="font-size: 0.9rem; color: var(--pico-muted-color); display: block; margin-bottom: 0.5rem;">
-                    Select a version to install
-                </label>
-                <select id="version-select" name="version" required style="width: 100%;">
-                    {% for release in releases %}
-                    <option value="{{ release.version }}">
-                        {{ release.version }}
-                        {% if release.published_at %}({{ release.published_at }}){% endif %}
-                        {% if release.prerelease %}[beta]{% endif %}
-                        {% if release.branch %}[branch]{% elif release.tag_only %}[tag]{% endif %}
-                        {% if release.version == integration.version %}[installed]{% endif %}
-                    </option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div style="display: flex; align-items: center; gap: 1rem;">
-                <button type="submit" class="secondary">
-                    <span id="install-version-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
-                    <span class="button-text">Install Selected Version</span>
-                </button>
-                <span style="font-size: 0.8rem; color: var(--pico-muted-color);">
-                    Current: {{ integration.version }}
-                </span>
-            </div>
-        </form>
-        <form hx-post="../integrations/{{ integration.domain }}/install-ref"
-              hx-target="body"
-              hx-swap="outerHTML"
-              hx-indicator="#install-ref-spinner"
-              style="display: flex; flex-direction: column; gap: 0.5rem;">
-            <div>
-                <label for="ref-input" style="font-size: 0.9rem; color: var(--pico-muted-color); display: block; margin-bottom: 0.5rem;">
-                    Install by tag, branch, or commit SHA
-                </label>
-                <input id="ref-input" name="ref" type="text" placeholder="e.g. v1.7.0, main, or 40-char SHA"
-                       required style="width: 100%;" />
-            </div>
-            <div style="display: flex; align-items: center; gap: 1rem;">
-                <button type="submit" class="secondary">
-                    <span id="install-ref-spinner" class="htmx-indicator spinner" style="width: 14px; height: 14px; margin-right: 6px;"></span>
-                    <span class="button-text">Install Ref</span>
-                </button>
-                <span style="font-size: 0.75rem; color: var(--pico-muted-color);">
-                    For unreleased tags or specific commits
-                </span>
-            </div>
-        </form>
+    {% if integration.repository_url %}
+    <div id="versions-section" style="margin-top: 20px;"
+         hx-get="../integrations/{{ integration.domain }}/versions"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0; color: var(--pico-muted-color);">
+            <span class="spinner"></span> Loading versions from GitHub&hellip;
+        </div>
     </div>
     {% endif %}
 
@@ -192,24 +144,16 @@
     </div>
 </article>
 
-{% if integration.update_available and release_notes %}
+{% if integration.update_available and integration.repository_url %}
 <article>
     <h2>Release Notes</h2>
-    <div style="display: flex; flex-direction: column; gap: 1rem;">
-        {% for release in release_notes %}
-        <div style="border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius);">
-            <div style="padding: 0.75rem 1rem; background: var(--pico-card-background-color); border-bottom: 1px solid var(--pico-form-element-border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
-                <strong style="font-size: 1rem;">{{ release.version }}</strong>
-                {% if release.published_at %}
-                <span style="font-size: 0.8rem; color: var(--pico-muted-color);">{{ release.published_at }}</span>
-                {% endif %}
-                <a href="{{ release.url }}" target="_blank" style="font-size: 0.8rem;">View on GitHub →</a>
-            </div>
-            <div class="release-notes-content" style="padding: 1rem; max-height: 300px; overflow-y: auto;">
-                {{ release.body_html | safe }}
-            </div>
+    <div id="release-notes-content"
+         hx-get="../integrations/{{ integration.domain }}/release-notes"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0; color: var(--pico-muted-color);">
+            <span class="spinner"></span> Loading release notes from GitHub&hellip;
         </div>
-        {% endfor %}
     </div>
 </article>
 {% endif %}

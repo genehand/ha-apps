@@ -1,0 +1,30 @@
+{# Inner content of the "Release Notes" section, loaded async via HTMX.
+
+   Rendered by GET /integrations/{domain}/release-notes and swapped into
+   #release-notes-content on the detail page (which only renders the
+   surrounding <article> when an update is available). Returns nothing
+   visible when there are no notes, leaving just the empty article body. #}
+{% if error %}
+<div class="alert alert-error">
+    Failed to load release notes from GitHub.
+</div>
+{% elif release_notes %}
+<div style="display: flex; flex-direction: column; gap: 1rem;">
+    {% for release in release_notes %}
+    <div style="border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius);">
+        <div style="padding: 0.75rem 1rem; background: var(--pico-card-background-color); border-bottom: 1px solid var(--pico-form-element-border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+            <strong style="font-size: 1rem;">{{ release.version }}</strong>
+            {% if release.published_at %}
+            <span style="font-size: 0.8rem; color: var(--pico-muted-color);">{{ release.published_at }}</span>
+            {% endif %}
+            <a href="{{ release.url }}" target="_blank" style="font-size: 0.8rem;">View on GitHub →</a>
+        </div>
+        <div class="release-notes-content" style="padding: 1rem; max-height: 300px; overflow-y: auto;">
+            {{ release.body_html | safe }}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p style="color: var(--pico-muted-color);">No release notes available.</p>
+{% endif %}

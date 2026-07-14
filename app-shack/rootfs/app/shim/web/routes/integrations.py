@@ -139,65 +139,6 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             for e in entities
         ]
 
-        # Fetch all available versions for the dropdown (includes betas, old versions)
-        releases = []
-        if info.repository_url:
-            try:
-                raw_releases = (
-                    await shim_manager.get_integration_manager().get_available_versions(
-                        domain
-                    )
-                )
-                for rel in raw_releases:
-                    body = rel.get("body") or ""
-                    releases.append(
-                        {
-                            "version": rel["version"],
-                            "body_html": markdown.markdown(body)
-                            if body
-                            else "<em>No release notes provided.</em>",
-                            "url": rel.get("url", ""),
-                            "published_at": (
-                                rel.get("published_at", "")[:10]
-                                if rel.get("published_at")
-                                else ""
-                            ),
-                            "prerelease": rel.get("prerelease", False),
-                            "tag_only": rel.get("tag_only", False),
-                            "branch": rel.get("branch", False),
-                        }
-                    )
-            except Exception as e:
-                _LOGGER.warning("Failed to fetch releases for %s: %s", domain, e)
-
-        # Fetch release notes only when there's an update (excludes betas, only newer versions)
-        release_notes = []
-        if info.update_available and info.repository_url:
-            try:
-                raw_releases = (
-                    await shim_manager.get_integration_manager().get_release_notes(
-                        domain
-                    )
-                )
-                for rel in raw_releases:
-                    body = rel.get("body") or ""
-                    release_notes.append(
-                        {
-                            "version": rel["version"],
-                            "body_html": markdown.markdown(body)
-                            if body
-                            else "<em>No release notes provided.</em>",
-                            "url": rel.get("url", ""),
-                            "published_at": (
-                                rel.get("published_at", "")[:10]
-                                if rel.get("published_at")
-                                else ""
-                            ),
-                        }
-                    )
-            except Exception as e:
-                _LOGGER.warning("Failed to fetch release notes for %s: %s", domain, e)
-
         html = render_template(
             template_dir,
             "integration_detail.html",
@@ -206,8 +147,116 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             entries=entries_dicts,
             entities=entities_dicts,
             devices=devices,
+        )
+        return HTMLResponse(content=html)
+
+    # ------------------------------------------------------------------ #
+    #  Async version + release-note fragments (loaded via HTMX after page render)
+    # ------------------------------------------------------------------ #
+
+    @app.get("/integrations/{domain}/versions", response_class=HTMLResponse)
+    async def integration_versions_fragment(request: Request, domain: str):
+        """Fragment returning the "Available Versions" section HTML.
+
+        Loaded asynchronously by the detail page so the GitHub API calls
+        (releases, tags, default branch) don't block initial render.
+        """
+        info = shim_manager.get_integration_manager().get_integration(domain)
+        if not info or not info.repository_url:
+            return HTMLResponse(content="")
+
+        raw_releases = []
+        error = None
+        try:
+            raw_releases = (
+                await shim_manager.get_integration_manager().get_available_versions(
+                    domain
+                )
+            )
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch releases for %s: %s", domain, e)
+            error = str(e)
+
+        releases = [
+            {
+                "version": rel["version"],
+                "body_html": (
+                    markdown.markdown(rel.get("body") or "")
+                    if rel.get("body")
+                    else "<em>No release notes provided.</em>"
+                ),
+                "url": rel.get("url", ""),
+                "published_at": (
+                    rel.get("published_at", "")[:10]
+                    if rel.get("published_at")
+                    else ""
+                ),
+                "prerelease": rel.get("prerelease", False),
+                "tag_only": rel.get("tag_only", False),
+                "branch": rel.get("branch", False),
+            }
+            for rel in raw_releases
+        ]
+
+        html = render_template(
+            template_dir,
+            "integration_versions.html",
+            request=request,
+            integration=info.to_dict(),
             releases=releases,
+            error=error,
+        )
+        return HTMLResponse(content=html)
+
+    @app.get("/integrations/{domain}/release-notes", response_class=HTMLResponse)
+    async def integration_release_notes_fragment(
+        request: Request, domain: str
+    ):
+        """Fragment returning the "Release Notes" section HTML.
+
+        Loaded asynchronously by the detail page only when an update is
+        available.
+        """
+        info = shim_manager.get_integration_manager().get_integration(domain)
+        if not info or not info.update_available or not info.repository_url:
+            return HTMLResponse(content="")
+
+        raw_releases = []
+        error = None
+        try:
+            raw_releases = (
+                await shim_manager.get_integration_manager().get_release_notes(
+                    domain
+                )
+            )
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch release notes for %s: %s", domain, e)
+            error = str(e)
+
+        release_notes = [
+            {
+                "version": rel["version"],
+                "body_html": (
+                    markdown.markdown(rel.get("body") or "")
+                    if rel.get("body")
+                    else "<em>No release notes provided.</em>"
+                ),
+                "url": rel.get("url", ""),
+                "published_at": (
+                    rel.get("published_at", "")[:10]
+                    if rel.get("published_at")
+                    else ""
+                ),
+            }
+            for rel in raw_releases
+        ]
+
+        html = render_template(
+            template_dir,
+            "integration_release_notes.html",
+            request=request,
             release_notes=release_notes,
+            error=error,
         )
         return HTMLResponse(content=html)
 
