@@ -479,12 +479,12 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 status_code=400,
             )
 
-        # Install the specific version
-        success = await shim_manager.install_integration(
+        # Install the specific version (unload → install files → reload)
+        success = await shim_manager.install_and_reload(
+            domain,
             info.full_name or domain,
             version=version,
             source=info.source,
-            wait=True
         )
 
         if success:
@@ -533,11 +533,12 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 status_code=400,
             )
 
-        success = await shim_manager.install_integration(
+        # Install ref (unload → install files → reload)
+        success = await shim_manager.install_and_reload(
+            domain,
             info.full_name or domain,
             version=ref,
             source=info.source,
-            wait=True,
         )
 
         if success:

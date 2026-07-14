@@ -1220,3 +1220,111 @@ class TestUpdateNotification:
         calls = mock_mqtt.publish.call_args_list
         # Should have at least discovery config + state for update entity
         assert len(calls) >= 1
+
+
+class TestInstallAndReload:
+    """Tests for ShimManager.install_and_reload (unload → install → reload).
+
+    Pins the reload-safe contract shared by the UI "Update", "Install
+    version", and "Install ref" actions: every loaded config entry is
+    unloaded (which purges the integration from sys.modules) before the
+    files are replaced, then re-setup afterwards so the new code is live.
+    """
+
+    def _create_manager(self):
+        """Create a ShimManager with mocked HA/integration dependencies."""
+        from shim.manager import ShimManager
+        from mqtt_bridge import MqttBridge
+
+        mock_config_dir = Path("/tmp/test_config")
+        mock_bridge = MagicMock(spec=MqttBridge)
+        mock_bridge.client = MagicMock()
+        with patch("shim.manager.HomeAssistant") as MockHass:
+            mock_hass = MagicMock()
+            mock_hass.shim_dir = Path("/tmp/test_shim")
+            mock_hass._storage = MagicMock()
+            MockHass.return_value = mock_hass
+            with patch("shim.manager.IntegrationManager"):
+                with patch("shim.manager.IntegrationLoader"):
+                    manager = ShimManager(mock_config_dir, mock_bridge)
+                    return manager
+
+    @pytest.mark.asyncio
+    async def test_unloads_then_installs_then_reloads_in_order(self):
+        """All entries unloaded before install, then all reloaded after."""
+        manager = self._create_manager()
+        entry1, entry2 = MagicMock(name="e1"), MagicMock(name="e2")
+        manager._hass.config_entries.async_entries = MagicMock(
+            return_value=[entry1, entry2]
+        )
+
+        recorder = MagicMock()
+
+        async def unload(entry):
+            recorder.unload(entry)
+
+        async def setup(entry):
+            recorder.setup(entry)
+
+        manager._integration_loader.unload_integration = unload
+        manager._integration_loader.setup_integration = setup
+        manager._integration_manager.install_integration = AsyncMock(
+            return_value=True
+        )
+
+        ok = await manager.install_and_reload(
+            "myint", "owner/repo", version="1.2.3", source="hacs_default"
+        )
+
+        assert ok is True
+        # install called once with the install target + wait=True
+        manager._integration_manager.install_integration.assert_awaited_once_with(
+            "owner/repo", version="1.2.3", source="hacs_default", wait=True
+        )
+        # ordered call sequence: unload, unload, setup, setup — never interleaved
+        method_names = [c[0] for c in recorder.mock_calls]
+        assert method_names == [
+            "unload",
+            "unload",
+            "setup",
+            "setup",
+        ]
+        assert recorder.mock_calls[0].args[0] is entry1
+        assert recorder.mock_calls[1].args[0] is entry2
+
+    @pytest.mark.asyncio
+    async def test_no_reload_when_install_fails(self):
+        """Failed install must not re-setup entries (avoids stale reload)."""
+        manager = self._create_manager()
+        entry = MagicMock()
+        manager._hass.config_entries.async_entries = MagicMock(return_value=[entry])
+        manager._integration_loader.unload_integration = AsyncMock()
+        manager._integration_loader.setup_integration = AsyncMock()
+        manager._integration_manager.install_integration = AsyncMock(return_value=False)
+
+        ok = await manager.install_and_reload("myint", "owner/repo", version="9.9")
+
+        assert ok is False
+        manager._integration_loader.unload_integration.assert_awaited_once_with(entry)
+        manager._integration_manager.install_integration.assert_awaited_once()
+        manager._integration_loader.setup_integration.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_loaded_entries_still_installs(self):
+        """First-time install (no entries) still runs install and returns True."""
+        manager = self._create_manager()
+        manager._hass.config_entries.async_entries = MagicMock(return_value=[])
+        manager._integration_loader.unload_integration = AsyncMock()
+        manager._integration_loader.setup_integration = AsyncMock()
+        manager._integration_manager.install_integration = AsyncMock(return_value=True)
+
+        ok = await manager.install_and_reload(
+            "myint", "myint", version=None, source="custom"
+        )
+
+        assert ok is True
+        manager._integration_loader.unload_integration.assert_not_awaited()
+        manager._integration_loader.setup_integration.assert_not_awaited()
+        manager._integration_manager.install_integration.assert_awaited_once_with(
+            "myint", version=None, source="custom", wait=True
+        )

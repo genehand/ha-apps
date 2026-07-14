@@ -613,11 +613,6 @@ class ShimManager:
         if not info or not info.update_available:
             return
 
-        # Unload first
-        entries = self._hass.config_entries.async_entries(domain)
-        for entry in entries:
-            await self._integration_loader.unload_integration(entry)
-
         # Determine the correct identifier for installation
         # For HACS default repos, we need the full_name (owner/repo)
         # For custom repos, we can use the domain
@@ -651,9 +646,12 @@ class ShimManager:
             )
             return
 
-        # Install new version (blocking wait for update completion)
-        success = await self._integration_manager.install_integration(
-            install_target, version=info.latest_version, source=source, wait=True
+        # Unload → install files → reload config entries (shared path)
+        success = await self.install_and_reload(
+            domain,
+            install_target,
+            version=info.latest_version,
+            source=source,
         )
 
         if success:
@@ -665,10 +663,6 @@ class ShimManager:
                 self._integration_manager._save_integrations
             )
 
-            # Reload
-            for entry in entries:
-                await self._integration_loader.setup_integration(entry)
-
             _LOGGER.info(f"Successfully updated {domain}")
 
             # Re-check updates and republish to clear the MQTT topic
@@ -676,6 +670,64 @@ class ShimManager:
             await self._publish_update_notification(updates)
         else:
             _LOGGER.error(f"Failed to update {domain} to {info.latest_version}")
+
+    async def install_and_reload(
+        self,
+        domain: str,
+        install_target: str,
+        version: Optional[str] = None,
+        source: str = "hacs_default",
+    ) -> bool:
+        """Install integration files and reload any loaded config entries.
+
+        Unloads any currently-loaded config entries for ``domain`` (which also
+        purges ``custom_components.<domain>`` from ``sys.modules`` via the
+        loader's ``_cleanup_sys_modules``), installs the new files, then
+        re-imports and sets up the entries again.
+
+        This is the shared reload-safe path for the UI "Update", "Install
+        version", and "Install ref" actions. Without unloading first, those
+        actions would install new files on disk but keep the integration
+        running from the previously cached module objects, so the new code
+        would only take effect after a manual reload or restart.
+
+        Args:
+            domain: integration domain; used to look up config entries to
+                unload/reload.
+            install_target: full_name (for ``hacs_default``) or domain (for
+                ``custom``) — passed straight to ``install_integration``.
+            version: specific version or git ref to install (None = latest).
+            source: "hacs_default" or "custom".
+
+        Returns:
+            True if the install (and thus reload) succeeded, False otherwise.
+        """
+        entries = self._hass.config_entries.async_entries(domain)
+
+        # Unload first so the module is purged from sys.modules; the cleanup
+        # in unload_integration ensures importlib re-reads from disk next time.
+        for entry in entries:
+            await self._integration_loader.unload_integration(entry)
+
+        # Install new files (blocking). For an existing integration this
+        # rmtree()s the integration dir, so stale __pycache__ is wiped too.
+        success = await self._integration_manager.install_integration(
+            install_target, version=version, source=source, wait=True
+        )
+
+        if not success:
+            _LOGGER.error(
+                f"Failed to install {domain} "
+                f"(target={install_target}, version={version})"
+            )
+            return False
+
+        # Reload entries to activate the newly installed code.
+        for entry in entries:
+            await self._integration_loader.setup_integration(entry)
+
+        _LOGGER.info(f"Successfully installed and reloaded {domain}")
+        return True
 
     async def _load_enabled_integrations(self) -> None:
         """Load all enabled integrations in parallel with limited concurrency."""
