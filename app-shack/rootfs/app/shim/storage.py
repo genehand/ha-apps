@@ -26,6 +26,7 @@ class Storage:
         self._integrations_file = self._shim_dir / "integrations.json"
         self._custom_repos_file = self._shim_dir / "custom_repos.json"
         self._entity_states_file = self._shim_dir / "entity_states.json"
+        self._entity_overrides_file = self._shim_dir / "entity_overrides.json"
 
         # Static repository status file (read-only)
         # Located at /app/metadata/repository_status.json in the container
@@ -77,6 +78,19 @@ class Storage:
         """Save config entries to storage."""
         self._save_json(self._entries_file, entries)
         _LOGGER.debug(f"Saved {sum(len(v) for v in entries.values())} config entries")
+
+    # Entity enable/disable overrides (per-entity, survives restarts).
+    # Shape: {entity_id: {"disabled_by": str | None}}. ``disabled_by=None``
+    # means the entity has been force-enabled despite a disabled-by-default
+    # integration declaration; any other value (e.g. "user") means disabled.
+    def load_entity_overrides(self) -> Dict[str, dict]:
+        """Load persisted per-entity enable/disable overrides."""
+        return self._load_json(self._entity_overrides_file)
+
+    def save_entity_overrides(self, overrides: Dict[str, dict]) -> None:
+        """Persist per-entity enable/disable overrides."""
+        self._save_json(self._entity_overrides_file, overrides)
+        _LOGGER.debug(f"Saved {len(overrides)} entity overrides")
 
     # Entity State Storage (for RestoreEntity)
     def load_entity_states(self) -> Dict[str, dict]:

@@ -290,3 +290,42 @@ class TestFragmentRouteHandlers:
         assert r.status_code == 200
         assert "1.1.0" in r.text
         assert "View on GitHub" in r.text
+
+class TestEntityToggleRendering:
+    """The Entities section shows an enable/disable toggle per entity."""
+
+    def _render(self, entities):
+        return render_template(
+            TEMPLATE_DIR,
+            "integration_detail.html",
+            request=MagicMock(),
+            integration=_base_integration(),
+            entries=[],
+            entities=entities,
+            devices=[],
+        )
+
+    def test_enabled_entity_shows_disable_button(self):
+        html = self._render([
+            {"entity_id": "sensor.dev_odometer", "name": "Odometer",
+             "state": "12345", "available": True, "registry_enabled": True},
+        ])
+        assert "Disable" in html
+        assert "../entity/sensor.dev_odometer/disable" in html
+        assert "enabled" in html  # status badge
+
+    def test_disabled_entity_shows_enable_button(self):
+        html = self._render([
+            {"entity_id": "sensor.dev_fuel", "name": "Fuel",
+             "state": None, "available": False, "registry_enabled": False},
+        ])
+        assert "Enable" in html
+        assert "../entity/sensor.dev_fuel/enable" in html
+        assert "disabled" in html  # status badge
+
+    def test_entity_toggle_section_has_help_text(self):
+        html = self._render([
+            {"entity_id": "sensor.dev_odometer", "name": "Odometer",
+             "state": "1", "available": True, "registry_enabled": True},
+        ])
+        assert "persisted across restarts" in html

@@ -269,6 +269,15 @@ class ShimManager:
                 f"{self._mqtt_base_topic}/integrations/+/update",
                 self._on_update_integration,
             ),
+            # Per-entity enable/disable so HA can stop/start app-shack polling
+            # an endpoint at runtime (mirrors HA's entity registry toggle).
+            ("homeassistant/+/+/enable", self._on_entity_enable),
+            ("homeassistant/+/+/disable", self._on_entity_disable),
+            # Per-entity refresh: ask app-shack to fetch ONLY this endpoint now
+            # (replicates smartcar's explicit-update path; minimizes API calls
+            # since the coordinator skips the default-batch when an explicit
+            # request is queued). Drives smartcar's "customized polling".
+            ("homeassistant/+/+/refresh", self._on_entity_refresh),
         ]
 
         for topic, callback in topics:
@@ -557,6 +566,225 @@ class ShimManager:
                         return entity
 
         return None
+
+    def _on_entity_enable(
+        self, client: Client, userdata: Any, message: MQTTMessage
+    ) -> None:
+        """Handle per-entity enable from MQTT.
+
+        Topic: ``homeassistant/<domain>/<object_id>/enable``. Flips the
+        entity registry entry to enabled (``disabled_by=None``) and asks
+        the entity's coordinator to refresh so its endpoint is polled
+        immediately instead of waiting for the next scheduled interval.
+        """
+        try:
+            parts = message.topic.split("/")
+            if len(parts) < 4:
+                _LOGGER.warning(f"Invalid enable topic: {message.topic}")
+                return
+            domain = parts[1]
+            object_id = parts[2]
+            entity_id = f"{domain}.{object_id.replace('-', '_')}"
+            entity = self._find_entity(entity_id, object_id=object_id)
+            if not entity:
+                _LOGGER.warning(
+                    f"Entity {entity_id} not found for enable command"
+                )
+                return
+            self._hass.async_run_job(
+                self.apply_entity_enabled, entity, True
+            )
+        except Exception as e:
+            _LOGGER.error(f"Error enabling entity: {e}")
+
+    def _on_entity_disable(
+        self, client: Client, userdata: Any, message: MQTTMessage
+    ) -> None:
+        """Handle per-entity disable from MQTT.
+
+        Topic: ``homeassistant/<domain>/<object_id>/disable``. Marks the
+        entity registry entry disabled (``disabled_by=\"user\"\"``) so the
+        coordinator's next batch omits its endpoint. No refresh is
+        triggered; in-flight requests keep their result but subsequent
+        polls stop.
+        """
+        try:
+            parts = message.topic.split("/")
+            if len(parts) < 4:
+                _LOGGER.warning(f"Invalid disable topic: {message.topic}")
+                return
+            domain = parts[1]
+            object_id = parts[2]
+            entity_id = f"{domain}.{object_id.replace('-', '_')}"
+            entity = self._find_entity(entity_id, object_id=object_id)
+            if not entity:
+                _LOGGER.warning(
+                    f"Entity {entity_id} not found for disable command"
+                )
+                return
+            self._hass.async_run_job(
+                self.apply_entity_enabled, entity, False
+            )
+        except Exception as e:
+            _LOGGER.error(f"Error disabling entity: {e}")
+
+    def _on_entity_refresh(
+        self, client: Client, userdata: Any, message: MQTTMessage
+    ) -> None:
+        """Handle per-entity refresh from MQTT.
+
+        Topic: ``homeassistant/<domain>/<object_id>/refresh``. Replicates
+        smartcar's explicit-update path: queue ONLY this entity's endpoint
+        on its coordinator (``batch_sensor``) then request an immediate
+        refresh. Because the coordinator skips ``_batch_add_defaults``
+        whenever an explicit request is queued, only this endpoint is
+        fetched (minimizing API calls) rather than every enabled endpoint.
+
+        This is the app-shack equivalent of HA's ``homeassistant.update_entity``
+        service for integrations whose real entities run inside app-shack
+        (HA's MQTT entities are passive and won't forward a refresh).
+        """
+        try:
+            parts = message.topic.split("/")
+            if len(parts) < 4:
+                _LOGGER.warning(f"Invalid refresh topic: {message.topic}")
+                return
+            domain = parts[1]
+            object_id = parts[2]
+            entity_id = f"{domain}.{object_id.replace('-', '_')}"
+            entity = self._find_entity(entity_id, object_id=object_id)
+            if not entity:
+                _LOGGER.warning(
+                    f"Entity {entity_id} not found for refresh command"
+                )
+                return
+            self._hass.async_run_job(self._refresh_entity, entity)
+        except Exception as e:
+            _LOGGER.error(f"Error refreshing entity: {e}")
+
+    async def _refresh_entity(self, entity: Any) -> None:
+        """Fetch only ``entity``'s endpoint now (explicit-update path).
+
+        Path 1 (preferred): the integration exposes a per-entity batch API
+        on its coordinator (e.g. smartcar's ``batch_sensor``). We queue
+        only this entity so the coordinator's default-batch is skipped.
+        ``batch_sensor`` asserts the endpoint is scope-enabled, so we guard.
+
+        Path 2 (fallback): plain ``async_request_refresh()`` with no batch —
+        used by coordinator-based entities without a per-entity batch API.
+        This refreshes using the coordinator's default batch behavior.
+        """
+        entity_id = getattr(entity, "entity_id", None)
+        coordinator = getattr(entity, "coordinator", None)
+        if coordinator is None or not hasattr(
+            coordinator, "async_request_refresh"
+        ):
+            _LOGGER.debug(
+                "Entity %s has no refreshable coordinator; nothing to do",
+                entity_id,
+            )
+            return
+
+        # Path 1: per-entity explicit batch (smartcar-style).
+        batch = getattr(coordinator, "batch_sensor", None)
+        if batch is not None:
+            # ``batch_sensor`` (smartcar) asserts is_scope_enabled(key); guard
+            # so an out-of-scope refresh logs instead of crashing.
+            is_scope_enabled = getattr(coordinator, "is_scope_enabled", None)
+            description = getattr(entity, "entity_description", None)
+            key = getattr(description, "key", None)
+            if is_scope_enabled is not None and key is not None:
+                try:
+                    if not is_scope_enabled(key, verbose=True):
+                        _LOGGER.warning(
+                            "Skipping refresh of %s: required scope not granted",
+                            entity_id,
+                        )
+                        return
+                except Exception as e:  # noqa: BLE001
+                    _LOGGER.debug(
+                        "is_scope_enabled check failed for %s (%s); "
+                        "attempting refresh anyway",
+                        entity_id,
+                        e,
+                    )
+            try:
+                batch(entity)
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.warning(
+                    "batch_sensor(%s) failed (%s); falling back to "
+                    "whole-coordinator refresh",
+                    entity_id,
+                    e,
+                )
+                # Fall through to path 2 (plain refresh)
+
+        _LOGGER.info("Entity %s refresh requested via MQTT", entity_id)
+        await coordinator.async_request_refresh()
+
+    async def apply_entity_enabled(self, entity: Any, enabled: bool, *,
+                                    refresh: bool = True) -> None:
+        """Apply an enable/disable toggle to the entity registry.
+
+        Shared by the MQTT inbound handlers and the web UI endpoints:
+        - flips the registry ``disabled_by`` (persisted to storage via
+          ``EntityRegistry.async_update_entity``)
+        - republishes the entity's MQTT discovery so the new
+          ``enabled_by_default`` flag reaches HA
+        - on enable, optionally requests a coordinator refresh so the
+          endpoint is polled immediately (set ``refresh=False`` to skip)
+
+        The entity registry is app-shack's internal one
+        (``EntityRegistry``); integration coordinators such as smartcar's
+        read it via ``async_entries_for_config_entry`` to decide which
+        endpoints to batch.
+        """
+        entity_id = getattr(entity, "entity_id", None)
+        if not entity_id:
+            return
+        registry = EntityRegistry()
+        registry.setup(self._hass)
+        if enabled:
+            registry.async_update_entity(entity_id, disabled_by=None)
+            _LOGGER.info(
+                "Entity %s enabled; republishing discovery" +
+                (" and requesting coordinator refresh" if refresh else ""),
+                entity_id,
+            )
+            await self._republish_entity_discovery(entity)
+            if refresh:
+                coordinator = getattr(entity, "coordinator", None)
+                if coordinator is not None and hasattr(
+                    coordinator, "async_request_refresh"
+                ):
+                    await coordinator.async_request_refresh()
+        else:
+            registry.async_update_entity(entity_id, disabled_by="user")
+            _LOGGER.info(
+                "Entity %s disabled; republishing discovery; future polls "
+                "will omit it",
+                entity_id,
+            )
+            await self._republish_entity_discovery(entity)
+
+    async def _republish_entity_discovery(self, entity: Any) -> None:
+        """Re-publish the entity's MQTT discovery with the current state.
+
+        ``_publish_mqtt_discovery`` re-reads ``entity_registry_enabled_default``,
+        which now consults the registry, so the rewritten discovery payload
+        flips ``enabled_by_default`` to match the new enabled/disabled state.
+        HA's MQTT integration updates the existing discovered entity in place.
+        """
+        publish = getattr(entity, "_publish_mqtt_discovery", None)
+        if publish is None or not callable(publish):
+            return
+        try:
+            await publish()
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.warning(
+                "Failed to republish MQTT discovery for %s: %s",
+                getattr(entity, "entity_id", "?"), e,
+            )
 
     def _on_enable_integration(
         self, client: Client, userdata: Any, message: MQTTMessage

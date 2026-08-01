@@ -510,6 +510,10 @@ class ConfigEntries:
 
                                 registry = EntityRegistry()
                                 registry.register(entity)
+                                # Persisted enable/disable overrides are
+                                # applied inside register() (reading the
+                                # storage-backed overrides cache), so the
+                                # entry's enabled state survives restarts.
                                 # Set up entity in hass
                                 entity.hass = self._hass
                                 _LOGGER.debug(

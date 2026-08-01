@@ -316,6 +316,11 @@
 {% if entities %}
 <article>
     <h2>Entities</h2>
+    <p style="font-size: 12px; color: var(--pico-muted-color);">
+        Use the toggle to enable/disable an entity. Disabling stops app-shack
+        from polling that endpoint (saving API quota); enabling requests an
+        immediate refresh. The choice is persisted across restarts.
+    </p>
     <div class="entity-list">
         {% for entity in entities %}
         <div class="entity-item">
@@ -323,10 +328,27 @@
                 <strong>{{ entity.name or entity.entity_id }}</strong>
                 <div style="font-size: 12px; color: var(--pico-muted-color);">{{ entity.entity_id }}</div>
             </div>
-                <div style="text-align: right; flex-shrink: 0; max-width: 50%;">
-                    <div class="entity-state" style="font-size: 18px; font-weight: bold;" title="{{ entity.state if entity.available else 'unavailable' }}">{{ entity.state if entity.available else 'unavailable' }}</div>
-                    <div style="font-size: 12px; color: var(--pico-muted-color);">{{ 'available' if entity.available else 'unavailable' }}</div>
+            <div style="text-align: right; flex-shrink: 0; max-width: 50%;">
+                <div class="entity-state" style="font-size: 18px; font-weight: bold;" title="{{ entity.state if entity.available else 'unavailable' }}">{{ entity.state if entity.available else 'unavailable' }}</div>
+                <div style="font-size: 12px; color: var(--pico-muted-color); display: flex; align-items: center; justify-content: flex-end; gap: 6px;">
+                    {% if entity.registry_enabled %}
+                    <span class="status-badge status-enabled" style="font-size: 11px;">enabled</span>
+                    <button class="outline"
+                            hx-post="../entity/{{ entity.entity_id }}/disable"
+                            hx-target="body"
+                            hx-swap="outerHTML"
+                            hx-confirm="Stop polling this endpoint?"
+                            style="padding: 2px 8px; font-size: 12px;">Disable</button>
+                    {% else %}
+                    <span class="status-badge status-disabled" style="font-size: 11px;">disabled</span>
+                    <button
+                            hx-post="../entity/{{ entity.entity_id }}/enable"
+                            hx-target="body"
+                            hx-swap="outerHTML"
+                            style="padding: 2px 8px; font-size: 12px;">Enable</button>
+                    {% endif %}
                 </div>
+            </div>
         </div>
         {% endfor %}
     </div>

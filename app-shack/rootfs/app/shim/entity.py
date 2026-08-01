@@ -290,11 +290,22 @@ class EntityCategory(StrEnum):
 class RegistryEntry:
     """Entity registry entry compatible with HA's entity registry."""
 
-    def __init__(self, entity_id: str, unique_id: str, config_entry_id: str, disabled: bool = False):
+    def __init__(
+        self,
+        entity_id: str,
+        unique_id: str,
+        config_entry_id: str,
+        disabled: bool = False,
+        disabled_by: Optional[str] = None,
+    ):
         self.entity_id = entity_id
         self.unique_id = unique_id
         self.config_entry_id = config_entry_id
         self.disabled = disabled
+        # ``disabled_by`` mirrors HA's registry: None means enabled,
+        # "integration"/"user" means disabled. When only ``disabled`` is given
+        # we derive it for backwards compatibility.
+        self.disabled_by = disabled_by or ("integration" if disabled else None)
 
 
 class EntityRegistry:
@@ -308,11 +319,54 @@ class EntityRegistry:
             cls._instance._entities: Dict[str, "Entity"] = {}
             cls._instance._entries_by_config_entry: Dict[str, List[RegistryEntry]] = {}
             cls._instance._hass = None
+            cls._instance._overrides_cache: Dict[str, dict] = {}
+            cls._instance._overrides_loaded: bool = False
         return cls._instance
+
+    @classmethod
+    def _reset_for_test(cls) -> None:
+        """Clear the singleton registry state (test-only)."""
+        if cls._instance is not None:
+            cls._instance._entities = {}
+            cls._instance._entries_by_config_entry = {}
+            cls._instance._hass = None
+            cls._instance._overrides_cache = {}
+            cls._instance._overrides_loaded = False
+
 
     def setup(self, hass):
         """Setup registry with hass instance."""
         self._hass = hass
+
+    def _load_overrides(self) -> Dict[str, dict]:
+        """Lazily load persisted per-entity enable/disable overrides."""
+        if not self._overrides_loaded:
+            self._overrides_loaded = True
+            storage = getattr(self._hass, "_storage", None) if self._hass else None
+            if storage is not None and hasattr(storage, "load_entity_overrides"):
+                try:
+                    self._overrides_cache = storage.load_entity_overrides() or {}
+                except Exception as e:  # noqa: BLE001
+                    _LOGGER.warning("Failed to load entity overrides: %s", e)
+                    self._overrides_cache = {}
+        return self._overrides_cache
+
+    def _persist_override(self, entity_id: str, disabled_by) -> None:
+        """Persist a per-entity disabled_by override to storage.
+
+        Always records the value (``None`` for force-enabled, or a string
+        such as ``"user"`` for disabled) so the enabled state survives
+        app-shack restarts. ``register()`` reapplies these on startup.
+        """
+        overrides = self._load_overrides()
+        overrides[entity_id] = {"disabled_by": disabled_by}
+        storage = getattr(self._hass, "_storage", None) if self._hass else None
+        if storage is not None and hasattr(storage, "save_entity_overrides"):
+            try:
+                storage.save_entity_overrides(overrides)
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.warning("Failed to persist entity override for %s: %s",
+                                entity_id, e)
 
     def register(self, entity: "Entity") -> None:
         """Register an entity."""
@@ -326,6 +380,15 @@ class EntityRegistry:
                 config_entry_id=config_entry_id,
                 disabled=not getattr(entity, "entity_registry_enabled_default", True),
             )
+            # Apply any persisted UI/MQTT override so the enabled state survives
+            # app-shack restarts. A stored ``disabled_by=None`` force-enables a
+            # disabled-by-default entity; any other value force-disables it.
+            override = self._load_overrides().get(entity.entity_id)
+            if override is not None:
+                stored_disabled_by = override.get("disabled_by", ...)
+                if stored_disabled_by is not ...:
+                    entry.disabled_by = stored_disabled_by
+                    entry.disabled = stored_disabled_by is not None
             if config_entry_id not in self._entries_by_config_entry:
                 self._entries_by_config_entry[config_entry_id] = []
             self._entries_by_config_entry[config_entry_id].append(entry)
@@ -356,6 +419,14 @@ class EntityRegistry:
         """Return registry entries for a config entry."""
         return list(self._entries_by_config_entry.get(config_entry_id, []))
 
+    def get_registry_entry(self, entity_id: str) -> Optional[RegistryEntry]:
+        """Return the registry entry for ``entity_id``, or None."""
+        for entries in self._entries_by_config_entry.values():
+            for entry in entries:
+                if entry.entity_id == entity_id:
+                    return entry
+        return None
+
     def async_get_entity_id(
         self, domain: str, platform: str, unique_id: str
     ) -> Optional[str]:
@@ -384,20 +455,37 @@ class EntityRegistry:
         return None
 
     def async_update_entity(
-        self, entity_id: str, *, name: str = None, icon: str = None, **kwargs
+        self, entity_id: str, *, name: str = None, icon: str = None,
+        disabled_by: Optional[str] = ..., new_unique_id: str = None, **kwargs
     ):
-        """Update entity properties."""
+        """Update entity properties.
+
+        Mirrors HA's ``entity_registry.async_update_entity``. Supports the
+        fields shims commonly rely on: ``name``/``icon`` (written onto the
+        Entity instance), ``new_unique_id`` (rewrites the registry entry's
+        unique_id), and ``disabled_by`` (``None`` enables the entity; any
+        other value such as "integration"/"user" disables it). Extra kwargs
+        are applied onto the Entity when present.
+        """
         entity = self._entities.get(entity_id)
-        if entity:
+        if entity is not None:
             if name is not None:
                 entity._attr_name = name
             if icon is not None:
                 entity._attr_icon = icon
-            # Update any other attributes
             for key, value in kwargs.items():
                 if hasattr(entity, key):
                     setattr(entity, key, value)
-        return entity
+
+        entry = self.get_registry_entry(entity_id)
+        if entry is not None:
+            if new_unique_id is not None:
+                entry.unique_id = new_unique_id
+            if disabled_by is not ...:
+                entry.disabled_by = disabled_by
+                entry.disabled = disabled_by is not None
+                self._persist_override(entity_id, disabled_by)
+        return entity or entry
 
 
 class Entity:
@@ -973,8 +1061,8 @@ class Entity:
         self.platform = platform
 
     @property
-    def entity_registry_enabled_default(self) -> bool:
-        """Return if the entity should be enabled by default."""
+    def _entity_registry_enabled_default_raw(self) -> bool:
+        """The pure "enabled by default" value, ignoring registry overrides."""
         # Check instance attribute for disabled_by_default (runtime override)
         if getattr(self, "_attr_disabled_by_default", False):
             return False
@@ -990,6 +1078,40 @@ class Entity:
                 return value
         # Fall back to class attribute for entity_registry_enabled_default
         return getattr(self, "_attr_entity_registry_enabled_default", True)
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Effective enabled state, preferring an entity-registry override.
+
+        Mirrors HA's behaviour where the entity registry's ``disabled_by``
+        wins over the integration's declared default. When the entity is
+        not yet registered (e.g. during the first ``register()`` call) this
+        falls back to the description/class default chain so initial
+        registration still records the integration's intent.
+        """
+        if self.entity_id:
+            registry = EntityRegistry()
+            entry = registry.get_registry_entry(self.entity_id)
+            if entry is not None:
+                return not entry.disabled
+        return self._entity_registry_enabled_default_raw
+
+    @property
+    def enabled(self) -> bool:
+        """Whether the entity is currently enabled (HA ``Entity.enabled``).
+
+        ``True`` when there is no registry entry (entity not yet
+        registered) or the entry has ``disabled_by is None``; otherwise
+        ``False``. Integrations consult this in ``async_update`` to bail out
+        before scheduling work for a disabled entity.
+        """
+        if not self.entity_id:
+            return self._entity_registry_enabled_default_raw
+        registry = EntityRegistry()
+        entry = registry.get_registry_entry(self.entity_id)
+        if entry is None:
+            return self._entity_registry_enabled_default_raw
+        return not entry.disabled
 
     async def add_to_platform_finish(self) -> None:
         """Finish adding an entity to a platform."""

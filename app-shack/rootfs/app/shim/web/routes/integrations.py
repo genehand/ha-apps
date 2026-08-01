@@ -95,6 +95,15 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             integration_domain=domain
         )
 
+        # Resolve each entity's enabled state from app-shack's internal
+        # entity registry so the UI can show a toggle and drive it. The
+        # coordinator (e.g. smartcar's) reads the same registry to decide
+        # which endpoints to poll, so the toggle is the source of truth for
+        # polling control.
+        from ...entity import EntityRegistry
+        registry = EntityRegistry()
+        registry.setup(shim_manager.get_hass())
+
         # Get device registry and fetch devices for this integration's entries
         hass = shim_manager.get_hass()
         device_registry = hass.data.get("device_registry")
@@ -135,6 +144,8 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 "name": e.name or e.entity_id,
                 "state": e.state,
                 "available": e.available,
+                "registry_enabled": registry.get_registry_entry(e.entity_id)
+                is None or not registry.get_registry_entry(e.entity_id).disabled,
             }
             for e in entities
         ]
@@ -831,3 +842,76 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 '<div class="alert alert-error">Failed to reload configuration</div>',
                 status_code=400,
             )
+
+    # ------------------------------------------------------------------ #
+    #  Per-entity enable/disable (drives app-shack polling control)
+    # ------------------------------------------------------------------ #
+    @app.post("/entity/{entity_id}/enable")
+    async def enable_entity(request: Request, entity_id: str):
+        """Enable an entity (start polling its endpoint).
+
+        Delegates to ``ShimManager.apply_entity_enabled`` so the same path
+        is exercised as the MQTT runtime-enable handler: flips the registry
+        entry to ``disabled_by=None``, persists it, republishes MQTT
+        discovery, and requests a coordinator refresh so the endpoint is
+        polled immediately.
+        """
+        loading_response = check_loading(shim_manager)
+        if loading_response:
+            return loading_response
+
+        entity = shim_manager._find_entity(entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        # Determine the integration domain from the registry entry's config
+        # entry so the HX-Redirect lands on the right integration detail page.
+        from ...entity import EntityRegistry
+        registry = EntityRegistry()
+        registry.setup(shim_manager.get_hass())
+        entry = registry.get_registry_entry(entity_id)
+        domain = entity.entity_id.split(".", 1)[0]
+        if entry is not None and entry.config_entry_id:
+            ce = shim_manager.get_hass().config_entries.async_get_entry(
+                entry.config_entry_id
+            )
+            if ce is not None:
+                domain = ce.domain
+
+        await shim_manager.apply_entity_enabled(entity, True)
+        response = HTMLResponse(
+            '<div class="alert alert-success">Entity enabled</div>'
+        )
+        response.headers["HX-Redirect"] = get_detail_redirect(request, domain)
+        return response
+
+    @app.post("/entity/{entity_id}/disable")
+    async def disable_entity(request: Request, entity_id: str):
+        """Disable an entity (stop polling its endpoint)."""
+        loading_response = check_loading(shim_manager)
+        if loading_response:
+            return loading_response
+
+        entity = shim_manager._find_entity(entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        from ...entity import EntityRegistry
+        registry = EntityRegistry()
+        registry.setup(shim_manager.get_hass())
+        entry = registry.get_registry_entry(entity_id)
+        domain = entity.entity_id.split(".", 1)[0]
+        if entry is not None and entry.config_entry_id:
+            ce = shim_manager.get_hass().config_entries.async_get_entry(
+                entry.config_entry_id
+            )
+            if ce is not None:
+                domain = ce.domain
+
+        # No refresh on disable (skip an unnecessary API call).
+        await shim_manager.apply_entity_enabled(entity, False, refresh=False)
+        response = HTMLResponse(
+            '<div class="alert alert-success">Entity disabled</div>'
+        )
+        response.headers["HX-Redirect"] = get_detail_redirect(request, domain)
+        return response

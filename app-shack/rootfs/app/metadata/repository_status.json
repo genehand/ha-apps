@@ -15,7 +15,7 @@
   },
   "verified": {
     "AlexandrErohin/home-assistant-flightradar24": {
-      "version": "v1.34.2"
+      "version": "v1.34.4"
     },
     "explosivo22/rinnaicontrolr-ha": {
       "version": "2.3.0",
@@ -31,7 +31,7 @@
       "version": "0.4.3"
     },
     "JeffSteinbok/hass-dreo": {
-      "version": "v1.10.1"
+      "version": "v1.10.9"
     },
     "krahabb/meross_lan": {
       "version": "v5.8.0"
@@ -50,7 +50,7 @@
       "version": "v0.4.6"
     },
     "xZetsubou/hass-localtuya": {
-      "version": "2025.11.0"
+      "version": "2026.7.0"
     }
   }
 }

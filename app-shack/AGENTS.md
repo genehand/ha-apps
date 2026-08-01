@@ -42,6 +42,7 @@ shim/
 > Integration Reload Buttons → [`integration-reloads.md`](docs/integration-reloads.md)
 > State Restoration (RestoreEntity) → [`state-restore.md`](docs/state-restore.md)
 > Blocking Call Detection (warn-only) → [`blocking-calls.md`](docs/blocking-calls.md)
+> Entity Enable/Disable & Polling Control → [`entity-enable-disable.md`](docs/entity-enable-disable.md)
 
 ### Import patterns
 
