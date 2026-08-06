@@ -3,6 +3,9 @@
     "alandtse/alexa_media_player": {
       "reason": "HA MQTT integration doesn't support the media_player platform"
     },
+    "AlexandrErohin/home-assistant-flightradar24": {
+      "reason": "Custom Lovelace cards aren't supported"
+    },
     "mampfes/hacs_waste_collection_schedule": {
       "reason": "HA MQTT integration doesn't support the calendar platform"
     },
@@ -14,12 +17,8 @@
     }
   },
   "verified": {
-    "AlexandrErohin/home-assistant-flightradar24": {
-      "version": "v1.34.4"
-    },
     "explosivo22/rinnaicontrolr-ha": {
-      "version": "2.3.0",
-      "notes": "Rinnai water heater integration (custom repo)"
+      "version": "2.3.0"
     },
     "finity69x2/nws_alerts": {
       "version": "6.7.3"
@@ -31,7 +30,7 @@
       "version": "0.4.3"
     },
     "JeffSteinbok/hass-dreo": {
-      "version": "v1.10.9"
+      "version": "v1.11.1"
     },
     "krahabb/meross_lan": {
       "version": "v5.8.0"
@@ -43,11 +42,11 @@
       "version": "1.13.4"
     },
     "schmittx/home-assistant-leviton-decora-smart-wifi": {
-      "version": "2.1.3",
-      "notes": "Leviton Decora Smart WiFi switches (custom repo)"
+      "version": "2.1.3"
     },
     "wbyoung/smartcar": {
-      "version": "v0.4.6"
+      "version": "v0.4.6",
+      "notes": "Webhooks aren't supported"
     },
     "xZetsubou/hass-localtuya": {
       "version": "2026.7.0"
