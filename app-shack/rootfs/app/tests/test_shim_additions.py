@@ -1,6 +1,7 @@
 """Tests for shim modules added in this session."""
 
 import asyncio
+import sys
 import pytest
 from dataclasses import dataclass, FrozenInstanceError
 from pathlib import Path
@@ -292,6 +293,95 @@ class TestNewConstants:
 
         assert EntityCategory.CONFIG == "config"
         assert EntityCategory.DIAGNOSTIC == "diagnostic"
+
+
+class TestHelpersTyping:
+    """Tests for the homeassistant.helpers.typing stub module.
+
+    Mirrors upstream homeassistant/helpers/typing.py. Integrations import
+    UNDEFINED, StateType, and ConfigType from this module at import time
+    (e.g. dreo, leviton, nest_protect, moonraker), so the stub must expose
+    them or platform imports fail with ImportError.
+    """
+
+    def test_undefined_importable(self):
+        """UNDEFINED is importable and is the UndefinedType singleton."""
+        from homeassistant.helpers.typing import UNDEFINED, UndefinedType
+
+        assert isinstance(UNDEFINED, UndefinedType)
+        assert UNDEFINED is UndefinedType._singleton
+
+    def test_type_aliases_importable(self):
+        """All upstream type aliases are exposed."""
+        from collections.abc import Mapping
+        from typing import Any, Never
+
+        from homeassistant.helpers.typing import (
+            ConfigType,
+            DiscoveryInfoType,
+            GPSType,
+            NoEventData,
+            QueryType,
+            ServiceDataType,
+            StateType,
+            TemplateVarsType,
+        )
+
+        assert StateType == str | int | float | None
+        assert GPSType == tuple[float, float]
+        assert ConfigType == dict[str, Any]
+        assert DiscoveryInfoType == dict[str, Any]
+        assert ServiceDataType == dict[str, Any]
+        assert NoEventData == Mapping[str, Never]
+        assert TemplateVarsType == Mapping[str, Any] | None
+        assert QueryType is Any
+
+    @pytest.mark.integration
+    @pytest.mark.skipif(
+        not (
+            Path(__file__).parent.parent
+            / "data"
+            / "shim"
+            / "custom_components"
+            / "dreo"
+            / "sensor.py"
+        ).exists(),
+        reason="dreo integration not installed",
+    )
+    def test_dreo_sensor_module_imports(self):
+        """dreo sensor platform imports UNDEFINED at module level.
+
+        Regression test: this failed with "cannot import name 'UNDEFINED'
+        from 'homeassistant.helpers.typing'" before the helpers.typing
+        stub was completed.
+        """
+        import types as _types
+
+        dreo_dir = (
+            Path(__file__).parent.parent
+            / "data"
+            / "shim"
+            / "custom_components"
+        )
+        if not (dreo_dir / "dreo" / "sensor.py").exists():
+            pytest.skip("dreo integration not installed")
+
+        # Other tests create custom_components as a regular package in a
+        # temporary directory (see IntegrationManager._ensure_dir), so it
+        # can be cached in sys.modules with a __path__ that does not include
+        # the bundled integrations. Point it at the real data dir for the
+        # duration of this import, then restore it.
+        saved_cc = sys.modules.get("custom_components")
+        real_cc = _types.ModuleType("custom_components")
+        real_cc.__path__ = [str(dreo_dir)]
+        sys.modules["custom_components"] = real_cc
+        try:
+            import custom_components.dreo.sensor  # noqa: F401
+        finally:
+            if saved_cc is not None:
+                sys.modules["custom_components"] = saved_cc
+            else:
+                sys.modules.pop("custom_components", None)
 
 
 class TestDeviceRegistry:

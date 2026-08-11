@@ -10,12 +10,14 @@ import inspect
 import sys
 import types
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Never, Optional
 
 import aiohttp
+import voluptuous as vol
 
 from ..logging import get_logger
 
@@ -441,6 +443,29 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     """Create all homeassistant.helpers.* stub modules."""
 
     homeassistant.helpers = types.ModuleType("homeassistant.helpers")
+
+    # typing - mirrors upstream homeassistant/helpers/typing.py
+    helpers_typing = types.ModuleType("homeassistant.helpers.typing")
+
+    class UndefinedType(Enum):
+        """Singleton type for use with not set sentinel values."""
+
+        _singleton = 0
+
+    helpers_typing.UndefinedType = UndefinedType
+    helpers_typing.UNDEFINED = UndefinedType._singleton
+    helpers_typing.GPSType = tuple[float, float]
+    helpers_typing.ConfigType = dict[str, Any]
+    helpers_typing.DiscoveryInfoType = dict[str, Any]
+    helpers_typing.ServiceDataType = dict[str, Any]
+    helpers_typing.StateType = str | int | float | None
+    helpers_typing.TemplateVarsType = Mapping[str, Any] | None
+    helpers_typing.NoEventData = Mapping[str, Never]
+    helpers_typing.VolSchemaType = vol.Schema | vol.All | vol.Any
+    helpers_typing.VolDictType = dict[str | vol.Marker, Any]
+    helpers_typing.QueryType = Any
+    homeassistant.helpers.typing = helpers_typing
+    sys.modules["homeassistant.helpers.typing"] = helpers_typing
 
     # device_registry
     device_registry = types.ModuleType("homeassistant.helpers.device_registry")

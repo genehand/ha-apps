@@ -17,6 +17,9 @@
     }
   },
   "verified": {
+    "dreo-team/hass-dreoverse": {
+      "version": "v2.2.1"
+    },
     "explosivo22/rinnaicontrolr-ha": {
       "version": "2.3.0"
     },

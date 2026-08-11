@@ -24,7 +24,8 @@ def is_undefined(value: Any) -> bool:
     if value is None:
         return False
 
-    # Check for HA's UNDEFINED class (defined in import_patch.py)
+    # Check for HA's UNDEFINED class (homeassistant.helpers.typing.UNDEFINED,
+    # stubbed in shim/stubs/helpers.py)
     if hasattr(value, "__class__") and value.__class__.__name__ == "UNDEFINED":
         return True
 
