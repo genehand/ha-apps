@@ -113,6 +113,56 @@ class TestDetailPageRendersWithoutReleasesContext:
         assert 'id="release-notes-content"' not in html
 
 
+class TestReconfigureButtonGating:
+    """The Reconfigure button must only render when the entry supports options.
+
+    Mirrors HA's ConfigEntry.supports_options: integrations without an options
+    flow (e.g. hass-dreoverse) must not show a Reconfigure button that fails
+    with "This integration does not support reconfiguration.".
+    """
+
+    def _render_with_entry(self, entry):
+        return render_template(
+            TEMPLATE_DIR,
+            "integration_detail.html",
+            request=MagicMock(),
+            integration=_base_integration(),
+            entries=[entry],
+            entities=[],
+            devices=[],
+        )
+
+    def test_no_button_when_supports_options_false(self):
+        """Entry without options-flow support renders no Reconfigure button."""
+        html = self._render_with_entry(
+            {
+                "entry_id": "dreo_entry_1",
+                "title": "Dreo",
+                "data": {"username": "u"},
+                "state": "loaded",
+                "options": {},
+                "supports_options": False,
+            }
+        )
+        assert "Reconfigure" not in html
+        assert "dreo_entry_1/reconfigure" not in html
+
+    def test_button_shown_when_supports_options_true(self):
+        """Entry with options-flow support still renders the Reconfigure button."""
+        html = self._render_with_entry(
+            {
+                "entry_id": "test_entry_1",
+                "title": "Test",
+                "data": {"host": "h"},
+                "state": "loaded",
+                "options": {},
+                "supports_options": True,
+            }
+        )
+        assert "Reconfigure" in html
+        assert "test_entry_1/reconfigure" in html
+
+
 class TestVersionsFragment:
     """integration_versions.html fragment template behavior."""
 

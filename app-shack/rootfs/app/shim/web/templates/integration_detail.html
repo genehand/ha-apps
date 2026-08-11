@@ -182,10 +182,13 @@
             </details>
             {% endif %}
         <div class="entry-actions" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-            {# Reconfigure button - available for all states #}
+            {# Reconfigure button - only shown when the integration's config flow
+               supports an options flow (mirrors HA's ConfigEntry.supports_options) #}
+            {% if entry.supports_options %}
             <a href="../config/{{ entry.entry_id }}/reconfigure" role="button" class="secondary">
                 Reconfigure
             </a>
+            {% endif %}
             {% if entry.state == 'loaded' %}
             <button type="button" class="secondary"
                     hx-post="../config/{{ entry.entry_id }}/disable"

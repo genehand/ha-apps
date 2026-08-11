@@ -141,6 +141,26 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         """Handle import from configuration.yaml."""
         return await self.async_step_user(user_input)
 
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        """Get the options flow for this handler.
+
+        Integrations that support an options flow (reconfiguration) must
+        override this and return an OptionsFlow instance. The base
+        implementation raises NotImplementedError, matching Home Assistant.
+        """
+        raise NotImplementedError()
+
+    @classmethod
+    def async_supports_options_flow(cls, config_entry) -> bool:
+        """Return True if this config entry supports an options flow.
+
+        Mirrors Home Assistant: support is detected by checking whether the
+        flow handler overrides ``async_get_options_flow`` rather than
+        inheriting the base implementation that raises NotImplementedError.
+        """
+        return cls.async_get_options_flow is not ConfigFlow.async_get_options_flow
+
     def async_show_form(
         self,
         step_id: str,

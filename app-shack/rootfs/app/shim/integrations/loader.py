@@ -852,6 +852,49 @@ class IntegrationLoader:
             "filtered_entities": filtered_ids,
         }
 
+    async def _get_config_flow_class(self, domain: str):
+        """Import the integration's config_flow module and find its ConfigFlow subclass.
+
+        Scans the module for the first subclass of ``ConfigFlow`` (skipping the
+        OAuth2 base handlers). Returns the class, or None if it can't be found.
+        """
+        try:
+            config_flow_module = await asyncio.to_thread(
+                importlib.import_module,
+                f"custom_components.{domain}.config_flow",
+            )
+        except ImportError as e:
+            _LOGGER.error(f"Failed to import config_flow for {domain}: {e}")
+            return None
+
+        from ..config_entries import ConfigFlow
+
+        _SKIP_CONFIG_FLOW_NAMES = {"AbstractOAuth2FlowHandler", "OAuth2FlowHandler"}
+        for attr_name in dir(config_flow_module):
+            attr = getattr(config_flow_module, attr_name)
+            if (
+                isinstance(attr, type)
+                and issubclass(attr, ConfigFlow)
+                and attr is not ConfigFlow
+                and attr.__name__ not in _SKIP_CONFIG_FLOW_NAMES
+            ):
+                return attr
+        return None
+
+    async def supports_options_flow(self, domain: str) -> bool:
+        """Return whether the integration's config flow supports an options flow.
+
+        Mirrors HA's ``ConfigEntry.supports_options``: True only if the flow
+        handler overrides ``async_get_options_flow``. Used by the UI to decide
+        whether to show the Reconfigure button.
+        """
+        if not await self.load_integration(domain):
+            return False
+        config_flow_class = await self._get_config_flow_class(domain)
+        if config_flow_class is None:
+            return False
+        return config_flow_class.async_supports_options_flow(None)
+
     async def start_options_flow(self, entry: ConfigEntry) -> Optional[dict]:
         """Start an options flow for an existing config entry.
 
@@ -906,37 +949,14 @@ class IntegrationLoader:
                         current_entry.reset(token)
 
             # Check for config flow module
-            try:
-                config_flow_module = await asyncio.to_thread(
-                    importlib.import_module,
-                    f"custom_components.{domain}.config_flow",
-                )
-            except ImportError as e:
-                _LOGGER.error(f"Failed to import config_flow for {domain}: {e}")
-                return None
-
-            # Get the ConfigFlow class to access async_get_options_flow
-            from ..config_entries import ConfigFlow
-
-            config_flow_class = None
-            _SKIP_CONFIG_FLOW_NAMES = {"AbstractOAuth2FlowHandler", "OAuth2FlowHandler"}
-            for attr_name in dir(config_flow_module):
-                attr = getattr(config_flow_module, attr_name)
-                if (
-                    isinstance(attr, type)
-                    and issubclass(attr, ConfigFlow)
-                    and attr is not ConfigFlow
-                    and attr.__name__ not in _SKIP_CONFIG_FLOW_NAMES
-                ):
-                    config_flow_class = attr
-                    break
-
+            config_flow_class = await self._get_config_flow_class(domain)
             if not config_flow_class:
                 _LOGGER.error(f"Could not find ConfigFlow class for {domain}")
                 return None
 
-            # Check if integration has options flow support
-            if not hasattr(config_flow_class, "async_get_options_flow"):
+            # Check if integration has options flow support (mirrors HA: only
+            # true when the handler overrides async_get_options_flow)
+            if not config_flow_class.async_supports_options_flow(entry):
                 _LOGGER.warning(f"Integration {domain} has no options flow support")
                 return None
 

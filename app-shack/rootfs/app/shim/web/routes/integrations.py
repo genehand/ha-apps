@@ -128,6 +128,12 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
 
         # Convert to dict for template compatibility
         info_dict = info.to_dict()
+        # Whether this integration's config flow supports an options flow
+        # (reconfiguration). Mirrors HA's ConfigEntry.supports_options so the
+        # UI only offers a Reconfigure button when it can actually work.
+        supports_options = (
+            await shim_manager.get_integration_loader().supports_options_flow(domain)
+        )
         entries_dicts = [
             {
                 "entry_id": e.entry_id,
@@ -135,6 +141,7 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                 "data": e.data,
                 "state": e.state,
                 "options": e.options,
+                "supports_options": supports_options,
             }
             for e in entries
         ]

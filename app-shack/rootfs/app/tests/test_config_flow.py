@@ -48,8 +48,16 @@ def cleanup_test_modules(domain):
             del sys.modules[mod]
 
 
-def create_mock_integration_with_config_flow(shim_dir, domain):
+def create_mock_integration_with_config_flow(shim_dir, domain, with_options_flow=True):
     """Create a mock integration with config flow in the custom_components directory.
+
+    Args:
+        shim_dir: The directory containing the custom_components package.
+        domain: The integration domain.
+        with_options_flow: If True, the config flow overrides
+            ``async_get_options_flow`` (like integrations that support
+            reconfiguration). If False, the flow only supports the initial
+            setup (like hass-dreoverse, which has no options flow).
 
     Returns the path to the integration directory.
     """
@@ -90,25 +98,7 @@ async def async_setup_entry(hass, entry):
 
     # Create config_flow.py
     config_flow_py = integration_dir / "config_flow.py"
-    config_flow_py.write_text(f'''
-from homeassistant.config_entries import ConfigFlow, OptionsFlow
-
-class TestConfigFlow(ConfigFlow, domain="{domain}"):
-    """Config flow for {domain}."""
-
-    VERSION = 1
-
-    async def async_step_user(self, user_input=None):
-        """Handle initial step."""
-        if user_input is not None:
-            return self.async_create_entry(title="Test", data=user_input)
-        return self.async_show_form(
-            step_id="user",
-            data_schema={{
-                "host": "str"
-            }}
-        )
-
+    options_flow_section = f'''
     @staticmethod
     def async_get_options_flow(config_entry):
         """Get options flow."""
@@ -128,7 +118,26 @@ class TestOptionsFlow(OptionsFlow):
                 "option": "str"
             }}
         )
-''')
+''' if with_options_flow else "\n"
+    config_flow_py.write_text(f'''
+from homeassistant.config_entries import ConfigFlow, OptionsFlow
+
+class TestConfigFlow(ConfigFlow, domain="{domain}"):
+    """Config flow for {domain}."""
+
+    VERSION = 1
+
+    async def async_step_user(self, user_input=None):
+        """Handle initial step."""
+        if user_input is not None:
+            return self.async_create_entry(title="Test", data=user_input)
+        return self.async_show_form(
+            step_id="user",
+            data_schema={{
+                "host": "str"
+            }}
+        )
+{options_flow_section}''')
 
     return integration_dir
 
@@ -563,6 +572,106 @@ async def test_start_config_flow_integration_not_found():
         result = await loader.start_config_flow("nonexistent_domain_xyz_12345")
 
         assert result is None
+
+
+# --------------------------------------------------------------------------- #
+#  Options flow support detection (reconfigure button)
+# --------------------------------------------------------------------------- #
+
+
+def _register_mock_integration(shim_dir, integration_manager, domain, name):
+    """Register a mock integration with the manager (shared test setup)."""
+    from shim.integrations.manager import IntegrationInfo
+
+    info = IntegrationInfo(
+        domain=domain,
+        name=name,
+        version="1.0.0",
+        description="Test",
+        source="local",
+        repository_url="https://example.com/test",
+        enabled=True,
+        config_flow=True,
+    )
+    integration_manager._integrations[domain] = info
+    setup_import_path(shim_dir)
+    return info
+
+
+@pytest.mark.asyncio
+async def test_supports_options_flow_true_when_async_get_options_flow_overridden():
+    """supports_options_flow is True when the flow handler overrides async_get_options_flow."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_data_dir = Path(tmpdir)
+        hass, loader, shim_dir, integration_manager = setup_test_env(temp_data_dir)
+
+        domain = generate_unique_domain("supopts")
+        create_mock_integration_with_config_flow(shim_dir, domain, with_options_flow=True)
+        _register_mock_integration(shim_dir, integration_manager, domain, "Test Sup Opts")
+
+        assert await loader.supports_options_flow(domain) is True
+
+        cleanup_test_modules(domain)
+
+
+@pytest.mark.asyncio
+async def test_supports_options_flow_false_without_options_flow():
+    """supports_options_flow is False for integrations without an options flow.
+
+    Regression test for the Dreo (hass-dreoverse) case: its config flow only
+    implements async_step_user, so the shim must not offer reconfiguration.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_data_dir = Path(tmpdir)
+        hass, loader, shim_dir, integration_manager = setup_test_env(temp_data_dir)
+
+        domain = generate_unique_domain("noopts")
+        create_mock_integration_with_config_flow(
+            shim_dir, domain, with_options_flow=False
+        )
+        _register_mock_integration(shim_dir, integration_manager, domain, "Test No Opts")
+
+        assert await loader.supports_options_flow(domain) is False
+
+        cleanup_test_modules(domain)
+
+
+@pytest.mark.asyncio
+async def test_start_options_flow_returns_none_without_options_flow():
+    """start_options_flow returns None when the integration has no options flow.
+
+    Regression test: the base ConfigFlow now defines async_get_options_flow
+    (raising NotImplementedError), so detection must check whether the handler
+    *overrides* it rather than using hasattr, which would always pass and then
+    crash with NotImplementedError.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_data_dir = Path(tmpdir)
+        hass, loader, shim_dir, integration_manager = setup_test_env(temp_data_dir)
+
+        domain = generate_unique_domain("nooptsstart")
+        create_mock_integration_with_config_flow(
+            shim_dir, domain, with_options_flow=False
+        )
+        _register_mock_integration(
+            shim_dir, integration_manager, domain, "Test No Opts Start"
+        )
+
+        entry = ConfigEntry(
+            entry_id=f"{domain}_entry_noopts",
+            version=1,
+            domain=domain,
+            title="Test Entry",
+            data={"host": "192.168.1.1"},
+            options={},
+        )
+        await hass.config_entries.async_add(entry)
+
+        result = await loader.start_options_flow(entry)
+
+        assert result is None
+
+        cleanup_test_modules(domain)
 
 
 if __name__ == "__main__":
