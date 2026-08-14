@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
@@ -11,7 +11,7 @@ use tracing::debug;
 /// Demo mode: wait for user to authenticate via web UI.
 pub async fn run_demo_mode(
     playback_state: &Arc<RwLock<PlaybackState>>,
-    token_file: &PathBuf,
+    token_file: &Path,
     token_tx: &broadcast::Sender<()>,
 ) -> anyhow::Result<()> {
     {

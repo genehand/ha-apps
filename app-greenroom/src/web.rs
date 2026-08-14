@@ -107,13 +107,13 @@ struct ManualAuthForm {
 
 /// Generate PKCE code verifier
 fn generate_code_verifier() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     const LEN: usize = 128;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..LEN)
         .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
+            let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect()
@@ -213,7 +213,7 @@ fn render_status_content(
         )
     } else if connected {
         let account_status =
-            format!("<p class=\"text-sm text-gray-400\">Session active via WebSocket</p>");
+            "<p class=\"text-sm text-gray-400\">Session active via WebSocket</p>".to_string();
 
         let playback_html = if playback.track.is_some() {
             format!(
@@ -495,7 +495,7 @@ async fn auth_callback_handler(
         Some(v) => v,
         None => {
             error!("No matching OAuth flow found for state parameter");
-            return Html(format!(
+            return Html(
                 r#"<!DOCTYPE html>
 <html class="dark">
 <head><script src="https://cdn.tailwindcss.com"></script></head>
@@ -508,7 +508,8 @@ async fn auth_callback_handler(
     </div>
 </body>
 </html>"#
-            ));
+                    .to_string(),
+            );
         }
     };
 
@@ -533,7 +534,7 @@ async fn auth_callback_handler(
         Ok(r) => r,
         Err(e) => {
             error!("Token exchange request failed: {}", e);
-            return Html(format!(
+            return Html(
                 r#"<!DOCTYPE html>
 <html class="dark">
 <head><script src="https://cdn.tailwindcss.com"></script></head>
@@ -546,7 +547,8 @@ async fn auth_callback_handler(
     </div>
 </body>
 </html>"#
-            ));
+                    .to_string(),
+            );
         }
     };
 
@@ -582,7 +584,7 @@ async fn auth_callback_handler(
         Ok(t) => t,
         Err(e) => {
             error!("Failed to parse token response: {}", e);
-            return Html(format!(
+            return Html(
                 r#"<!DOCTYPE html>
 <html class="dark">
 <head><script src="https://cdn.tailwindcss.com"></script></head>
@@ -594,7 +596,8 @@ async fn auth_callback_handler(
     </div>
 </body>
 </html>"#
-            ));
+                    .to_string(),
+            );
         }
     };
 
@@ -619,7 +622,7 @@ async fn auth_callback_handler(
 
     if let Err(e) = state.save_credentials(&credentials).await {
         error!("Failed to save credentials: {}", e);
-        return Html(format!(
+        return Html(
             r#"<!DOCTYPE html>
 <html class="dark">
 <head><script src="https://cdn.tailwindcss.com"></script></head>
@@ -631,14 +634,15 @@ async fn auth_callback_handler(
         </div>
     </div>
 </body>
-</html>"#,
-        ));
+</html>"#
+                .to_string(),
+        );
     }
 
     info!("OAuth authentication successful!");
 
     // Return success HTML
-    Html(format!(
+    Html(
         r#"<!DOCTYPE html>
 <html class="dark">
 <head><script src="https://cdn.tailwindcss.com"></script></head>
@@ -652,7 +656,8 @@ async fn auth_callback_handler(
     </div>
 </body>
 </html>"#
-    ))
+            .to_string(),
+    )
 }
 
 /// Handle manual code entry from user
@@ -857,7 +862,7 @@ async fn auth_disconnect_handler(State(state): State<AppState>) -> Html<String> 
     info!("User disconnected Spotify account");
 
     // Close window after disconnect
-    Html(format!(
+    Html(
         r#"<div class="max-w-md mx-auto p-6">
             <div class="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded mb-4">
                 Disconnected from Spotify.
@@ -865,7 +870,8 @@ async fn auth_disconnect_handler(State(state): State<AppState>) -> Html<String> 
             <p class="text-sm text-gray-600">You can close this window.</p>
             <script>setTimeout(() => window.close(), 2000);</script>
         </div>"#
-    ))
+            .to_string(),
+    )
 }
 
 #[cfg(test)]

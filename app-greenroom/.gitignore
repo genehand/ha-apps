@@ -1,0 +1,8 @@
+# Local development secrets (never commit)
+.env
+credentials.json
+greenroom_token.json
+greenroom_connection_state.json
+
+# Local build artifacts
+*.local

@@ -1,6 +1,6 @@
 [package]
 name = "greenroom"
-version = "0.4.14"
+version = "0.5.0"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Spotify Connect monitor device for Home Assistant"
@@ -8,7 +8,6 @@ description = "Spotify Connect monitor device for Home Assistant"
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 
 # Pin vergen crates first to resolve librespot-core build conflict
@@ -24,25 +23,21 @@ librespot-protocol = { version = "0.8", default-features = false }
 
 # Protobuf (used by librespot)
 protobuf = "3.7"
-bytes = "1"
 
 # MQTT
-rumqttc = "0.24"
+rumqttc = "0.25"
 
 # HTTP client (for spclient)
-hyper = { version = "1", features = ["full"] }
 http = "1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 
 # Web server (for OAuth UI)
-axum = { version = "0.7", features = ["tokio"] }
-tower-http = { version = "0.5", features = ["fs", "trace"] }
-tower = { version = "0.4", features = ["make"] }
+axum = { version = "0.8", features = ["tokio"] }
 
 # OAuth PKCE and token exchange
-rand = "0.8"
-sha2 = "0.10"
-base64 = "0.22"
+rand = "0.10"
+sha2 = "0.11"
+base64 = "0.23"
 urlencoding = "2"
 
 # Serialization
@@ -59,14 +54,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] 
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
 
 # Configuration
-dotenvy = "0.15"
 clap = { version = "4", features = ["derive", "env"] }
-
-# Browser opener for OAuth
-open = "5"
 
 # No build dependencies needed
 

@@ -7,8 +7,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Build release binary
-RUN cargo build --release
+# Build release binary (--locked for reproducible builds from committed Cargo.lock)
+RUN cargo build --release --locked
 
 
 # ====== Runtime stage ======

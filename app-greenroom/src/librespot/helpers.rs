@@ -66,7 +66,7 @@ pub fn create_join_cluster_request(
         volume: 32767,
         name: device_name.to_string(),
         device_id: session.device_id().to_string(),
-        device_type: EnumOrUnknown::new(DeviceType::Speaker.into()),
+        device_type: EnumOrUnknown::new(DeviceType::GameConsole.into()),
         device_software_version: version::SEMVER.to_string(),
         spirc_version: version::SPOTIFY_SPIRC_VERSION.to_string(),
         client_id: session.client_id(),

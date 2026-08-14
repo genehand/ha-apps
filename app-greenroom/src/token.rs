@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
@@ -79,11 +79,11 @@ pub async fn load_credentials(token_file: &PathBuf) -> Option<AuthCredentials> {
     }
 }
 
-pub async fn has_credentials_file(token_file: &PathBuf) -> bool {
+pub async fn has_credentials_file(token_file: &Path) -> bool {
     token_file.exists()
 }
 
-pub async fn clear_credentials(token_file: &PathBuf) -> anyhow::Result<()> {
+pub async fn clear_credentials(token_file: &Path) -> anyhow::Result<()> {
     if token_file.exists() {
         tokio::fs::remove_file(token_file).await?;
         info!("Cleared OAuth credentials from {}", token_file.display());

@@ -1,0 +1,11 @@
+# Keep Docker build context small
+target/
+.git/
+.dockerignore
+.env
+credentials.json
+greenroom_token.json
+greenroom_connection_state.json
+*.png
+*.md
+docs/

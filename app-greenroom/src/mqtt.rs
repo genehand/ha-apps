@@ -203,7 +203,7 @@ impl MqttBridge {
         device_id: &str,
     ) -> anyhow::Result<()> {
         let device_name = &self.config.device_name;
-        let unique_id = format!("{}", device_id);
+        let unique_id = device_id.to_string();
 
         // Sensor with all playback info as attributes
         let topic = format!("homeassistant/sensor/{}/config", device_id);
@@ -470,7 +470,7 @@ mod tests {
 
         // Verify we can send the notification
         connection_tx.send(true).unwrap();
-        assert_eq!(connection_rx.recv().await.unwrap(), true);
+        assert!(connection_rx.recv().await.unwrap());
     }
 
     /// Test that connection switch command disables connection
@@ -513,7 +513,7 @@ mod tests {
 
         // Verify we can send the notification
         connection_tx.send(false).unwrap();
-        assert_eq!(connection_rx.recv().await.unwrap(), false);
+        assert!(!connection_rx.recv().await.unwrap());
     }
 
     /// Test default connection_enabled state
@@ -534,8 +534,8 @@ mod tests {
         tx.send(true).unwrap();
 
         // Receive and verify
-        assert_eq!(rx.recv().await.unwrap(), true);
-        assert_eq!(rx.recv().await.unwrap(), false);
-        assert_eq!(rx.recv().await.unwrap(), true);
+        assert!(rx.recv().await.unwrap());
+        assert!(!rx.recv().await.unwrap());
+        assert!(rx.recv().await.unwrap());
     }
 }

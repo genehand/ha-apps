@@ -86,8 +86,7 @@ pub async fn handle_cluster_update(
                 player_state.is_playing, is_paused, is_playing, track_uri, position_ms, volume, shuffle, repeat
             );
 
-            let track_uri_obj = if track_uri.starts_with("spotify:track:") {
-                let id_str = &track_uri[14..];
+            let track_uri_obj = if let Some(id_str) = track_uri.strip_prefix("spotify:track:") {
                 SpotifyId::from_base62(id_str)
                     .ok()
                     .map(|id| librespot_core::SpotifyUri::Track { id })

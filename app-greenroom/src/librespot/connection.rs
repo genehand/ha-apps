@@ -225,8 +225,8 @@ mod tests {
         tx.send(true).unwrap();
 
         // Both receivers should get it
-        assert_eq!(rx.recv().await.unwrap(), true);
-        assert_eq!(rx2.recv().await.unwrap(), true);
+        assert!(rx.recv().await.unwrap());
+        assert!(rx2.recv().await.unwrap());
     }
 
     #[tokio::test]
@@ -238,7 +238,7 @@ mod tests {
         tx.send(false).unwrap();
 
         // Verify receipt
-        assert_eq!(rx.recv().await.unwrap(), true);
-        assert_eq!(rx.recv().await.unwrap(), false);
+        assert!(rx.recv().await.unwrap());
+        assert!(!rx.recv().await.unwrap());
     }
 }
