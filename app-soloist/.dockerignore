@@ -1,0 +1,9 @@
+# Keep Docker build context small
+target/
+.git/
+.dockerignore
+.env
+soloist-data/
+*.png
+*.md
+docs/

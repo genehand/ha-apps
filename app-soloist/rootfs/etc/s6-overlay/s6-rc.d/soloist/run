@@ -1,0 +1,57 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Community Add-on: Soloist
+# Starts the soloist daemon + MQTT bridge
+#
+# Configuration comes from /data/options.json (read by the bridge itself).
+# This script only sets up audio and optionally exposes MQTT credentials
+# discovered from the Supervisor API (when available).
+# ==============================================================================
+
+# MQTT configuration - try Supervisor API first, fallback to user config
+# (the bridge reads mqtt_* from /data/options.json). We check directly via
+# curl with a short timeout to avoid hanging when the MQTT service is not
+# available via Supervisor (expected with external MQTT or local testing).
+if MQTT_RESPONSE=$(curl -s --max-time 5 --request GET \
+    -H "Authorization: Bearer ${SUPERVISOR_TOKEN:-}" \
+    -H "Content-Type: application/json" \
+    "${SUPERVISOR_API:-http://supervisor}/services/mqtt" 2>/dev/null); then
+    MQTT_RESULT=$(echo "${MQTT_RESPONSE}" | jq -r '.result // empty' 2>/dev/null)
+    if [ "${MQTT_RESULT}" = "ok" ]; then
+        MQTT_JSON=$(echo "${MQTT_RESPONSE}" | jq '.data')
+        export MQTT_HOST=$(echo "${MQTT_JSON}" | jq -r '.host // empty')
+        export MQTT_PORT=$(echo "${MQTT_JSON}" | jq -r '.port // "1883"')
+        export MQTT_USERNAME=$(echo "${MQTT_JSON}" | jq -r '.username // ""')
+        export MQTT_PASSWORD=$(echo "${MQTT_JSON}" | jq -r '.password // ""')
+        bashio::log.info "Using MQTT credentials from Supervisor"
+    fi
+fi
+
+# Audio: soloist requires a PipeWire/PulseAudio backend to run as a playback
+# device. By default we start a null-sink PulseAudio inside the container so the
+# device is fully functional (track info, position, controls) but silent.
+# To route audio to your HA host instead, enable audio: true in config.yaml -
+# the supervisor then injects host audio and sets PULSE_SERVER, and we skip
+# starting our own daemon.
+if [ -z "${PULSE_SERVER:-}" ]; then
+    export XDG_RUNTIME_DIR=/tmp/pulse-runtime
+    mkdir -p "${XDG_RUNTIME_DIR}/pulse"
+    if pulseaudio --daemonize=yes --exit-idle-time=-1 \
+        --load="module-null-sink sink_name=soloist_sink sink_properties=device.description=Soloist" \
+        --load=module-always-sink >/dev/null 2>&1; then
+        export PULSE_SERVER="unix:${XDG_RUNTIME_DIR}/pulse/native"
+        bashio::log.info "Started in-container PulseAudio with null sink (silent audio)"
+    else
+        bashio::log.warning "Failed to start in-container PulseAudio; soloist may not work"
+    fi
+else
+    bashio::log.info "Using host audio via PULSE_SERVER=${PULSE_SERVER}"
+fi
+
+# Soloist data directory (persistent; stores the Spotify Connect session)
+export SOLOIST_DATA_DIR=/data/soloist
+
+bashio::log.info "Starting Soloist bridge..."
+
+exec soloist-bridge

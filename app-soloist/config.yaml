@@ -1,0 +1,42 @@
+slug: app-soloist
+name: Soloist
+version: 0.1.0
+url: https://github.com/genehand/ha-apps/blob/main/app-soloist/README.md
+
+init: false
+
+description: Spotify playback device with MQTT discovery for Home Assistant
+
+arch:
+  - aarch64
+  - amd64
+
+startup: services
+
+boot: auto
+
+# Soloist advertises itself on the local network as a Spotify Connect device,
+# so it must share the host network to be discoverable from Spotify apps.
+host_network: true
+
+services:
+  - mqtt:want
+
+options:
+  device_name: "Soloist"
+  soloist_api_key: ""
+  initial_volume: 100
+  mqtt_host: core-mosquitto
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+
+schema:
+  device_name: str
+  soloist_api_key: password
+  initial_volume: "int(0,100)?"
+  mqtt_host: str?
+  mqtt_port: int?
+  mqtt_username: str?
+  mqtt_password: password?
+  log_level: list(trace|debug|info|warn|error)?

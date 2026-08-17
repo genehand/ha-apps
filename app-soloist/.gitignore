@@ -1,0 +1,6 @@
+# Local development secrets (never commit)
+.env
+
+# Local build artifacts
+*.local
+soloist-data/
