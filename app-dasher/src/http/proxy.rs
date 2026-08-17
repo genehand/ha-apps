@@ -222,7 +222,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::config::Config;
-    use crate::state::ClientStates;
+    use crate::state::{ClientStates, TabStates};
     use dashmap::DashMap;
     use std::sync::Arc;
 
@@ -247,6 +247,7 @@ mod tests {
             client_states: ClientStates::new(),
             http_client,
             panel_updates: Arc::new(DashMap::new()),
+            tab_states: TabStates::new(),
         }
     }
 

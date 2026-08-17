@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
             .redirect(reqwest::redirect::Policy::none())
             .build()?,
         panel_updates: Arc::new(DashMap::new()),
+        tab_states: state::TabStates::new(),
     };
 
     let app = Router::new()

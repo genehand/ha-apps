@@ -27,6 +27,7 @@ async fn forward_client_to_ha<S, D>(
     D: Sink<Frame> + Unpin,
     D::Error: std::fmt::Display,
 {
+    let mut peer_closed = false;
     while let Some(frame) = source.next().await {
         match frame.opcode() {
             OpCode::Text => {
@@ -48,11 +49,28 @@ async fn forward_client_to_ha<S, D>(
                 }
             }
             OpCode::Close => {
-                let _ = destination.send(Frame::close(CloseCode::Normal, "")).await;
+                peer_closed = true;
+                // Pass the client's close frame through untouched so the
+                // close code and reason are preserved for Home Assistant.
+                if let Err(e) = destination.send(frame).await {
+                    error!("Error forwarding close to HA: {}", e);
+                }
                 break;
             }
             _ => {}
         }
+    }
+
+    if !peer_closed {
+        // The client connection ended without a close frame (abrupt
+        // disconnect, e.g. the tab was killed or the network dropped). Send
+        // a close to Home Assistant so it promptly unwinds the server-side
+        // subscriptions instead of waiting for its own idle detection.
+        warn!(
+            "Client connection from {} ended without close frame",
+            client_ip
+        );
+        let _ = destination.send(Frame::close(CloseCode::Away, "")).await;
     }
 }
 
@@ -68,6 +86,7 @@ async fn forward_ha_to_client<S, D>(
     D: Sink<Frame> + Unpin,
     D::Error: std::fmt::Display,
 {
+    let mut peer_closed = false;
     while let Some(frame) = source.next().await {
         match frame.opcode() {
             OpCode::Text => {
@@ -123,11 +142,26 @@ async fn forward_ha_to_client<S, D>(
                 }
             }
             OpCode::Close => {
-                let _ = destination.send(Frame::close(CloseCode::Normal, "")).await;
+                peer_closed = true;
+                // Pass Home Assistant's close frame through untouched so the
+                // close code and reason are preserved for the client. The
+                // frontend reconnects and re-subscribes on any close code.
+                if let Err(e) = destination.send(frame).await {
+                    warn!("Error forwarding close to client: {}", e);
+                }
                 break;
             }
             _ => {}
         }
+    }
+
+    if !peer_closed {
+        // Home Assistant's connection ended without a close frame (abrupt
+        // disconnect, e.g. a restart or idle timeout from an intermediate
+        // proxy). Send a close to the client so it reconnects promptly
+        // instead of waiting on a half-open socket.
+        warn!("HA connection for {} ended without close frame", client_ip);
+        let _ = destination.send(Frame::close(CloseCode::Away, "")).await;
     }
 }
 
@@ -199,6 +233,7 @@ pub async fn handle(
     let config = state.config;
     let client_states = state.client_states;
     let panel_updates = state.panel_updates;
+    let tab_states = state.tab_states;
     let conn_id = format!("{:p}", &client_socket);
 
     // Create client state
@@ -214,13 +249,23 @@ pub async fn handle(
                 now.duration_since(v.timestamp) < std::time::Duration::from_secs(30)
             });
 
+            let mut panel_update_applied = false;
             if let Some((_, update)) = panel_updates.remove(tab_id_str) {
                 client_state.filtering_active = update.filtering_active;
+                panel_update_applied = true;
                 debug!(
                     "Applied cached panel update for tab {}: filtering={}",
                     tab_id_str, update.filtering_active
                 );
             }
+
+            // Restore persistent per-tab state from before the last disconnect.
+            // A reconnect (e.g. after the 5-minute background-suspend) does not
+            // trigger a panel POST, so without this the proxy would stay
+            // unfiltered until the user navigates again. A fresh panel update
+            // above takes precedence for filtering.
+            tab_states.prune(now, crate::state::TAB_STATE_TTL);
+            tab_states.restore_into(tab_id_str, &mut client_state, panel_update_applied);
         }
     }
 
@@ -278,7 +323,7 @@ pub async fn handle(
     let conn_id_clone = conn_id.clone();
     let client_states_clone = client_states.clone();
     let client_ip_clone = client_ip.clone();
-    let c2h_handle = tokio::spawn(async move {
+    let mut c2h_handle = tokio::spawn(async move {
         forward_client_to_ha(
             client_stream,
             ha_sink,
@@ -293,7 +338,7 @@ pub async fn handle(
     let conn_id_clone2 = conn_id.clone();
     let client_states_clone2 = client_states.clone();
     let client_ip_clone = client_ip.clone();
-    let h2c_handle = tokio::spawn(async move {
+    let mut h2c_handle = tokio::spawn(async move {
         forward_ha_to_client(
             ha_stream,
             client_sink,
@@ -304,13 +349,28 @@ pub async fn handle(
         .await;
     });
 
-    // Wait for either task to complete
+    // Wait for either task to complete (either the client or HA closed the
+    // connection), then tear down the remaining direction. Aborting the peer
+    // task drops its socket halves, closing that leg immediately so the
+    // remote side sees the disconnect without lingering half-open tasks.
     tokio::select! {
-        _ = c2h_handle => {},
-        _ = h2c_handle => {},
+        _ = &mut c2h_handle => {
+            debug!("Client to HA direction ended for {}, aborting HA leg", client_ip);
+            h2c_handle.abort();
+        }
+        _ = &mut h2c_handle => {
+            debug!("HA to client direction ended for {}, aborting client leg", client_ip);
+            c2h_handle.abort();
+        }
     }
 
-    // Cleanup
+    // Cleanup: snapshot the per-tab state so a reconnect can resume filtering
+    // immediately, then destroy the connection-scoped state.
+    if let Some(tab_id_str) = tab_id.as_deref() {
+        if let Some(client_state) = client_states.get(&conn_id) {
+            tab_states.save(tab_id_str, &client_state);
+        }
+    }
     client_states.remove(&conn_id);
     info!("WebSocket connection closed for {}", client_ip);
 }
@@ -562,6 +622,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_forward_client_to_ha_preserves_close_code_and_reason() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        // Client closes with a non-default code and reason
+        tx.send(Frame::close(CloseCode::Away, "going away"))
+            .await
+            .unwrap();
+
+        forward_client_to_ha(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Away));
+        assert_eq!(frame.close_reason().unwrap(), Some("going away"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_client_to_ha_eof_sends_close_to_ha() {
+        let (tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        // End the client stream abruptly without a close frame
+        drop(tx);
+
+        forward_client_to_ha(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        // HA should receive a synthesized close so it unwinds subscriptions
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Away));
+        // Nothing further should be sent
+        assert!(sink_rx.next().await.is_none());
+    }
+
+    #[tokio::test]
     async fn test_forward_ha_to_client_passthrough() {
         let (mut tx, rx) = mpsc::channel::<Frame>(10);
         let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
@@ -611,6 +715,50 @@ mod tests {
         let received = sink_rx.next().await;
         assert!(received.is_some());
         assert_eq!(received.unwrap().opcode(), OpCode::Close);
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_preserves_close_code_and_reason() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        // HA closes with a non-default code and reason
+        tx.send(Frame::close(CloseCode::Restart, "server restarting"))
+            .await
+            .unwrap();
+
+        forward_ha_to_client(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Restart));
+        assert_eq!(frame.close_reason().unwrap(), Some("server restarting"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_ha_to_client_eof_sends_close_to_client() {
+        let (tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        let client_states = ClientStates::new();
+
+        // End the HA stream abruptly without a close frame
+        drop(tx);
+
+        forward_ha_to_client(rx, sink_tx, "test", &client_states, "127.0.0.1").await;
+
+        // Client should receive a synthesized close so it reconnects promptly
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Away));
+        // Nothing further should be sent
+        assert!(sink_rx.next().await.is_none());
     }
 
     #[tokio::test]
@@ -708,9 +856,14 @@ mod tests {
 
         forward_ha_to_client(rx, sink_tx, conn_id, &client_states, client_ip).await;
 
-        // Nothing should be sent since all entities were filtered out
+        // Nothing matching was sent, but the end of the HA stream should
+        // still propagate as a synthesized close so the client reconnects
         let received = sink_rx.next().await;
-        assert!(received.is_none());
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Away));
+        assert!(sink_rx.next().await.is_none());
     }
 
     #[tokio::test]

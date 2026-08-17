@@ -1,11 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tracing::debug;
 
 use crate::config::Config;
+
+/// How long a tab's persistent state is kept after its last connection ends,
+/// so a reconnect (e.g. after the 5-minute background-suspend) can resume
+/// filtering. The frontend re-fetches `lovelace/config` on every reconnect,
+/// so any stale entity cache self-corrects within a second of reconnecting;
+/// a generous TTL only costs a few KB per tab. Old entries are pruned
+/// opportunistically on new connections.
+pub const TAB_STATE_TTL: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Clone, Debug)]
 pub struct DashboardConfig {
@@ -131,6 +139,10 @@ impl ClientStates {
         self.states.remove(key);
     }
 
+    pub fn get(&self, key: &str) -> Option<dashmap::mapref::one::Ref<'_, String, ClientState>> {
+        self.states.get(key)
+    }
+
     pub fn len(&self) -> usize {
         self.states.len()
     }
@@ -158,12 +170,86 @@ pub struct PanelUpdate {
     pub timestamp: Instant,
 }
 
+/// Persistent per-tab state that survives connection teardown. Written when a
+/// connection closes and restored when the same tab reconnects, so filtering
+/// resumes immediately without waiting for a fresh panel report.
+#[derive(Clone)]
+pub struct TabState {
+    pub filtering_active: bool,
+    pub current_url_path: Option<String>,
+    pub dashboard_configs: HashMap<String, DashboardConfig>,
+    pub last_seen: Instant,
+}
+
+#[derive(Clone)]
+pub struct TabStates {
+    states: Arc<DashMap<String, TabState>>,
+}
+
+impl TabStates {
+    pub fn new() -> Self {
+        Self {
+            states: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Snapshot a connection's per-tab state for later restoration.
+    pub fn save(&self, tab_id: &str, state: &ClientState) {
+        self.states.insert(
+            tab_id.to_string(),
+            TabState {
+                filtering_active: state.filtering_active,
+                current_url_path: state.current_url_path.clone(),
+                dashboard_configs: state.dashboard_configs.clone(),
+                last_seen: Instant::now(),
+            },
+        );
+    }
+
+    pub fn get(&self, tab_id: &str) -> Option<TabState> {
+        self.states.get(tab_id).map(|entry| entry.clone())
+    }
+
+    /// Apply saved state to a freshly connected client state. A fresh panel
+    /// update (from `POST /dasher/panel`) takes precedence for filtering;
+    /// the dashboard entity cache is always restored.
+    pub fn restore_into(
+        &self,
+        tab_id: &str,
+        client_state: &mut ClientState,
+        panel_update_applied: bool,
+    ) {
+        let Some(tab) = self.get(tab_id) else {
+            return;
+        };
+        if !panel_update_applied {
+            client_state.filtering_active = tab.filtering_active;
+        }
+        client_state.dashboard_configs = tab.dashboard_configs.clone();
+        if let Some(path) = tab.current_url_path.as_deref() {
+            client_state.restore_dashboard_config(path);
+        }
+    }
+
+    /// Drop entries whose last connection ended longer ago than `ttl`.
+    pub fn prune(&self, now: Instant, ttl: Duration) {
+        self.states
+            .retain(|_, v| now.duration_since(v.last_seen) < ttl);
+    }
+
+    #[cfg(test)]
+    fn insert(&self, tab_id: &str, state: TabState) {
+        self.states.insert(tab_id.to_string(), state);
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub client_states: ClientStates,
     pub http_client: reqwest::Client,
     pub panel_updates: Arc<DashMap<String, PanelUpdate>>,
+    pub tab_states: TabStates,
 }
 
 #[cfg(test)]
@@ -392,5 +478,112 @@ mod tests {
         assert!(!state.lovelace_entities.contains("light.kitchen"));
         assert!(state.lovelace_entities.contains("sensor.temp"));
         assert_eq!(state.filter_rules.len(), 1);
+    }
+
+    #[test]
+    fn test_tab_states_save_and_get() {
+        let states = TabStates::new();
+        let mut client = ClientState::new("192.168.1.100".to_string());
+        client.filtering_active = true;
+        client.current_url_path = Some("/lovelace/main".to_string());
+        client.lovelace_entities.insert("light.kitchen".to_string());
+        client.save_dashboard_config("/lovelace/main");
+
+        states.save("tab-abc", &client);
+
+        let tab = states.get("tab-abc").expect("tab state saved");
+        assert!(tab.filtering_active);
+        assert_eq!(tab.current_url_path.as_deref(), Some("/lovelace/main"));
+        assert!(tab
+            .dashboard_configs
+            .get("lovelace")
+            .unwrap()
+            .lovelace_entities
+            .contains("light.kitchen"));
+        assert!(states.get("tab-unknown").is_none());
+    }
+
+    #[test]
+    fn test_tab_states_restore_into_restores_filtering_and_entities() {
+        let states = TabStates::new();
+        let mut saved = ClientState::new("192.168.1.100".to_string());
+        saved.filtering_active = true;
+        saved.current_url_path = Some("/lovelace/main".to_string());
+        saved.lovelace_entities.insert("light.kitchen".to_string());
+        saved.save_dashboard_config("/lovelace/main");
+        states.save("tab-abc", &saved);
+
+        // Fresh connection state, as created on reconnect after suspend
+        let mut fresh = ClientState::new("192.168.1.100".to_string());
+        states.restore_into("tab-abc", &mut fresh, false);
+
+        assert!(fresh.filtering_active);
+        assert!(fresh.lovelace_entities.contains("light.kitchen"));
+        assert_eq!(fresh.current_url_path.as_deref(), Some("/lovelace/main"));
+        assert!(fresh.dashboard_configs.contains_key("lovelace"));
+    }
+
+    #[test]
+    fn test_tab_states_restore_into_panel_update_wins_for_filtering() {
+        let states = TabStates::new();
+        let mut saved = ClientState::new("192.168.1.100".to_string());
+        saved.filtering_active = true;
+        saved.current_url_path = Some("/lovelace/main".to_string());
+        saved.lovelace_entities.insert("light.kitchen".to_string());
+        saved.save_dashboard_config("/lovelace/main");
+        states.save("tab-abc", &saved);
+
+        // Fresh state where a panel update already set filtering=false
+        let mut fresh = ClientState::new("192.168.1.100".to_string());
+        fresh.filtering_active = false;
+        states.restore_into("tab-abc", &mut fresh, true);
+
+        // Filtering stays as the panel update set it, but the entity cache
+        // and dashboard configs are still restored
+        assert!(!fresh.filtering_active);
+        assert!(fresh.lovelace_entities.contains("light.kitchen"));
+        assert!(fresh.dashboard_configs.contains_key("lovelace"));
+    }
+
+    #[test]
+    fn test_tab_states_restore_into_no_entry() {
+        let states = TabStates::new();
+        let mut fresh = ClientState::new("192.168.1.100".to_string());
+        fresh.filtering_active = true;
+        fresh.lovelace_entities.insert("light.bedroom".to_string());
+
+        states.restore_into("tab-nope", &mut fresh, false);
+
+        assert!(fresh.filtering_active);
+        assert!(fresh.lovelace_entities.contains("light.bedroom"));
+    }
+
+    #[test]
+    fn test_tab_states_prune() {
+        let states = TabStates::new();
+        let now = Instant::now();
+        states.insert(
+            "tab-old",
+            TabState {
+                filtering_active: true,
+                current_url_path: None,
+                dashboard_configs: HashMap::new(),
+                last_seen: now - Duration::from_secs(48 * 3600),
+            },
+        );
+        states.insert(
+            "tab-fresh",
+            TabState {
+                filtering_active: false,
+                current_url_path: None,
+                dashboard_configs: HashMap::new(),
+                last_seen: now - Duration::from_secs(2 * 3600),
+            },
+        );
+
+        states.prune(now, TAB_STATE_TTL);
+
+        assert!(states.get("tab-old").is_none());
+        assert!(states.get("tab-fresh").is_some());
     }
 }

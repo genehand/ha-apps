@@ -170,14 +170,14 @@ Dasher filters WebSocket events based on which dashboard entities are visible to
 
 1. **HTML Injection** (`src/http/inject.rs`):
    - The proxy intercepts all `text/html` responses from Home Assistant
-   - Decompresses if `Content-Encoding: deflate` or `gzip`
+   - Decompresses `Content-Encoding` gzip, deflate (zlib or raw), brotli, and zstd before injecting, and recompresses with gzip/deflate afterward
    - Injects a small tracking `<script>` at the top of `<head>`
    - Recompresses if needed; skips if already injected
 
 2. **In-browser Script** (injected into HTML):
    - Generates a unique `tab_id` per browser tab via `crypto.randomUUID()`
    - Patches `window.WebSocket` so every `/api/websocket` connection appends `?dasher_tab=<id>`
-   - Sends `POST /dasher/panel` with `{tab_id, url_path}` on page load and every SPA navigation (`history.pushState`, `replaceState`, `popstate`)
+   - Sends `POST /dasher/panel` with `{tab_id, url_path}` on page load, every SPA navigation (`history.pushState`, `replaceState`, `popstate`), and when the tab becomes visible again (`visibilitychange` — re-reports the panel after the frontend's 5-minute background-suspend reconnects)
 
 3. **Panel Tracker** (`src/http/panel_tracker.rs`):
    - Receives `POST /dasher/panel` with the tab's current URL path
@@ -190,6 +190,7 @@ Dasher filters WebSocket events based on which dashboard entities are visible to
 4. **WebSocket Filtering Gate** (`src/websocket/filtered.rs`):
    - Reads `?dasher_tab` from the WebSocket upgrade URL and stores it in `ClientState`
    - Checks the panel update cache on connection (handles early POSTs)
+   - **Restores persistent per-tab state** (`src/state.rs` `TabStates`): when a tab reconnects (e.g. after background-suspend), `filtering_active`, `current_url_path`, and `dashboard_configs` are restored from the last connection so filtering resumes immediately; entries are pruned after `TAB_STATE_TTL`
    - Tracks `lovelace/config` requests that have a non-null string `url_path` by mapping `request_id → url_path` in `pending_configs`
    - On `lovelace/config` response, parses entities/rules and saves them into `dashboard_configs` keyed by dashboard URL path
    - On `subscribe_entities`, tracks the subscription ID
@@ -204,7 +205,7 @@ Dasher filters WebSocket events based on which dashboard entities are visible to
 | `src/http/panel_tracker.rs` | Receives `POST /dasher/panel`, toggles filtering per tab |
 | `src/http/proxy.rs` | Routes HTML responses through injection, proxies everything else |
 | `src/websocket/filtered.rs` | Reads `tab_id` from query params, gates filtering on `filtering_active` |
-| `src/state.rs` | Stores `tab_id`, `filtering_active`, per-dashboard `dashboard_configs`, in-flight `pending_configs`, and cached panel updates |
+| `src/state.rs` | Stores `tab_id`, `filtering_active`, per-dashboard `dashboard_configs`, in-flight `pending_configs`, cached panel updates, and per-tab persistent state (`TabStates`) |
 
 ### Targeted Logging
 

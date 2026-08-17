@@ -4,7 +4,7 @@ use axum::{
     response::Response,
 };
 use futures::{sink::SinkExt, stream::StreamExt, Sink, Stream};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use yawc::{
     close::CloseCode, frame::Frame, frame::OpCode, CompressionLevel, IncomingUpgrade, Options,
     WebSocket,
@@ -20,6 +20,7 @@ where
     D: Sink<Frame> + Unpin,
     D::Error: std::fmt::Display,
 {
+    let mut peer_closed = false;
     while let Some(frame) = source.next().await {
         match frame.opcode() {
             OpCode::Text | OpCode::Binary => {
@@ -29,11 +30,24 @@ where
                 }
             }
             OpCode::Close => {
-                let _ = destination.send(Frame::close(CloseCode::Normal, "")).await;
+                peer_closed = true;
+                // Pass the peer's close frame through untouched so the close
+                // code and reason are preserved for the other side.
+                if let Err(e) = destination.send(frame).await {
+                    error!("Error forwarding close {}: {}", direction, e);
+                }
                 break;
             }
             _ => {}
         }
+    }
+
+    if !peer_closed {
+        // The peer connection ended without a close frame (abrupt disconnect).
+        // Send a close to the destination so it can unwind promptly instead
+        // of waiting on a half-open socket.
+        warn!("{} connection ended without close frame", direction);
+        let _ = destination.send(Frame::close(CloseCode::Away, "")).await;
     }
 }
 
@@ -240,6 +254,48 @@ mod tests {
         assert!(received.is_some());
         let frame = received.unwrap();
         assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Normal));
+        assert_eq!(frame.close_reason().unwrap(), Some("Goodbye"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_frames_preserves_close_code_and_reason() {
+        let (mut tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        // Peer closes with a non-default code and reason
+        tx.send(Frame::close(CloseCode::Restart, "restarting"))
+            .await
+            .unwrap();
+
+        forward_frames(rx, sink_tx, "test").await;
+
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Restart));
+        assert_eq!(frame.close_reason().unwrap(), Some("restarting"));
+    }
+
+    #[tokio::test]
+    async fn test_forward_frames_eof_sends_close_to_destination() {
+        let (tx, rx) = mpsc::channel::<Frame>(10);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Frame>(10);
+
+        // End the source stream abruptly without a close frame
+        drop(tx);
+
+        forward_frames(rx, sink_tx, "test").await;
+
+        // Destination should receive a synthesized close
+        let received = sink_rx.next().await;
+        assert!(received.is_some());
+        let frame = received.unwrap();
+        assert_eq!(frame.opcode(), OpCode::Close);
+        assert_eq!(frame.close_code(), Some(CloseCode::Away));
+        // Nothing further should be sent
+        assert!(sink_rx.next().await.is_none());
     }
 
     #[tokio::test]
@@ -260,6 +316,10 @@ mod tests {
         assert_eq!(sink_rx.next().await.unwrap().as_str(), "Message 2");
         let binary = sink_rx.next().await.unwrap();
         assert_eq!(binary.opcode(), OpCode::Binary);
+        // The dropped source is propagated as a synthesized close
+        let close = sink_rx.next().await.unwrap();
+        assert_eq!(close.opcode(), OpCode::Close);
+        assert_eq!(close.close_code(), Some(CloseCode::Away));
         assert!(sink_rx.next().await.is_none());
     }
 }
