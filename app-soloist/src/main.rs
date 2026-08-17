@@ -118,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
         playback_state.clone(),
         state_tx.clone(),
         cmd_rx,
+        cmd_tx.clone(),
     ));
 
     // MQTT bridge (reconnects forever)

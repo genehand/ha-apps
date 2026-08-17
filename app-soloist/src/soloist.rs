@@ -597,6 +597,7 @@ pub async fn run_client(
     state: Arc<RwLock<PlaybackState>>,
     state_tx: broadcast::Sender<()>,
     mut cmd_rx: mpsc::Receiver<SoloistCommand>,
+    cmd_tx: mpsc::Sender<SoloistCommand>,
 ) -> Result<()> {
     let mut backoff: u64 = 1;
     loop {
@@ -613,7 +614,9 @@ pub async fn run_client(
         match tokio_tungstenite::connect_async(&url).await {
             Ok((ws, _)) => {
                 backoff = 1;
-                if let Err(e) = handle_connection(ws, &state, &state_tx, &mut cmd_rx).await {
+                if let Err(e) =
+                    handle_connection(ws, &state, &state_tx, &mut cmd_rx, cmd_tx.clone()).await
+                {
                     warn!("Soloist WebSocket connection ended: {}", e);
                 }
                 {
@@ -707,6 +710,7 @@ async fn handle_connection<S>(
     state: &Arc<RwLock<PlaybackState>>,
     state_tx: &broadcast::Sender<()>,
     cmd_rx: &mut mpsc::Receiver<SoloistCommand>,
+    cmd_tx: mpsc::Sender<SoloistCommand>,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
@@ -714,6 +718,14 @@ where
         + Unpin,
     <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
 {
+    // Track-artist refetch: soloist's first snapshot for a new track often ships
+    // empty creator decorations (artist name unknown) — the artist only appears
+    // in a later refreshed snapshot (e.g. after pause/resume). The WebSocket API
+    // has no metadata command, so we re-request a full snapshot (`get_state`)
+    // shortly after a track starts — once soloist has loaded the track metadata —
+    // and let the response fill in the artist if available.
+    let mut last_uri: Option<String> = None;
+
     // Bootstrap: soloist rejects get_state/get_queue with "command requires
     // authentication" until it has finished logging in, so only request auth
     // state first and fetch the full playback state + queue once auth_state
@@ -749,6 +761,7 @@ where
                                 .await?;
                             bootstrapped = true;
                         }
+                        maybe_refetch_artist(state, &cmd_tx, &mut last_uri).await;
                     }
                     Some(Ok(Message::Ping(p))) => {
                         ws.send(Message::Pong(p)).await?;
@@ -772,6 +785,46 @@ where
             }
         }
     }
+}
+
+/// If a new track started without artist info (soloist's first snapshot ships
+/// empty creator decorations), schedule a `get_state` re-request so a later,
+/// metadata-complete snapshot can fill in the artist. The task self-cancels
+/// once the artist appears or the track changes, and gives up after two tries.
+async fn maybe_refetch_artist(
+    state: &Arc<RwLock<PlaybackState>>,
+    cmd_tx: &mpsc::Sender<SoloistCommand>,
+    last_uri: &mut Option<String>,
+) {
+    let (uri, artist_known) = {
+        let st = state.read().await;
+        (st.media_content_id.clone(), st.artist.is_some())
+    };
+    if uri == *last_uri {
+        return;
+    }
+    *last_uri = uri.clone();
+    if uri.is_none() || artist_known {
+        return;
+    }
+
+    let state = state.clone();
+    let cmd_tx = cmd_tx.clone();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let st = state.read().await;
+            if st.artist.is_some() || st.media_content_id.as_deref() != uri.as_deref() {
+                return;
+            }
+            drop(st);
+            debug!(
+                "Artist still missing for {:?}; re-requesting get_state",
+                uri
+            );
+            let _ = cmd_tx.send(SoloistCommand::GetState).await;
+        }
+    });
 }
 
 async fn send_command<S>(ws: &mut S, cmd: &SoloistCommand) -> Result<()>
@@ -965,18 +1018,7 @@ fn apply_entity(st: &mut PlaybackState, entity: Option<&Entity>, is_item: bool) 
                     None
                 }
             });
-        st.artist = e
-            .decorations
-            .creators
-            .first()
-            .and_then(|c| c.entity.as_ref())
-            .and_then(|ce| {
-                if !ce.decorations.identity.name.is_empty() {
-                    Some(ce.decorations.identity.name.clone())
-                } else {
-                    None
-                }
-            });
+        st.artist = creators_label(e);
     }
 }
 
@@ -1007,6 +1049,24 @@ fn apply_position(st: &mut PlaybackState, p: Position) {
     };
 }
 
+/// All creator names joined with ", " (e.g. "Artist A, Artist B"), skipping
+/// entities without a display name. None when there are no named creators.
+fn creators_label(e: &Entity) -> Option<String> {
+    let names: Vec<&str> = e
+        .decorations
+        .creators
+        .iter()
+        .filter_map(|c| c.entity.as_ref())
+        .map(|ce| ce.decorations.identity.name.as_str())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        None
+    } else {
+        Some(names.join(", "))
+    }
+}
+
 /// Compact "Title - Artist" label for queue entries.
 fn short_label(e: &Entity) -> String {
     let name = if e.decorations.identity.name.is_empty() {
@@ -1014,15 +1074,9 @@ fn short_label(e: &Entity) -> String {
     } else {
         e.decorations.identity.name.as_str()
     };
-    let artist = e
-        .decorations
-        .creators
-        .first()
-        .and_then(|c| c.entity.as_ref())
-        .map(|ce| ce.decorations.identity.name.clone());
-    match artist {
-        Some(a) if !a.is_empty() => format!("{} - {}", name, a),
-        _ => name.to_string(),
+    match creators_label(e) {
+        Some(artist) => format!("{} - {}", name, artist),
+        None => name.to_string(),
     }
 }
 
@@ -1088,6 +1142,20 @@ mod tests {
         assert!(!st.shuffle);
         assert_eq!(st.repeat, "all");
         assert_eq!(st.position_anchor.position_ms, 45000);
+    }
+
+    #[tokio::test]
+    async fn joins_multiple_creators_with_commas() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        feed(
+            &state,
+            &tx,
+            "{\"type\":\"playback_state\",\"status\":\"playing\",\"item\":{\"uri\":\"spotify:track:abc\",\"entity_type\":\"track\",\"decorations\":{\"identity\":{\"name\":\"My Song\"},\"creators\":[{\"entity\":{\"uri\":\"spotify:artist:1\",\"decorations\":{\"identity\":{\"name\":\"Artist One\"}}}},{\"entity\":{\"uri\":\"spotify:artist:2\",\"decorations\":{\"identity\":{\"name\":\"Artist Two\"}}}}]}}}",
+        )
+        .await;
+        let st = state.read().await;
+        assert_eq!(st.artist.as_deref(), Some("Artist One, Artist Two"));
     }
 
     #[tokio::test]
