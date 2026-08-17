@@ -7,8 +7,8 @@ A collection of vibed coded apps to optimize your HA setup.
 | App | Logo | Description |
 |-----|------|-------------|
 | **[Dasher](app-dasher/)** | <img src="app-dasher/logo.png" width="64"> | WebSocket proxy that filters state updates for dashboard entities, improving performance for low-powered devices |
-| **[Greenroom](app-greenroom/)** | <img src="app-greenroom/logo.png" width="64"> | Spotify Connect monitor that publishes playback info to MQTT without requiring the Web API |
 | **[Shack](app-shack/)** | <img src="app-shack/logo.png" width="64"> | Run HACS integrations outside HA core via MQTT discovery |
+| **[Soloist](app-soloist/)** | <img src="app-soloist/logo.png" width="64"> | Spotify Soloist bridge for track info and playback controls with MQTT |
 
 ## Use of AI
 

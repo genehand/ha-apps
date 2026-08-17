@@ -7,8 +7,9 @@ This repository contains Home Assistant apps (formerly 'add-ons').
 | App | Description | Location |
 |-----|-------------|----------|
 | **app-dasher** | WebSocket proxy for dashboard entities | `app-dasher/` |
+| **app-greenroom** | Spotify Connect monitor for track info without the Web API (deprecated) | `app-greenroom/` |
 | **app-shack** | HACS compatibility layer for running integrations outside HA | `app-shack/` |
-| **app-greenroom** | Spotify Connect device alternative to the Web API | `app-greenroom/` |
+| **app-soloist** | Spotify Soloist bridge with track info + playback controls | `app-soloist/` |
 
 ## Per-App Documentation
 
@@ -17,3 +18,4 @@ Each app has its own `AGENTS.md` file with specific build instructions, testing 
 - **Dasher**: See `app-dasher/AGENTS.md`
 - **HACS Shack**: See `app-shack/AGENTS.md`
 - **Greenroom**: See `app-greenroom/AGENTS.md`
+- **Soloist**: See `app-soloist/AGENTS.md`

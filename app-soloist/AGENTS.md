@@ -18,10 +18,10 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
   into `<data-dir>/bin/soloist`. The bridge refreshes it when the binary is missing,
   older than 7 days, or when the daemon exits with code 10 (build expired).
 - **soloist-bridge** (Rust, `src/`):
-  - `main.rs` — orchestration: spawns soloist daemon + ws client + MQTT bridge + position task
+  - `main.rs` — orchestration: spawns soloist daemon + ws client + MQTT bridge
   - `config.rs` — CLI/env config (clap). `SOLOIST_WS_URL` override skips daemon spawning
   - `soloist.rs` — WebSocket client, event parsing (serde), command serialization, daemon supervisor
-  - `state.rs` — shared `PlaybackState` + position anchor interpolation
+  - `state.rs` — shared `PlaybackState` + position anchor passthrough
   - `mqtt.rs` — MQTT discovery (sensor + active switch), state publishing, command translation
 
 ## Key Design Decisions
@@ -35,8 +35,9 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
 - **Repeat mapping**: soloist `off|context|track` ↔ HA `off|all|one`. Turning repeat off
   requires TWO commands (`set_repeat_track false`, then `set_repeat_context false`).
 - **Seek payloads**: MQTT `cmd/seek` takes seconds; the ws `seek` command takes `position_ms`.
-- **Position tracking**: soloist sends `position_sync` anchors; the bridge interpolates and a
-  5s republish task keeps the progress bar live while playing.
+- **Position tracking**: soloist sends `position_sync` anchors; the bridge passes
+  `media_position` + `media_position_updated_at` through as-is and Home Assistant
+  interpolates the progress bar on its own.
 - **Volume**: MQTT accepts 0-100 or 0-1; published back as 0-1 (HA `volume_level`).
   Mute is implemented in the bridge (mute→0, unmute→restore last non-zero).
 
@@ -46,7 +47,7 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
 # Format + lint
 cd app-soloist && cargo fmt && cargo clippy --all-targets
 
-# Test (event parsing, command translation, position estimation)
+# Test (event parsing, command translation)
 cargo test
 
 # Release build

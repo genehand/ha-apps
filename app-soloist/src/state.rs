@@ -1,24 +1,14 @@
 use serde::Serialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Position anchor from soloist. Position advances by `speed * elapsed` after `timestamp_ms`.
+/// Position anchor from soloist, passed through as-is: `position_ms` is the
+/// position at `timestamp_ms` (epoch ms). HA interpolates the progress bar
+/// on its own from `media_position_updated_at`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PositionAnchor {
     pub position_ms: u64,
     pub timestamp_ms: i64,
     pub speed: f64,
-}
-
-impl PositionAnchor {
-    /// Estimated current position in milliseconds, interpolated from the anchor.
-    pub fn estimated_ms(&self) -> u64 {
-        if self.timestamp_ms == 0 {
-            return self.position_ms;
-        }
-        let now_ms = now_unix_ms();
-        let elapsed_ms = (now_ms - self.timestamp_ms).max(0) as f64;
-        (self.position_ms as f64 + elapsed_ms * self.speed).max(0.0) as u64
-    }
 }
 
 pub fn now_unix_ms() -> i64 {
@@ -66,12 +56,13 @@ impl PlaybackState {
         }
     }
 
-    /// Estimated current position in seconds (HA convention).
+    /// Current position in seconds (HA convention), passed through from the
+    /// latest soloist position anchor. HA advances it on its own while playing.
     pub fn media_position_secs(&self) -> Option<u64> {
         if self.status == "idle" || self.position_anchor.timestamp_ms == 0 {
             return None;
         }
-        Some(self.position_anchor.estimated_ms() / 1000)
+        Some(self.position_anchor.position_ms / 1000)
     }
 
     pub fn media_duration_secs(&self) -> Option<u64> {

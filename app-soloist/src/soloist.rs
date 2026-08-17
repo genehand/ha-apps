@@ -1191,15 +1191,4 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
-
-    #[test]
-    fn position_estimation() {
-        let anchor = PositionAnchor {
-            position_ms: 45000,
-            timestamp_ms: now_unix_ms() - 10_000,
-            speed: 1.0,
-        };
-        let est = anchor.estimated_ms();
-        assert!((54900..=55100).contains(&est), "got {}", est);
-    }
 }

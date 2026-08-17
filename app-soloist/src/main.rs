@@ -6,14 +6,13 @@ mod state;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info};
 
 use crate::config::{find_options_file, load_options_file, Cli, Config};
 use crate::mqtt::MqttBridge;
 use crate::soloist::{run_client, SoloistCommand, SoloistDaemon};
-use crate::state::{now_unix_ms, PlaybackState};
+use crate::state::PlaybackState;
 
 /// Notify S6-overlay that the service is ready (only when running as add-on).
 fn notify_readiness() {
@@ -91,26 +90,6 @@ async fn main() -> anyhow::Result<()> {
     // Command channel (MQTT bridge -> soloist client)
     let (cmd_tx, cmd_rx) = mpsc::channel::<SoloistCommand>(64);
 
-    // Periodic position republish while playing (keeps the progress bar live
-    // even when soloist doesn't emit position_sync events for a while)
-    let position_task_state = playback_state.clone();
-    let position_task_tx = state_tx.clone();
-    let position_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-            let playing = {
-                let st = position_task_state.read().await;
-                st.status == "playing"
-                    && st.position_anchor.timestamp_ms > 0
-                    && now_unix_ms() - st.position_anchor.timestamp_ms > 0
-            };
-            if playing {
-                let _ = position_task_tx.send(());
-            }
-        }
-    });
-
     // Spawn + supervise the soloist daemon (unless an external endpoint was given)
     let mut soloist_daemon_task = None;
     if config.soloist_ws_url.is_none() {
@@ -166,7 +145,6 @@ async fn main() -> anyhow::Result<()> {
         _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
     }
 
-    position_task.abort();
     mqtt_task.abort();
     client_task.abort();
     if let Some(t) = soloist_daemon_task {

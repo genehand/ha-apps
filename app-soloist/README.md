@@ -1,6 +1,6 @@
 # Soloist Bridge
 
-Home Assistant app that runs [Spotify Soloist](https://developer.spotify.com/documentation/soloist) (Spotify's headless Linux client) as a Spotify Connect device and bridges the WebSocket API to Home Assistant with MQTT.
+Home Assistant app that runs [Soloist](https://developer.spotify.com/documentation/soloist) as a Spotify Connect device and bridges the WebSocket API to Home Assistant with MQTT.
 
 Publishes currently playing track info and provides **full playback control** (play, pause, skip, seek, volume, shuffle, repeat, queue).
 
@@ -9,7 +9,7 @@ Publishes currently playing track info and provides **full playback control** (p
 Spotify's [2026 policy change](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security) no longer includes Web API access for non-premium accounts.  
 This means standard integrations don't work with other paid plans like [Basic Family](https://support.spotify.com/us/article/spotify-basic/).
 
-Spotify Soloist is an official Spotify client that:
+Soloist is an official Spotify client that:
 
 - Advertises itself as a Spotify Connect device on your local network
 - Plays audio through PulseAudio/PipeWire (a silent null sink by default, or from your HA host)
@@ -47,6 +47,7 @@ media_player:
 
         name: Soloist
         unique_id: soloist
+        icon: mdi:spotify
 
         device_class: speaker
         state: "{{ states('sensor.soloist') }}"
@@ -160,4 +161,4 @@ Soloist binaries are only valid for [90 days](https://developer.spotify.com/docu
 - it's older than **7 days**, or
 - the daemon exits with code 10 (expired build).
 
-If a running build expires mid-session it automatically downloads a fresh one and restarts.
+If a running build expires mid-session it automatically refreshes and restarts.
