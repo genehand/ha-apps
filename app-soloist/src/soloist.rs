@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
-use crate::state::{now_unix_ms, PlaybackState, PositionAnchor};
+use crate::state::{now_unix_ms, PlaybackState, PositionAnchor, QueueMeta};
 
 // ---------------------------------------------------------------------------
 // WebSocket event model (mirrors the Spotify Soloist WebSocket API reference)
@@ -621,7 +621,7 @@ pub async fn run_client(
                 }
                 {
                     let mut st = state.write().await;
-                    st.status = "idle".to_string();
+                    st.set_status("idle");
                     st.is_active = false;
                 }
                 let _ = state_tx.send(());
@@ -856,6 +856,11 @@ async fn handle_text(
     };
     debug!("<- {}", text);
 
+    // While the power switch is off the bridge stays quiet: events are still
+    // processed (state must stay current for the next power-on) but the
+    // per-event logs are suppressed so a hidden device doesn't spam the log.
+    let powered_on = state.read().await.powered_on;
+
     match event {
         SoloistEvent::AuthState {
             logged_in,
@@ -885,7 +890,7 @@ async fn handle_text(
             options,
         } => {
             let mut st = state.write().await;
-            st.status = status.clone();
+            st.set_status(&status);
             apply_entity(&mut st, item.as_ref(), true);
             apply_context(&mut st, context.as_ref());
             if let Some(p) = position {
@@ -900,24 +905,32 @@ async fn handle_text(
             if let Some(o) = options {
                 apply_options(&mut st, o);
             }
-            info!("playback_state: status={} track={:?}", status, st.track);
+            if powered_on {
+                info!("playback_state: status={} track={:?}", status, st.track);
+            }
         }
         SoloistEvent::TrackChanged { item } => {
             let mut st = state.write().await;
             apply_entity(&mut st, Some(&item), true);
-            info!(
-                "track_changed: {} - {}",
-                st.track.as_deref().unwrap_or("?"),
-                st.artist.as_deref().unwrap_or("?")
-            );
+            if powered_on {
+                info!(
+                    "track_changed: {} - {}",
+                    st.track.as_deref().unwrap_or("?"),
+                    st.artist.as_deref().unwrap_or("?")
+                );
+            }
         }
         SoloistEvent::PlaybackChanged { status } => {
-            state.write().await.status = status.clone();
-            debug!("playback_changed: {}", status);
+            state.write().await.set_status(&status);
+            if powered_on {
+                debug!("playback_changed: {}", status);
+            }
         }
         SoloistEvent::VolumeChanged { volume } => {
             state.write().await.volume = volume.min(100);
-            debug!("volume_changed: {}", volume);
+            if powered_on {
+                debug!("volume_changed: {}", volume);
+            }
         }
         SoloistEvent::DeviceChanged {
             is_active,
@@ -928,28 +941,36 @@ async fn handle_text(
             if !device_name.is_empty() {
                 st.device_name = device_name;
             }
-            debug!("device_changed: is_active={}", is_active);
+            if powered_on {
+                debug!("device_changed: is_active={}", is_active);
+            }
         }
         SoloistEvent::ContextChanged { context } => {
             let mut st = state.write().await;
             apply_context(&mut st, Some(&context));
-            debug!("context_changed: {:?}", st.source);
+            if powered_on {
+                debug!("context_changed: {:?}", st.source);
+            }
         }
         SoloistEvent::OptionsChanged { options } => {
             let mut st = state.write().await;
             apply_options(&mut st, options);
-            debug!(
-                "options_changed: shuffle={} repeat={}",
-                st.shuffle, st.repeat
-            );
+            if powered_on {
+                debug!(
+                    "options_changed: shuffle={} repeat={}",
+                    st.shuffle, st.repeat
+                );
+            }
         }
         SoloistEvent::PositionSync { position } => {
             let mut st = state.write().await;
             apply_position(&mut st, position);
-            debug!(
-                "position_sync: {}ms speed={}",
-                st.position_anchor.position_ms, st.position_anchor.speed
-            );
+            if powered_on {
+                debug!(
+                    "position_sync: {}ms speed={}",
+                    st.position_anchor.position_ms, st.position_anchor.speed
+                );
+            }
         }
         SoloistEvent::QueueChanged {
             previous: _,
@@ -960,8 +981,25 @@ async fn handle_text(
                 .filter_map(|e| e.item.as_ref())
                 .map(short_label)
                 .collect::<Vec<_>>();
-            state.write().await.upcoming = entries;
-            debug!("queue_changed: {} upcoming", upcoming.len());
+            let meta = queue_meta(&upcoming);
+            let mut st = state.write().await;
+            st.upcoming = entries;
+            // Replace, don't accumulate: only the most recent queue snapshot is
+            // kept, otherwise queue_meta would grow without bound over a long
+            // session. The now-playing track re-seeds its entry, though: it
+            // just left `upcoming` (it is playing now) and its first playback
+            // snapshot often ships without creator decorations.
+            let current_uri = st.media_content_id.clone();
+            let current_artists = current_uri
+                .as_deref()
+                .and_then(|uri| st.queue_meta.track_artists.get(uri).cloned());
+            st.queue_meta = meta;
+            if let (Some(uri), Some(names)) = (current_uri, current_artists) {
+                st.queue_meta.track_artists.entry(uri).or_insert(names);
+            }
+            if powered_on {
+                debug!("queue_changed: {} upcoming", upcoming.len());
+            }
         }
         SoloistEvent::CommandResult { command } => {
             info!("soloist accepted command: {}", command);
@@ -1018,8 +1056,86 @@ fn apply_entity(st: &mut PlaybackState, entity: Option<&Entity>, is_item: bool) 
                     None
                 }
             });
-        st.artist = creators_label(e);
+        st.artist = resolve_artists(e, &st.queue_meta);
     }
+}
+
+/// Artist label for an item entity, falling back to `queue_meta` when the
+/// snapshot lacks creator names. Creator entities that ship with a URI but no
+/// display name are resolved via the artist URI index; a track whose creators
+/// are entirely unnamed is looked up by its own URI. This lets tracks that were
+/// seen in a queue_changed `upcoming` (with full artist info) be resolved
+/// immediately when their first, metadata-less playback snapshot arrives.
+fn resolve_artists(e: &Entity, meta: &QueueMeta) -> Option<String> {
+    let mut names: Vec<String> = e
+        .decorations
+        .creators
+        .iter()
+        .filter_map(|c| c.entity.as_ref())
+        .filter_map(|ce| {
+            if !ce.decorations.identity.name.is_empty() {
+                Some(ce.decorations.identity.name.clone())
+            } else if !ce.uri.is_empty() {
+                meta.artist_names.get(&ce.uri).cloned()
+            } else {
+                None
+            }
+        })
+        .collect();
+    if names.is_empty() && !e.uri.is_empty() {
+        if let Some(from_queue) = meta.track_artists.get(&e.uri) {
+            names.extend(from_queue.iter().cloned());
+        }
+    }
+    names.dedup();
+    if names.is_empty() {
+        None
+    } else {
+        Some(names.join(", "))
+    }
+}
+
+/// Extract artist identity from a queue_changed `upcoming` payload: per-track
+/// creator names keyed by track URI, plus an artist URI -> name index that
+/// also resolves creator entities shipping with a URI but no display name.
+fn queue_meta(upcoming: &[QueueEntry]) -> QueueMeta {
+    let mut meta = QueueMeta::default();
+    for entry in upcoming {
+        let Some(item) = &entry.item else { continue };
+        for creator in &item.decorations.creators {
+            if let Some(ce) = &creator.entity {
+                if !ce.uri.is_empty() && !ce.decorations.identity.name.is_empty() {
+                    meta.artist_names
+                        .entry(ce.uri.clone())
+                        .or_insert_with(|| ce.decorations.identity.name.clone());
+                }
+            }
+        }
+    }
+    for entry in upcoming {
+        let Some(item) = &entry.item else { continue };
+        if item.uri.is_empty() {
+            continue;
+        }
+        let mut names = Vec::new();
+        for creator in &item.decorations.creators {
+            let Some(ce) = &creator.entity else { continue };
+            let name = if !ce.decorations.identity.name.is_empty() {
+                ce.decorations.identity.name.clone()
+            } else if !ce.uri.is_empty() {
+                meta.artist_names.get(&ce.uri).cloned().unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+        if !names.is_empty() {
+            meta.track_artists.entry(item.uri.clone()).or_insert(names);
+        }
+    }
+    meta
 }
 
 fn apply_context(st: &mut PlaybackState, context: Option<&Entity>) {
@@ -1202,6 +1318,144 @@ mod tests {
         assert_eq!(st.upcoming.len(), 2);
         assert_eq!(st.upcoming[0], "Next Song - Next Artist");
         assert_eq!(st.upcoming[1], "Song Two");
+    }
+
+    #[tokio::test]
+    async fn queue_changed_captures_artist_metadata() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u1","source":"context","item":{"uri":"spotify:track:1v4WeozqQXPBnxiA87C3vP","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:2xx0ChFyXa0a4S48GAXFUz","entity_type":"artist","decorations":{"identity":{"name":"Manic Focus"}}}}]}}}]}"#,
+        )
+        .await;
+        let st = state.read().await;
+        assert_eq!(
+            st.queue_meta
+                .track_artists
+                .get("spotify:track:1v4WeozqQXPBnxiA87C3vP")
+                .map(Vec::as_slice),
+            Some(&["Manic Focus".to_string()][..])
+        );
+        assert_eq!(
+            st.queue_meta
+                .artist_names
+                .get("spotify:artist:2xx0ChFyXa0a4S48GAXFUz")
+                .map(String::as_str),
+            Some("Manic Focus")
+        );
+    }
+
+    #[tokio::test]
+    async fn playback_state_resolves_artist_from_queue_metadata() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        // The track was seen in a queue_changed while still upcoming, with full
+        // artist info...
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u1","source":"context","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":"Manic Focus"}}}}]}}}]}"#,
+        )
+        .await;
+        // ...and its playback snapshot ships with empty creator decorations:
+        // the artist is resolved immediately from the queue metadata.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[]}}}"#,
+        )
+        .await;
+        let st = state.read().await;
+        assert_eq!(st.artist.as_deref(), Some("Manic Focus"));
+        assert_eq!(st.media_content_id.as_deref(), Some("spotify:track:abc"));
+    }
+
+    #[tokio::test]
+    async fn queue_rotation_replaces_metadata_but_keeps_playing_track() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        // Snapshot 1: abc and a stale track are upcoming, abc with full artist
+        // info.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u1","source":"context","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":"Manic Focus"}}}}]}}},{"uid":"u2","source":"context","item":{"uri":"spotify:track:old","entity_type":"track","decorations":{"identity":{"name":"Old Track"},"creators":[{"entity":{"decorations":{"identity":{"name":"Old Artist"}}}}]}}}]}"#,
+        )
+        .await;
+        // abc starts playing (media_content_id is now set)...
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[]}}}"#,
+        )
+        .await;
+        // ...then the queue rotates and abc drops out of upcoming.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u3","source":"context","item":{"uri":"spotify:track:def","entity_type":"track","decorations":{"identity":{"name":"Next Up"},"creators":[]}}}]}"#,
+        )
+        .await;
+        let st = state.read().await;
+        // Storage stays bounded: the stale entry from snapshot 1 is gone, and
+        // only the playing track's re-seeded entry remains (`def` ships no
+        // creators in this snapshot, so it carries no artist entry).
+        assert!(!st
+            .queue_meta
+            .track_artists
+            .contains_key("spotify:track:old"));
+        assert_eq!(st.queue_meta.track_artists.len(), 1);
+        assert_eq!(
+            st.queue_meta
+                .track_artists
+                .get("spotify:track:abc")
+                .map(Vec::as_slice),
+            Some(&["Manic Focus".to_string()][..])
+        );
+        // The display label for the fresh snapshot is still there.
+        assert_eq!(st.upcoming, vec!["Next Up"]);
+    }
+
+    #[tokio::test]
+    async fn resolves_creator_name_via_artist_uri() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        // Queue metadata teaches us the name for this artist URI.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u1","source":"context","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":"Manic Focus"}}}}]}}}]}"#,
+        )
+        .await;
+        // Later snapshot: the creator entity has a URI but no display name.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"track_changed","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":""}}}}]}}}"#,
+        )
+        .await;
+        let st = state.read().await;
+        assert_eq!(st.artist.as_deref(), Some("Manic Focus"));
+    }
+
+    #[tokio::test]
+    async fn unknown_track_without_queue_metadata_stays_unnamed() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:unknown","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[]}}}"#,
+        )
+        .await;
+        let st = state.read().await;
+        assert_eq!(st.artist, None);
+        assert_eq!(
+            st.media_content_id.as_deref(),
+            Some("spotify:track:unknown")
+        );
     }
 
     #[tokio::test]

@@ -81,6 +81,8 @@ async fn main() -> anyhow::Result<()> {
     let initial_state = PlaybackState {
         status: "idle".to_string(),
         device_name: config.device_name.clone(),
+        // The MQTT power switch starts in the ON state (normal reporting).
+        powered_on: true,
         ..Default::default()
     };
     let playback_state = Arc::new(RwLock::new(initial_state));

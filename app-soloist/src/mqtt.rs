@@ -91,8 +91,8 @@ impl MqttBridge {
         // Channel capacity between AsyncClient and the eventloop. The discovery/
         // state publishes and command subscriptions below are all queued while
         // the eventloop is NOT being polled (they run inside the ConnAck match
-        // arm), so the capacity must exceed the worst-case burst: 6 publishes +
-        // 17 subscriptions. If the channel fills, send_async blocks forever and
+        // arm), so the capacity must exceed the worst-case burst: 7 publishes +
+        // 18 subscriptions. If the channel fills, send_async blocks forever and
         // the queued messages never reach the broker (requests are only flushed
         // by the next poll()).
         let (client, mut eventloop) = AsyncClient::new(mqttoptions, 64);
@@ -119,6 +119,7 @@ impl MqttBridge {
             "cmd/activate",
             "cmd/deactivate",
             "active/set",
+            "power/set",
         ]
         .iter()
         .map(|suffix| format!("soloist/{}/{}", device_id, suffix))
@@ -132,7 +133,12 @@ impl MqttBridge {
             tokio::select! {
                 // State change notifications from the soloist client
                 _ = self.state_rx.recv() => {
-                    if discovery_published {
+                    // While the power switch is off the published state is
+                    // static (idle + null attributes), so there is nothing to
+                    // republish: stay quiet on MQTT until power comes back on.
+                    // The power command itself publishes the fresh state, so
+                    // the single power-off publish is the last one until then.
+                    if discovery_published && self.playback_state.read().await.powered_on {
                         if let Err(e) = self.publish_state(&client, device_id).await {
                             error!("Failed to publish state: {}", e);
                         }
@@ -180,8 +186,17 @@ impl MqttBridge {
                         }
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
                             let payload = String::from_utf8_lossy(&publish.payload).to_string();
-                            if let Some(commands) =
-                                self.translate_command(&publish.topic, &payload, &mut last_volume).await
+                            // The power switch is a local reporting gate (not a
+                            // soloist command): handle it before translation.
+                            if publish.topic == format!("soloist/{}/power/set", device_id) {
+                                if let Err(e) =
+                                    self.handle_power_command(&client, device_id, &payload).await
+                                {
+                                    error!("Failed to process power command: {}", e);
+                                }
+                            } else if let Some(commands) = self
+                                .translate_command(&publish.topic, &payload, &mut last_volume)
+                                .await
                             {
                                 for cmd in commands {
                                     debug!("Sending soloist command: {:?}", cmd);
@@ -342,6 +357,25 @@ impl MqttBridge {
         Some(commands)
     }
 
+    /// Apply an MQTT power switch command (ON/OFF). This is a local reporting
+    /// switch: it never sends commands to soloist, it only gates the reported
+    /// ha_state (see `PlaybackState::set_power`). The full state is
+    /// republished because both the power state and ha_state may have changed.
+    async fn handle_power_command(
+        &self,
+        client: &AsyncClient,
+        device_id: &str,
+        payload: &str,
+    ) -> Result<()> {
+        let Some(on) = parse_bool(payload) else {
+            return Ok(());
+        };
+        self.playback_state.write().await.set_power(on);
+        self.publish_state(client, device_id).await?;
+        info!("Power switch set to {}", if on { "ON" } else { "OFF" });
+        Ok(())
+    }
+
     async fn publish_discovery_configs(&self, client: &AsyncClient, device_id: &str) -> Result<()> {
         let device_name = &self.config.device_name;
 
@@ -411,6 +445,45 @@ impl MqttBridge {
             .await?;
         debug!("Published switch discovery config to: {}", switch_topic);
 
+        // Power switch: reporting gate only (off forces "idle", power-on
+        // waits for playback to actually start before reporting "paused").
+        let power_topic = format!("homeassistant/switch/{}/power/config", device_id);
+        let power_config = json!({
+            "name": "Power",
+            "unique_id": format!("{}_power", device_id),
+            "state_topic": format!("soloist/{}/power/state", device_id),
+            "command_topic": format!("soloist/{}/power/set", device_id),
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "state_on": "ON",
+            "state_off": "OFF",
+            "icon": "mdi:power",
+            "availability": {
+                "topic": format!("soloist/{}/availability", device_id),
+                "payload_available": "online",
+                "payload_not_available": "offline"
+            },
+            "device": {
+                "identifiers": [device_id],
+                "name": device_name,
+                "manufacturer": "Spotify",
+                "model": "Soloist Connect Device",
+                "sw_version": env!("CARGO_PKG_VERSION")
+            }
+        });
+        client
+            .publish(
+                &power_topic,
+                QoS::AtLeastOnce,
+                true,
+                serde_json::to_string(&power_config)?,
+            )
+            .await?;
+        debug!(
+            "Published power switch discovery config to: {}",
+            power_topic
+        );
+
         let avail_topic = format!("soloist/{}/availability", device_id);
         client
             .publish(avail_topic, QoS::AtLeastOnce, true, "online")
@@ -437,21 +510,28 @@ impl MqttBridge {
             )
             .await?;
 
-        // Keep the active switch in sync
+        // Keep the switches in sync
         let active_state = if state.is_active { "ON" } else { "OFF" };
         let active_topic = format!("soloist/{}/active/state", device_id);
         client
             .publish(active_topic, QoS::AtLeastOnce, true, active_state)
             .await?;
 
+        let power_state = if state.powered_on { "ON" } else { "OFF" };
+        let power_topic = format!("soloist/{}/power/state", device_id);
+        client
+            .publish(power_topic, QoS::AtLeastOnce, true, power_state)
+            .await?;
+
         debug!(
-            "Published state: {} ({} - {}) volume={} repeat={} shuffle={}",
+            "Published state: {} ({} - {}) volume={} repeat={} shuffle={} power={}",
             state.ha_state(),
             state.track.as_deref().unwrap_or("Unknown"),
             state.artist.as_deref().unwrap_or("Unknown"),
             state.volume,
             state.repeat,
-            state.shuffle
+            state.shuffle,
+            power_state
         );
         Ok(())
     }

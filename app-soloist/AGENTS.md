@@ -22,7 +22,7 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
   - `config.rs` — CLI/env config (clap). `SOLOIST_WS_URL` override skips daemon spawning
   - `soloist.rs` — WebSocket client, event parsing (serde), command serialization, daemon supervisor
   - `state.rs` — shared `PlaybackState` + position anchor passthrough
-  - `mqtt.rs` — MQTT discovery (sensor + active switch), state publishing, command translation
+  - `mqtt.rs` — MQTT discovery (sensor + active + power switches), state publishing, command translation
 
 ## Key Design Decisions
 
@@ -40,7 +40,12 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
   interpolates the progress bar on its own.
 - **Artist refetch**: soloist's first `playback_state` for a new track often ships
   empty creator decorations, so the bridge re-requests `get_state` shortly after a
-  track starts to fill in the artist once the metadata has loaded.
+  track starts to fill in the artist once the metadata has loaded. It also captures
+  artist identity from the latest `queue_changed` `upcoming` metadata (track URI →
+  artists, artist URI → name) so a track seen in the queue is resolved immediately,
+  by URI, without waiting for a refetch. The snapshot is replaced on every
+  `queue_changed` (only the playing track's entry is carried over) so the cache
+  stays bounded.
 - **Volume**: MQTT accepts 0-100 or 0-1; published back as 0-1 (HA `volume_level`).
   Mute is implemented in the bridge (mute→0, unmute→restore last non-zero).
 

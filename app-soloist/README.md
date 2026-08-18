@@ -1,6 +1,6 @@
 # Soloist Bridge
 
-Home Assistant app that runs [Soloist](https://developer.spotify.com/documentation/soloist) as a Spotify Connect device and bridges the WebSocket API to Home Assistant with MQTT.
+Home Assistant app that runs a [Soloist](https://developer.spotify.com/documentation/soloist) Spotify Connect device and bridges its WebSocket API with MQTT.
 
 Publishes currently playing track info and provides **full playback control** (play, pause, skip, seek, volume, shuffle, repeat, queue).
 
@@ -30,6 +30,7 @@ Soloist is an official Spotify client that:
 5. New entities appear in Home Assistant:
    - `sensor.soloist` — playback state + media attributes
    - `switch.soloist_active` — make Soloist the active Connect device
+   - `switch.soloist_power` — reporting gate (see [Power Switch](#power-switch))
 
 ## Media Player Entity
 
@@ -148,6 +149,29 @@ media_player:
 ```
 
 Replace `soloist/soloist/...` topics with `soloist/<mqtt_device_id>/...` if you changed `mqtt_device_id` (defaults to the slugified device name).
+
+## Power Switch
+
+`switch.soloist_power` is a **reporting-only** switch — it never pauses
+playback or stops the soloist daemon, it only gates the reported state:
+
+- **Off**: the sensor always reports `idle`, whatever the device is doing, and
+  the media attributes (title, artist, position, source, ...) are published as
+  `null` so no stale track info lingers. Device-level attributes (volume,
+  shuffle, repeat) stay populated.
+- **On**: normal reporting resumes — except that if the device is paused at
+  the moment the switch is turned on, the sensor stays `idle` until playback
+  actually starts (`playing`), and only then reports `paused` states normally
+  again (until the switch is turned off).
+
+The power state resets to **ON** when the bridge restarts. To actually stop
+the audio, use the play/pause commands (or the Spotify app) — the power
+switch just hides playback from Home Assistant.
+
+While **off**, the bridge publishes nothing further to MQTT (the state and
+attributes are static), so soloist events — e.g. `position_sync` ticks during
+background playback — generate no MQTT traffic. Turning the switch back on
+republishes the full state immediately.
 
 ## Audio
 
