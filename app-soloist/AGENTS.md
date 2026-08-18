@@ -42,10 +42,19 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
   empty creator decorations, so the bridge re-requests `get_state` shortly after a
   track starts to fill in the artist once the metadata has loaded. It also captures
   artist identity from the latest `queue_changed` `upcoming` metadata (track URI →
-  artists, artist URI → name) so a track seen in the queue is resolved immediately,
-  by URI, without waiting for a refetch. The snapshot is replaced on every
-  `queue_changed` (only the playing track's entry is carried over) so the cache
-  stays bounded.
+  artists, track URI → artist URIs, artist URI → name) so a track seen in the queue
+  is resolved immediately, by URI, without waiting for a refetch. The snapshot is
+  replaced on every `queue_changed` (only the playing track's entry is carried over)
+  so the cache stays bounded. Final fallback: creator entities that ship a
+  `spotify:artist:` URI but no name are resolved via Spotify's public oEmbed API
+  (`open.spotify.com/oembed`, no auth — the artist embed `title` is the artist
+  name). Results are cached per artist URI (bounded FIFO, survives queue rotation)
+  and deduplicated against in-flight lookups, so repeated snapshots never re-hit
+  the API. Track → artist-URI learning is a separate persistent bounded cache
+  (fed from the `previous` and `upcoming` entries, FIFO-capped): it survives
+  queue rotation, so a track whose playback snapshot ships with *no* creator
+  URIs at all still resolves its artist from the cached oEmbed names — even
+  when the rotation event races the snapshot of the newly started track.
 - **Volume**: MQTT accepts 0-100 or 0-1; published back as 0-1 (HA `volume_level`).
   Mute is implemented in the bridge (mute→0, unmute→restore last non-zero).
 
@@ -102,6 +111,27 @@ Version lives in `config.yaml`. Bump `Cargo.toml` with `sync-versions.sh`.
 - `soloist` must bind the WebSocket on loopback with port 0 and publish the actual port in
   `<data-dir>/ws.port` — the bridge polls that file (do not hardcode a fixed ws port).
 - The add-on needs `host_network: true` so the Spotify app can discover the device.
+- The soloist daemon persists a playback-state restore snapshot into
+  `<data-dir>/cache/Users/<user>/context_player_state_restore` (tied to the data dir, NOT
+  `--cache-dir` which is volatile) and never flushes it on shutdown — not even on SIGTERM:
+  every restart replays the last *paused* track before the live session state arrives (and
+  indefinitely, if the session stays quiet). The bridge clears that one file before spawning
+  the daemon so it boots idle and reports the live session state; `primary.ldb` and the other
+  `cache/Users/*` files are left alone (may hold device identity).
+- Shutdown is graceful: the bridge SIGTERMs the soloist child and SIGKILLs only after a 5s
+  grace period (a hard kill skips daemon cleanup and leaves the crashpad handler orphaned),
+  and main.rs waits for the daemon task to finish instead of aborting it, so soloist is
+  never orphaned on Ctrl+C.
 - Exit code 10 from soloist = expired build → the bridge re-downloads a fresh build
   automatically and restarts the daemon. Download failures are retried with backoff.
 - `cargo build --release --locked` in the Dockerfile requires a committed `Cargo.lock`.
+- Rust drops let-bound guards at the end of their **scope**, not at last use: never
+  `.await` while a state `RwLock` guard is in scope — the same task then blocks on
+  itself (e.g. `queue_changed` once held its write guard across the oEmbed
+  dispatch, whose `maybe_lookup` takes the read lock → hard deadlock on the first
+  event with an unresolved artist URI). Guard scopes must be explicit `{}` blocks.
+- Never block on the MQTT client channel while handling state: the eventloop that
+  drains it runs in the same select loop, so a full channel would deadlock the
+  bridge. `publish_state` snapshots the payloads under the lock, releases it, and
+  sends via non-blocking `try_publish` (a full channel drops the update; the next
+  state change re-publishes).

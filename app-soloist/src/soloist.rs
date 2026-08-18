@@ -1,17 +1,19 @@
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
-use crate::state::{now_unix_ms, PlaybackState, PositionAnchor, QueueMeta};
+use crate::state::{now_unix_ms, CreatorRef, PlaybackState, PositionAnchor, QueueMeta};
 
 // ---------------------------------------------------------------------------
 // WebSocket event model (mirrors the Spotify Soloist WebSocket API reference)
@@ -414,6 +416,52 @@ pub struct SoloistDaemon {
     state_tx: broadcast::Sender<()>,
 }
 
+/// Stop the soloist daemon gracefully: SIGTERM first,
+/// then SIGKILL after a grace period if it does not exit
+async fn stop_child_gracefully(child: &mut tokio::process::Child) {
+    let Some(pid) = child.id() else {
+        // Already reaped; nothing to signal.
+        return;
+    };
+    info!("Sending SIGTERM to soloist daemon (pid {})", pid);
+    // SAFETY: pid belongs to the soloist child we spawned; signaling it is
+    // valid and does not alias any other process.
+    let _ = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(_) => debug!("Soloist daemon exited cleanly after SIGTERM"),
+        Err(_) => {
+            warn!("Soloist did not exit within 5s of SIGTERM; sending SIGKILL");
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+    }
+}
+
+/// Remove the soloist playback-state restore snapshot written into
+/// `<data-dir>/cache/Users/*/context_player_state_restore`. The daemon
+/// persists it on pause/state changes but never flushes it on shutdown (not
+/// even on SIGTERM), so a restart replays the last *paused* track before the
+/// live session state arrives — and indefinitely, if the session stays
+/// quiet. The snapshot is a UI-resume convenience, not credentials: soloist
+/// re-attaches to its session via auth state and repopulates the file on the
+/// next state event, so clearing it just makes the daemon boot into idle and
+/// report the live session state. Only this one file is removed; the other
+/// `cache/Users/*` stores (e.g. `primary.ldb`) are left alone.
+fn remove_restore_state(data_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("cache/Users")) else {
+        return; // No cache dir yet (first run) — nothing to clear.
+    };
+    for entry in entries.flatten() {
+        let restore = entry.path().join("context_player_state_restore");
+        if restore.is_file() {
+            match std::fs::remove_file(&restore) {
+                Ok(()) => info!("Cleared stale soloist restore state: {}", restore.display()),
+                Err(e) => warn!("Failed to clear {}: {}", restore.display(), e),
+            }
+        }
+    }
+}
+
 impl SoloistDaemon {
     pub fn new(
         config: &crate::config::Config,
@@ -478,6 +526,10 @@ impl SoloistDaemon {
             // client polls for this run's fresh port instead of connecting to
             // a dead endpoint advertised by the previous run.
             let _ = std::fs::remove_file(self.data_dir.join("ws.port"));
+            // The daemon never flushes its playback-state restore snapshot on
+            // shutdown, so clear it now: otherwise every restart replays the
+            // last paused track before the live session state arrives.
+            remove_restore_state(&self.data_dir);
 
             let mut cmd = Command::new(&self.bin);
             cmd.arg("--device-name")
@@ -549,14 +601,12 @@ impl SoloistDaemon {
                 }
                 _ = sigterm.recv() => {
                     info!("Shutdown signal received, stopping soloist daemon");
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
+                    stop_child_gracefully(&mut child).await;
                     return Ok(());
                 }
                 _ = sigint.recv() => {
                     info!("Interrupt signal received, stopping soloist daemon");
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
+                    stop_child_gracefully(&mut child).await;
                     return Ok(());
                 }
             };
@@ -585,6 +635,172 @@ impl SoloistDaemon {
 }
 
 // ---------------------------------------------------------------------------
+// oEmbed artist fallback
+// ---------------------------------------------------------------------------
+
+/// Epoch-ms of the most recently parsed soloist event (lock-free; updated in
+/// `handle_text`). Lets the watchdog tell "bridge is processing events" from
+/// "stuck" without touching the state lock.
+static LAST_EVENT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Resolves artist names from Spotify's public oEmbed API — the last-resort
+/// source when a creator entity ships a `spotify:artist:` URI but no display
+/// name and neither the queue metadata nor a previous lookup knows it.
+/// oEmbed needs no auth: the `title` of an artist embed is the artist name.
+pub struct OembedResolver {
+    state: Arc<RwLock<PlaybackState>>,
+    state_tx: broadcast::Sender<()>,
+    /// Artist URIs currently being fetched, so repeated snapshots of the same
+    /// track never fire duplicate requests.
+    in_flight: Arc<Mutex<HashSet<String>>>,
+}
+
+impl OembedResolver {
+    pub fn new(state: Arc<RwLock<PlaybackState>>, state_tx: broadcast::Sender<()>) -> Self {
+        Self {
+            state,
+            state_tx,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Fire oEmbed lookups for artist URIs that have no resolvable name yet.
+    /// Skipped when the name is already cached (queue metadata or a previous
+    /// oEmbed result) or already being fetched; otherwise a background task
+    /// fetches the name and updates the artist label if the URI belongs to
+    /// the currently playing item.
+    pub async fn maybe_lookup(&self, uris: Vec<String>) {
+        if uris.is_empty() {
+            return;
+        }
+        let mut pending = Vec::new();
+        {
+            let st = self.state.read().await;
+            for uri in uris {
+                if st.queue_meta.artist_names.contains_key(&uri) || st.oembed.contains(&uri) {
+                    continue;
+                }
+                pending.push(uri);
+            }
+        }
+        if pending.is_empty() {
+            return;
+        }
+        let mut in_flight = self.in_flight.lock().await;
+        for uri in pending {
+            if in_flight.insert(uri.clone()) {
+                self.spawn_lookup(uri);
+            }
+        }
+    }
+
+    fn spawn_lookup(&self, uri: String) {
+        let state = self.state.clone();
+        let state_tx = self.state_tx.clone();
+        let in_flight = self.in_flight.clone();
+        tokio::spawn(async move {
+            let name = fetch_oembed_artist_name(&uri).await;
+            {
+                let mut guard = in_flight.lock().await;
+                guard.remove(&uri);
+            }
+            let Some(name) = name else {
+                debug!("oEmbed lookup failed for {}", uri);
+                return;
+            };
+            debug!("oEmbed resolved artist: {} = {}", uri, name);
+            // Never block on the state lock forever: if the lock is wedged
+            // (e.g. by a stuck publisher) log it and skip, so the resolution
+            // degrades into a logged warning instead of a silent hang.
+            let Ok(mut st) = tokio::time::timeout(Duration::from_secs(5), state.write()).await
+            else {
+                warn!("oEmbed apply: timed out waiting for state lock ({})", uri);
+                return;
+            };
+            if apply_oembed_result(&mut st, &uri, &name) {
+                drop(st);
+                let _ = state_tx.send(());
+            }
+        });
+    }
+}
+
+/// Apply a resolved oEmbed artist name: cache it for the session, then
+/// recompute the current item's artist label and refresh it (and return true
+/// so the caller broadcasts) whenever the resolution changed it. The label
+/// is recomputed unconditionally — resolution order per creator is
+/// snapshot-time name > queue metadata > oEmbed cache — so any resolution
+/// that affects the currently playing item publishes, regardless of whether
+/// the URI came from the item's own snapshot or from queue metadata.
+fn apply_oembed_result(state: &mut PlaybackState, uri: &str, name: &str) -> bool {
+    state.oembed.insert(uri.to_string(), name.to_string());
+    let label = state.artist_label();
+    if state.artist != label {
+        debug!(
+            "oEmbed artist updated: {} = {}; {} -> {}",
+            uri,
+            name,
+            state.artist.as_deref().unwrap_or("<none>"),
+            label.as_deref().unwrap_or("<none>")
+        );
+        state.artist = label;
+        true
+    } else {
+        debug!("oEmbed artist cached for queued: {} = {}", uri, name);
+        false
+    }
+}
+
+/// Build the URL for Spotify's public oEmbed endpoint from an artist URI.
+/// None when the URI isn't an artist URI — the only entity type whose embed
+/// `title` is usable as an artist display name.
+fn oembed_url(uri: &str) -> Option<String> {
+    if !uri.starts_with("spotify:artist:") {
+        return None;
+    }
+    Some(format!(
+        "https://open.spotify.com/oembed?url={}",
+        uri.replace(':', "%3A")
+    ))
+}
+
+/// Fetch the artist name for a `spotify:artist:` URI via Spotify's public
+/// oEmbed endpoint (no auth). Uses `curl`, already required at runtime for
+/// the soloist binary download. None on any failure (network, non-success
+/// status, missing/empty title).
+async fn fetch_oembed_artist_name(uri: &str) -> Option<String> {
+    let url = oembed_url(uri)?;
+    let out = Command::new("curl")
+        .args([
+            "-fsSL",
+            "--max-time",
+            "10",
+            "-A",
+            "soloist-bridge (artist lookup)",
+        ])
+        .arg(&url)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_oembed_title(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Extract the `title` field from an oEmbed response — the artist name for an
+/// artist embed. None when the payload isn't valid JSON or the title is empty.
+fn parse_oembed_title(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let title = v.get("title")?.as_str()?.trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket client
 // ---------------------------------------------------------------------------
 
@@ -599,6 +815,26 @@ pub async fn run_client(
     mut cmd_rx: mpsc::Receiver<SoloistCommand>,
     cmd_tx: mpsc::Sender<SoloistCommand>,
 ) -> Result<()> {
+    // Artist-name fallback via oEmbed; created once so its cache survives
+    // WebSocket reconnects.
+    let resolver = OembedResolver::new(state.clone(), state_tx.clone());
+
+    // Watchdog heartbeat: logs liveness independently of the state lock, so a
+    // wedge is distinguishable from a quiet system. The "last soloist event"
+    // timestamp is lock-free (updated in handle_text), so it keeps advancing
+    // even if the state lock is wedged.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let last_event_age =
+                now_unix_ms().saturating_sub(LAST_EVENT_MS.load(Ordering::Relaxed) as i64);
+            debug!(
+                "watchdog: alive; last soloist event {}s ago",
+                last_event_age / 1000
+            );
+        }
+    });
     let mut backoff: u64 = 1;
     loop {
         let url = match resolve_ws_url(config_ws_url.clone(), &data_dir).await {
@@ -614,8 +850,15 @@ pub async fn run_client(
         match tokio_tungstenite::connect_async(&url).await {
             Ok((ws, _)) => {
                 backoff = 1;
-                if let Err(e) =
-                    handle_connection(ws, &state, &state_tx, &mut cmd_rx, cmd_tx.clone()).await
+                if let Err(e) = handle_connection(
+                    ws,
+                    &state,
+                    &state_tx,
+                    &mut cmd_rx,
+                    cmd_tx.clone(),
+                    &resolver,
+                )
+                .await
                 {
                     warn!("Soloist WebSocket connection ended: {}", e);
                 }
@@ -711,6 +954,7 @@ async fn handle_connection<S>(
     state_tx: &broadcast::Sender<()>,
     cmd_rx: &mut mpsc::Receiver<SoloistCommand>,
     cmd_tx: mpsc::Sender<SoloistCommand>,
+    resolver: &OembedResolver,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
@@ -752,7 +996,7 @@ where
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if handle_text(&text, state, state_tx).await == Some(true)
+                        if handle_text(&text, state, state_tx, Some(resolver)).await == Some(true)
                             && !bootstrapped
                         {
                             info!("Soloist authenticated; fetching playback state and queue");
@@ -849,6 +1093,7 @@ async fn handle_text(
     text: &str,
     state: &Arc<RwLock<PlaybackState>>,
     state_tx: &broadcast::Sender<()>,
+    resolver: Option<&OembedResolver>,
 ) -> Option<bool> {
     let event: SoloistEvent = match serde_json::from_str(text) {
         Ok(e) => e,
@@ -858,11 +1103,19 @@ async fn handle_text(
         }
     };
     debug!("<- {}", text);
+    LAST_EVENT_MS.store(now_unix_ms() as u64, Ordering::Relaxed);
 
     // While the power switch is off the bridge stays quiet: events are still
     // processed (state must stay current for the next power-on) but the
     // per-event logs are suppressed so a hidden device doesn't spam the log.
     let powered_on = state.read().await.powered_on;
+
+    // Set by the item/queue arms below: only those events can change which of
+    // the current item's artist URIs are resolvable, so only they run the
+    // oEmbed dispatch after the match. Position syncs and volume/options/device
+    // ticks can't create new unresolved URIs and skip the read-lock + URI
+    // collection entirely.
+    let mut dispatch_oembed = false;
 
     match event {
         SoloistEvent::AuthState {
@@ -892,6 +1145,7 @@ async fn handle_text(
             is_active,
             options,
         } => {
+            dispatch_oembed = true;
             let mut st = state.write().await;
             st.set_status(&status);
             apply_entity(&mut st, item.as_ref(), true);
@@ -913,6 +1167,7 @@ async fn handle_text(
             }
         }
         SoloistEvent::TrackChanged { item } => {
+            dispatch_oembed = true;
             let mut st = state.write().await;
             apply_entity(&mut st, Some(&item), true);
             if powered_on {
@@ -975,33 +1230,68 @@ async fn handle_text(
                 );
             }
         }
-        SoloistEvent::QueueChanged {
-            previous: _,
-            upcoming,
-        } => {
+        SoloistEvent::QueueChanged { previous, upcoming } => {
+            dispatch_oembed = true;
             let entries = upcoming
                 .iter()
                 .filter_map(|e| e.item.as_ref())
                 .map(short_label)
                 .collect::<Vec<_>>();
             let meta = queue_meta(&upcoming);
-            let mut st = state.write().await;
-            st.upcoming = entries;
-            // Replace, don't accumulate: only the most recent queue snapshot is
-            // kept, otherwise queue_meta would grow without bound over a long
-            // session. The now-playing track re-seeds its entry, though: it
-            // just left `upcoming` (it is playing now) and its first playback
-            // snapshot often ships without creator decorations.
-            let current_uri = st.media_content_id.clone();
-            let current_artists = current_uri
-                .as_deref()
-                .and_then(|uri| st.queue_meta.track_artists.get(uri).cloned());
-            st.queue_meta = meta;
-            if let (Some(uri), Some(names)) = (current_uri, current_artists) {
-                st.queue_meta.track_artists.entry(uri).or_insert(names);
+            // Artist URIs in this snapshot that shipped without a name: resolve
+            // them via oEmbed now so the name is cached before the track plays.
+            let unresolved: Vec<String> = upcoming
+                .iter()
+                .filter_map(|e| e.item.as_ref())
+                .flat_map(|item| item.decorations.creators.iter())
+                .filter_map(|c| c.entity.as_ref())
+                .filter(|ce| !ce.uri.is_empty() && ce.decorations.identity.name.is_empty())
+                .map(|ce| ce.uri.clone())
+                .collect();
+            {
+                let mut st = state.write().await;
+                st.upcoming = entries;
+                // Replace, don't accumulate: only the most recent queue snapshot is
+                // kept, otherwise queue_meta would grow without bound over a long
+                // session. The now-playing track re-seeds its entry, though: it
+                // just left `upcoming` (it is playing now) and its first playback
+                // snapshot often ships without creator decorations.
+                let current_uri = st.media_content_id.clone();
+                let current_artists = current_uri
+                    .as_deref()
+                    .and_then(|uri| st.queue_meta.track_artists.get(uri).cloned());
+                st.queue_meta = meta;
+                if let (Some(uri), Some(names)) = (current_uri, current_artists) {
+                    st.queue_meta.track_artists.entry(uri).or_insert(names);
+                }
+                // Track -> artist URI learning is persistent (bounded): record the
+                // creator URIs of both the upcoming and just-played entries, so a
+                // track's artist URIs survive queue rotation even when the
+                // rotation races the playback snapshot of the newly started track.
+                for entry in previous.iter().chain(upcoming.iter()) {
+                    let item_uri = entry
+                        .item
+                        .as_ref()
+                        .map(|i| i.uri.clone())
+                        .unwrap_or_default();
+                    if item_uri.is_empty() {
+                        continue;
+                    }
+                    let uris = entry_artist_uris(entry);
+                    if !uris.is_empty() {
+                        st.track_artist_uris.insert(item_uri, uris);
+                    }
+                }
+                if powered_on {
+                    debug!("queue_changed: {} upcoming", upcoming.len());
+                }
             }
-            if powered_on {
-                debug!("queue_changed: {} upcoming", upcoming.len());
+            // The write guard above is scoped so it is released BEFORE the
+            // oEmbed dispatch: maybe_lookup takes the state read lock itself,
+            // and holding the write lock across that await self-deadlocks
+            // (Rust drops let-bound guards at end of scope, not last use).
+            if let Some(r) = resolver {
+                r.maybe_lookup(unresolved).await;
             }
         }
         SoloistEvent::CommandResult { command } => {
@@ -1017,6 +1307,38 @@ async fn handle_text(
             return None;
         }
     }
+    // oEmbed fallback: the current item's unresolved artist URIs are looked up
+    // via Spotify's public oEmbed API — but only on events that can change the
+    // resolution set (a new item snapshot, or a queue rotation that recorded
+    // the current track's creators). Deduped against the caches and in-flight
+    // requests inside maybe_lookup, so re-dispatches are no-ops once a name is
+    // known or a lookup is already running. The read guard is scoped so it is
+    // released before maybe_lookup (which takes the read lock itself).
+    if dispatch_oembed {
+        if let Some(resolver) = resolver {
+            let mut uris: Vec<String> = Vec::new();
+            {
+                let st = state.read().await;
+                // Creators of the current item whose name is still unknown.
+                for c in st.item_creators.iter().filter(|c| c.name.is_none()) {
+                    uris.push(c.uri.clone());
+                }
+                // Creator URIs recorded from queue snapshots for the current
+                // track (the playback snapshot may have shipped with empty
+                // creators).
+                if let Some(track) = st.media_content_id.as_deref() {
+                    if let Some(quris) = st.track_artist_uris.get(track) {
+                        for u in quris {
+                            if !uris.contains(u) {
+                                uris.push(u.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            resolver.maybe_lookup(uris).await;
+        }
+    }
     let _ = state_tx.send(());
     None
 }
@@ -1030,6 +1352,7 @@ fn apply_entity(st: &mut PlaybackState, entity: Option<&Entity>, is_item: bool) 
             st.artwork_url = None;
             st.media_content_id = None;
             st.media_duration_ms = None;
+            st.item_creators.clear();
         }
         return;
     };
@@ -1059,43 +1382,49 @@ fn apply_entity(st: &mut PlaybackState, entity: Option<&Entity>, is_item: bool) 
                     None
                 }
             });
-        st.artist = resolve_artists(e, &st.queue_meta);
+        st.item_creators = collect_creators(e, st);
+        st.artist = st.artist_label();
+        if st.artist.is_none() {
+            debug!(
+                "artist unresolved for {:?}: snapshot_creators={:?} known_queue_uris={:?}",
+                st.media_content_id,
+                st.item_creators
+                    .iter()
+                    .map(|c| c.uri.as_str())
+                    .collect::<Vec<_>>(),
+                st.media_content_id
+                    .as_deref()
+                    .and_then(|t| st.track_artist_uris.get(t))
+                    .map(|u| u.to_vec())
+            );
+        }
     }
 }
 
-/// Artist label for an item entity, falling back to `queue_meta` when the
-/// snapshot lacks creator names. Creator entities that ship with a URI but no
-/// display name are resolved via the artist URI index; a track whose creators
-/// are entirely unnamed is looked up by its own URI. This lets tracks that were
-/// seen in a queue_changed `upcoming` (with full artist info) be resolved
-/// immediately when their first, metadata-less playback snapshot arrives.
-fn resolve_artists(e: &Entity, meta: &QueueMeta) -> Option<String> {
-    let mut names: Vec<String> = e
-        .decorations
+/// Snapshot the current item's creator refs: artist URI plus the best name
+/// known at snapshot time (inline decoration, else queue metadata, else the
+/// oEmbed cache). Creators with no URI are skipped — they cannot be resolved
+/// by a later lookup. The refs let a later oEmbed result refresh the artist
+/// label without re-parsing an event.
+fn collect_creators(e: &Entity, st: &PlaybackState) -> Vec<CreatorRef> {
+    e.decorations
         .creators
         .iter()
         .filter_map(|c| c.entity.as_ref())
-        .filter_map(|ce| {
-            if !ce.decorations.identity.name.is_empty() {
+        .filter(|ce| !ce.uri.is_empty())
+        .map(|ce| CreatorRef {
+            uri: ce.uri.clone(),
+            name: if !ce.decorations.identity.name.is_empty() {
                 Some(ce.decorations.identity.name.clone())
-            } else if !ce.uri.is_empty() {
-                meta.artist_names.get(&ce.uri).cloned()
             } else {
-                None
-            }
+                st.queue_meta
+                    .artist_names
+                    .get(&ce.uri)
+                    .cloned()
+                    .or_else(|| st.oembed.get(&ce.uri).map(str::to_string))
+            },
         })
-        .collect();
-    if names.is_empty() && !e.uri.is_empty() {
-        if let Some(from_queue) = meta.track_artists.get(&e.uri) {
-            names.extend(from_queue.iter().cloned());
-        }
-    }
-    names.dedup();
-    if names.is_empty() {
-        None
-    } else {
-        Some(names.join(", "))
-    }
+        .collect()
 }
 
 /// Extract artist identity from a queue_changed `upcoming` payload: per-track
@@ -1168,22 +1497,31 @@ fn apply_position(st: &mut PlaybackState, p: Position) {
     };
 }
 
-/// All creator names joined with ", " (e.g. "Artist A, Artist B"), skipping
-/// entities without a display name. None when there are no named creators.
+/// Name of the first creator (e.g. "Artist A"), skipping entities without a
+/// display name. None when there are no named creators.
 fn creators_label(e: &Entity) -> Option<String> {
-    let names: Vec<&str> = e
-        .decorations
+    e.decorations
         .creators
         .iter()
         .filter_map(|c| c.entity.as_ref())
         .map(|ce| ce.decorations.identity.name.as_str())
-        .filter(|n| !n.is_empty())
-        .collect();
-    if names.is_empty() {
-        None
-    } else {
-        Some(names.join(", "))
-    }
+        .find(|n| !n.is_empty())
+        .map(str::to_string)
+}
+
+/// Collect the creator artist URIs of a queue entry (skipping entries and
+/// creators without a URI).
+fn entry_artist_uris(entry: &QueueEntry) -> Vec<String> {
+    let Some(item) = &entry.item else {
+        return Vec::new();
+    };
+    item.decorations
+        .creators
+        .iter()
+        .filter_map(|c| c.entity.as_ref())
+        .filter(|ce| !ce.uri.is_empty())
+        .map(|ce| ce.uri.clone())
+        .collect()
 }
 
 /// Compact "Title - Artist" label for queue entries.
@@ -1218,7 +1556,8 @@ mod tests {
     use super::*;
 
     async fn feed(state: &Arc<RwLock<PlaybackState>>, tx: &broadcast::Sender<()>, json: &str) {
-        handle_text(json, state, tx).await;
+        // No oEmbed resolver in tests: lookups must not fire network requests.
+        handle_text(json, state, tx, None).await;
     }
 
     #[tokio::test]
@@ -1267,7 +1606,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn joins_multiple_creators_with_commas() {
+    async fn shows_only_first_creator() {
         let state = Arc::new(RwLock::new(PlaybackState::default()));
         let (tx, _) = broadcast::channel(4);
         feed(
@@ -1277,7 +1616,7 @@ mod tests {
         )
         .await;
         let st = state.read().await;
-        assert_eq!(st.artist.as_deref(), Some("Artist One, Artist Two"));
+        assert_eq!(st.artist.as_deref(), Some("Artist One"));
     }
 
     #[tokio::test]
@@ -1480,6 +1819,231 @@ mod tests {
     }
 
     #[test]
+    fn parses_oembed_title() {
+        // The oEmbed response for an artist embed carries the artist name in
+        // `title` (verified against https://open.spotify.com/oembed).
+        assert_eq!(
+            parse_oembed_title(
+                "{\"html\":\"<iframe></iframe>\",\"title\":\"Daft Punk\",\"provider_name\":\"Spotify\",\"type\":\"rich\"}"
+            ),
+            Some("Daft Punk".to_string())
+        );
+        // Empty or missing title, or a non-JSON body, is a miss.
+        assert_eq!(parse_oembed_title("{\"title\":\"\"}"), None);
+        assert_eq!(parse_oembed_title("{\"type\":\"rich\"}"), None);
+        assert_eq!(parse_oembed_title("not json"), None);
+    }
+
+    #[test]
+    fn oembed_url_encodes_artist_uris() {
+        assert_eq!(
+            oembed_url("spotify:artist:abc"),
+            Some("https://open.spotify.com/oembed?url=spotify%3Aartist%3Aabc".to_string())
+        );
+        // Only artist URIs are eligible: other entity types' embed titles
+        // aren't usable as artist display names.
+        assert_eq!(oembed_url("spotify:track:abc"), None);
+        assert_eq!(oembed_url("spotify:playlist:abc"), None);
+    }
+
+    #[tokio::test]
+    async fn oembed_result_fills_missing_artist() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        // Creator ships with a URI but no display name and no queue metadata:
+        // the artist stays unknown until the oEmbed result lands.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":""}}}}]}}}"#,
+        )
+        .await;
+        {
+            let st = state.read().await;
+            assert_eq!(st.artist, None);
+            assert_eq!(
+                st.item_creators,
+                vec![CreatorRef {
+                    uri: "spotify:artist:xyz".to_string(),
+                    name: None,
+                }]
+            );
+        }
+        // A completed oEmbed lookup (as applied by the resolver task) fills
+        // the artist and caches the name for the rest of the session.
+        {
+            let mut st = state.write().await;
+            assert!(apply_oembed_result(
+                &mut st,
+                "spotify:artist:xyz",
+                "Manic Focus"
+            ));
+        }
+        {
+            let st = state.read().await;
+            assert_eq!(st.artist.as_deref(), Some("Manic Focus"));
+            assert_eq!(st.oembed.get("spotify:artist:xyz"), Some("Manic Focus"));
+        }
+        // A later snapshot resolves the creator instantly from the cache.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"track_changed","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":""}}}}]}}}"#,
+        )
+        .await;
+        let st = state.read().await;
+        assert_eq!(st.artist.as_deref(), Some("Manic Focus"));
+    }
+
+    #[tokio::test]
+    async fn oembed_result_ignored_after_track_change() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":""}}}}]}}}"#,
+        )
+        .await;
+        // Track changed before the lookup completed.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"track_changed","item":{"uri":"spotify:track:def","entity_type":"track","decorations":{"identity":{"name":"Other"},"creators":[{"entity":{"uri":"spotify:artist:other","entity_type":"artist","decorations":{"identity":{"name":"Other Artist"}}}}]}}}"#,
+        )
+        .await;
+        let mut st = state.write().await;
+        // Resolves and caches the old artist, but the current item's label is
+        // left alone (the URI no longer belongs to the playing item).
+        assert!(!apply_oembed_result(
+            &mut st,
+            "spotify:artist:xyz",
+            "Manic Focus"
+        ));
+        assert_eq!(st.artist.as_deref(), Some("Other Artist"));
+        assert_eq!(st.oembed.get("spotify:artist:xyz"), Some("Manic Focus"));
+    }
+
+    #[tokio::test]
+    async fn empty_creators_snapshot_resolves_via_queue_uris_and_oembed() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        // The track is upcoming with an artist URI but no name...
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u1","source":"context","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[{"entity":{"uri":"spotify:artist:xyz","entity_type":"artist","decorations":{"identity":{"name":""}}}}]}}}]}"#,
+        )
+        .await;
+        // ...then starts playing with empty creator decorations (soloist's
+        // common first-snapshot shape): the queue-recorded URI must let the
+        // oEmbed-cached name resolve anyway.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"Buoyant"},"creators":[]}}}"#,
+        )
+        .await;
+        {
+            let st = state.read().await;
+            assert_eq!(st.artist, None);
+            assert_eq!(
+                st.track_artist_uris.get("spotify:track:abc"),
+                Some(&["spotify:artist:xyz".to_string()][..])
+            );
+        }
+        // A completed oEmbed lookup (as applied by the resolver task) fills
+        // the artist even though the snapshot shipped no creator URIs.
+        {
+            let mut st = state.write().await;
+            assert!(apply_oembed_result(
+                &mut st,
+                "spotify:artist:xyz",
+                "Manic Focus"
+            ));
+        }
+        let st = state.read().await;
+        assert_eq!(st.artist.as_deref(), Some("Manic Focus"));
+    }
+
+    #[tokio::test]
+    async fn queue_rotation_race_keeps_artist_uris_for_new_track() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        // Snapshot 1: the Tinlicker track is upcoming with an artist URI but
+        // no name.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u1","source":"context","item":{"uri":"spotify:track:T","entity_type":"track","decorations":{"identity":{"name":"Tinlicker Track"},"creators":[{"entity":{"uri":"spotify:artist:5Em","entity_type":"artist","decorations":{"identity":{"name":""}}}}]}}},{"uid":"u2","source":"context","item":{"uri":"spotify:track:old","entity_type":"track","decorations":{"identity":{"name":"Old"}}}}]}"#,
+        )
+        .await;
+        // Rotation arrives BEFORE the new track's playback_state: the current
+        // track is still the old one, so the queue snapshot wholesale replace
+        // would have dropped T's entry without the persistent cache.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"queue_changed","previous":[{"uid":"p1","source":"context","item":{"uri":"spotify:track:old","entity_type":"track","decorations":{"identity":{"name":"Old"}}}}],"upcoming":[{"uid":"u3","source":"context","item":{"uri":"spotify:track:next","entity_type":"track","decorations":{"identity":{"name":"Next"}}}}]}"#,
+        )
+        .await;
+        // T starts playing with empty creator decorations.
+        feed(
+            &state,
+            &tx,
+            r#"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:T","entity_type":"track","decorations":{"identity":{"name":"Tinlicker Track"},"creators":[]}}}"#,
+        )
+        .await;
+        {
+            let st = state.read().await;
+            // The URI mapping survived the rotation despite the late snapshot.
+            assert_eq!(
+                st.track_artist_uris.get("spotify:track:T"),
+                Some(&["spotify:artist:5Em".to_string()][..])
+            );
+            assert_eq!(st.artist, None);
+        }
+        // A completed oEmbed lookup fills the artist (this is the case that
+        // previously stayed "Unknown" and never published).
+        {
+            let mut st = state.write().await;
+            assert!(apply_oembed_result(
+                &mut st,
+                "spotify:artist:5Em",
+                "Tinlicker"
+            ));
+        }
+        let st = state.read().await;
+        assert_eq!(st.artist.as_deref(), Some("Tinlicker"));
+    }
+
+    #[tokio::test]
+    async fn maybe_lookup_skips_known_names() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        let resolver = OembedResolver::new(state.clone(), tx.clone());
+        {
+            let mut st = state.write().await;
+            st.oembed
+                .insert("spotify:artist:known".to_string(), "Known".to_string());
+            st.queue_meta
+                .artist_names
+                .insert("spotify:artist:fromq".to_string(), "FromQ".to_string());
+        }
+        // Cached (oEmbed + queue metadata) URIs are skipped: no task spawns.
+        resolver
+            .maybe_lookup(vec![
+                "spotify:artist:known".to_string(),
+                "spotify:artist:fromq".to_string(),
+            ])
+            .await;
+        assert_eq!(resolver.in_flight.lock().await.len(), 0);
+        // Empty input is a no-op.
+        resolver.maybe_lookup(vec![]).await;
+        assert_eq!(resolver.in_flight.lock().await.len(), 0);
+    }
+
+    #[test]
     fn command_serialization() {
         assert_eq!(
             SoloistCommand::Pause.to_json().to_string(),
@@ -1516,6 +2080,31 @@ mod tests {
             .set_modified(old)
             .unwrap();
         assert!(binary_needs_refresh(&path));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn remove_restore_state_clears_only_the_restore_snapshot() {
+        let dir = std::env::temp_dir().join(format!("soloist-restore-test-{}", std::process::id()));
+        let users = dir.join("cache/Users/some-user");
+        std::fs::create_dir_all(&users).unwrap();
+        let restore = users.join("context_player_state_restore");
+        std::fs::write(&restore, b"restore state").unwrap();
+        let observer = users.join("restrictions_playback_observer.state");
+        std::fs::write(&observer, b"observer").unwrap();
+        let ldb = users.join("primary.ldb");
+        std::fs::write(&ldb, b"ldb").unwrap();
+
+        remove_restore_state(&dir);
+
+        // The restore snapshot is cleared; the other daemon caches are
+        // untouched (they may hold device identity).
+        assert!(!restore.exists());
+        assert!(observer.exists());
+        assert!(ldb.exists());
+        // A missing cache dir is a no-op (first run).
+        remove_restore_state(&dir.join("does-not-exist"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1565,6 +2154,32 @@ mod tests {
             iters < 10,
             "gated loop should park on the pending channel, not spin ({} iters)",
             iters
+        );
+    }
+    #[tokio::test]
+    async fn queue_changed_with_unresolved_artist_does_not_deadlock() {
+        let state = Arc::new(RwLock::new(PlaybackState::default()));
+        let (tx, _) = broadcast::channel(4);
+        let resolver = OembedResolver::new(state.clone(), tx.clone());
+        // Cache the URI so the prefetch dispatch stays a no-op: the point of
+        // this test is the write-guard scope, not a network lookup (oEmbed
+        // lookups must not fire requests in tests).
+        state
+            .write()
+            .await
+            .oembed
+            .insert("spotify:artist:73A".to_string(), "BICEP".to_string());
+        // Queue snapshot with a creator that ships a URI but no name -> the
+        // QueueChanged arm calls maybe_lookup with non-empty `unresolved`.
+        let json = r#"{"type":"queue_changed","previous":[],"upcoming":[{"uid":"u1","source":"context","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"BICEP Track"},"creators":[{"entity":{"uri":"spotify:artist:73A","entity_type":"artist","decorations":{"identity":{"name":""}}}}]}}}]}"#;
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            handle_text(json, &state, &tx, Some(&resolver)),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "handle_text deadlocked: QueueChanged write guard held across maybe_lookup's read()"
         );
     }
 }

@@ -6,6 +6,7 @@ mod state;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info};
 
@@ -150,8 +151,17 @@ async fn main() -> anyhow::Result<()> {
 
     mqtt_task.abort();
     client_task.abort();
-    if let Some(t) = soloist_daemon_task {
-        t.abort();
+    if let Some(mut t) = soloist_daemon_task {
+        // The daemon task handles the shutdown signal itself (it SIGTERMs the
+        // soloist child so the daemon can flush its restore state, then
+        // returns). Wait for it to finish instead of aborting immediately;
+        // abort only as a fallback if it hangs (e.g. mid-backoff sleep).
+        if tokio::time::timeout(Duration::from_secs(10), &mut t)
+            .await
+            .is_err()
+        {
+            t.abort();
+        }
     }
 
     Ok(())

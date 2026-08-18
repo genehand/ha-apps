@@ -492,46 +492,58 @@ impl MqttBridge {
     }
 
     async fn publish_state(&self, client: &AsyncClient, device_id: &str) -> Result<()> {
-        let state = self.playback_state.read().await;
-
-        let state_topic = format!("soloist/{}/state", device_id);
-        client
-            .publish(state_topic, QoS::AtLeastOnce, false, state.ha_state())
-            .await?;
-
-        let attributes = state.attributes();
-        let attr_topic = format!("soloist/{}/attributes", device_id);
-        client
-            .publish(
-                attr_topic,
-                QoS::AtLeastOnce,
-                false,
-                serde_json::to_string(&attributes)?,
+        // Snapshot the full payload set under the lock, then drop the lock
+        // before any network work: holding the state lock across MQTT sends
+        // could deadlock against tasks that need the write lock (e.g. oEmbed
+        // artist resolution) when the MQTT channel backs up.
+        let (
+            ha_state,
+            attributes,
+            active_state,
+            power_state,
+            volume,
+            repeat,
+            shuffle,
+            track,
+            artist,
+        ) = {
+            let state = self.playback_state.read().await;
+            (
+                state.ha_state().to_string(),
+                serde_json::to_string(&state.attributes())?,
+                if state.is_active { "ON" } else { "OFF" }.to_string(),
+                if state.powered_on { "ON" } else { "OFF" }.to_string(),
+                state.volume,
+                state.repeat.clone(),
+                state.shuffle,
+                state.track.as_deref().unwrap_or("Unknown").to_string(),
+                state.artist.as_deref().unwrap_or("Unknown").to_string(),
             )
-            .await?;
+        };
 
-        // Keep the switches in sync
-        let active_state = if state.is_active { "ON" } else { "OFF" };
+        // Non-blocking sends: the eventloop that drains the client channel
+        // runs in the same select loop as this publish, so blocking on a full
+        // channel here would deadlock the bridge (the eventloop cannot run
+        // until this branch returns). A full channel means a dropped update;
+        // the next state change re-publishes.
+        let state_topic = format!("soloist/{}/state", device_id);
+        let attr_topic = format!("soloist/{}/attributes", device_id);
         let active_topic = format!("soloist/{}/active/state", device_id);
-        client
-            .publish(active_topic, QoS::AtLeastOnce, true, active_state)
-            .await?;
-
-        let power_state = if state.powered_on { "ON" } else { "OFF" };
         let power_topic = format!("soloist/{}/power/state", device_id);
-        client
-            .publish(power_topic, QoS::AtLeastOnce, true, power_state)
-            .await?;
+        for (topic, payload, retain) in [
+            (state_topic.as_str(), ha_state.as_bytes(), false),
+            (attr_topic.as_str(), attributes.as_bytes(), false),
+            (active_topic.as_str(), active_state.as_bytes(), true),
+            (power_topic.as_str(), power_state.as_bytes(), true),
+        ] {
+            if let Err(e) = client.try_publish(topic, QoS::AtLeastOnce, retain, payload) {
+                debug!("MQTT channel full; dropping {} publish: {}", topic, e);
+            }
+        }
 
         debug!(
             "Published state: {} ({} - {}) volume={} repeat={} shuffle={} power={}",
-            state.ha_state(),
-            state.track.as_deref().unwrap_or("Unknown"),
-            state.artist.as_deref().unwrap_or("Unknown"),
-            state.volume,
-            state.repeat,
-            state.shuffle,
-            power_state
+            ha_state, track, artist, volume, repeat, shuffle, power_state
         );
         Ok(())
     }

@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Position anchor from soloist, passed through as-is: `position_ms` is the
@@ -34,6 +34,70 @@ pub struct QueueMeta {
     pub artist_names: HashMap<String, String>,
 }
 
+/// Bounded FIFO cache keyed by Spotify URI, surviving queue rotation (once
+/// an entry is known it stays known for the rest of the session). Used for
+/// oEmbed artist names (artist URI -> name) and for the track -> creator
+/// artist URIs learned from queue snapshots.
+#[derive(Clone, Debug, Default)]
+pub struct BoundedCache<V> {
+    entries: HashMap<String, V>,
+    /// Insertion order for FIFO eviction (URI of each cache entry).
+    order: VecDeque<String>,
+}
+
+impl<V> BoundedCache<V> {
+    const CAP: usize = 64;
+
+    pub fn contains(&self, uri: &str) -> bool {
+        self.entries.contains_key(uri)
+    }
+
+    /// Insert (or refresh) a value, evicting the oldest entries when the
+    /// cache exceeds its cap so it stays bounded over a long session.
+    pub fn insert(&mut self, uri: String, value: V) {
+        if !self.entries.contains_key(&uri) {
+            self.order.push_back(uri.clone());
+        }
+        self.entries.insert(uri, value);
+        while self.order.len() > Self::CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.entries.remove(&old);
+            }
+        }
+    }
+}
+
+impl BoundedCache<String> {
+    pub fn get(&self, uri: &str) -> Option<&str> {
+        self.entries.get(uri).map(String::as_str)
+    }
+}
+
+impl BoundedCache<Vec<String>> {
+    pub fn get(&self, uri: &str) -> Option<&[String]> {
+        self.entries.get(uri).map(Vec::as_slice)
+    }
+}
+
+/// A creator of the currently playing item as seen in the latest snapshot:
+/// artist URI plus the best name known at snapshot time (`None` when the
+/// snapshot shipped a URI but no display name and neither the queue metadata
+/// nor the oEmbed cache had one). Kept so a later oEmbed result can refresh
+/// the artist label without re-parsing an event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreatorRef {
+    pub uri: String,
+    pub name: Option<String>,
+}
+
+/// Push a name onto a label list unless already present (only the first name
+/// is used, so duplicates must not shift which creator is primary).
+fn push_unique(names: &mut Vec<String>, n: String) {
+    if !names.contains(&n) {
+        names.push(n);
+    }
+}
+
 /// Playback state shared between the soloist WebSocket client and the MQTT bridge.
 #[derive(Clone, Debug, Default)]
 pub struct PlaybackState {
@@ -58,6 +122,18 @@ pub struct PlaybackState {
     pub upcoming: Vec<String>,
     /// Artist identity captured from queue_changed metadata (see `QueueMeta`)
     pub queue_meta: QueueMeta,
+    /// Artist names resolved via Spotify's oEmbed API (artist URI -> name).
+    /// Final fallback when a creator ships a URI but no name and the queue
+    /// metadata has none. Persistent: survives queue rotation.
+    pub oembed: BoundedCache<String>,
+    /// Track URI -> creator artist URIs, learned from queue snapshots while
+    /// a track was upcoming. Persistent (bounded) so a track whose playback
+    /// snapshot ships with empty creator decorations still resolves its
+    /// artist via the URIs — even when queue rotation races the snapshot.
+    pub track_artist_uris: BoundedCache<Vec<String>>,
+    /// Creators of the currently playing item (artist URI + snapshot-time
+    /// name); used to refresh the artist label when an oEmbed lookup lands.
+    pub item_creators: Vec<CreatorRef>,
     /// True while the soloist daemon process is running
     pub soloist_running: bool,
     /// Last soloist event / error for diagnostics
@@ -104,6 +180,67 @@ impl PlaybackState {
     pub fn set_power(&mut self, on: bool) {
         self.powered_on = on;
         self.awaiting_playing = on && !matches!(self.status.as_str(), "playing" | "buffering");
+    }
+
+    /// Artist label for the currently playing item. Resolution per creator:
+    /// snapshot-time name, then queue metadata, then the oEmbed cache (which
+    /// may have been filled since the snapshot landed). When the snapshot
+    /// shipped no creator URIs at all — soloist's first snapshot for a new
+    /// track often ships empty creator decorations — falls back to the creator
+    /// URIs captured from the `queue_changed` snapshot while this track was
+    /// upcoming (resolved via queue metadata / oEmbed cache), then to the
+    /// direct names captured from that same snapshot. None when no creator
+    /// has a resolvable name.
+    pub fn artist_label(&self) -> Option<String> {
+        let mut names: Vec<String> = Vec::new();
+        // 1. Creators seen in the playback snapshot.
+        for c in &self.item_creators {
+            let name = c
+                .name
+                .clone()
+                .or_else(|| self.queue_meta.artist_names.get(&c.uri).cloned())
+                .or_else(|| self.oembed.get(&c.uri).map(str::to_string));
+            if let Some(n) = name {
+                push_unique(&mut names, n);
+            }
+        }
+        if names.is_empty() {
+            // 2. Snapshot shipped no creator URIs: use the artist URIs seen
+            // in queue snapshots while this track was upcoming (persistent
+            // cache, so it survives queue rotation racing the snapshot).
+            if let Some(track) = self.media_content_id.as_deref() {
+                if let Some(uris) = self.track_artist_uris.get(track) {
+                    for u in uris {
+                        let name = self
+                            .queue_meta
+                            .artist_names
+                            .get(u)
+                            .cloned()
+                            .or_else(|| self.oembed.get(u).map(str::to_string));
+                        if let Some(n) = name {
+                            push_unique(&mut names, n);
+                        }
+                    }
+                }
+            }
+        }
+        if names.is_empty() {
+            // 3. Direct names from the queue snapshot (covers creators that
+            // shipped with a name but no URI).
+            if let Some(track) = self.media_content_id.as_deref() {
+                if let Some(from_queue) = self.queue_meta.track_artists.get(track) {
+                    for n in from_queue {
+                        push_unique(&mut names, n.clone());
+                    }
+                }
+            }
+        }
+        if names.is_empty() {
+            None
+        } else {
+            // Only the first (primary) creator is shown.
+            names.into_iter().next()
+        }
     }
 
     /// Current position in seconds (HA convention), passed through from the
@@ -345,5 +482,84 @@ mod tests {
         // Device-level attributes stay populated; position anchor is omitted.
         assert_eq!(v["volume"], 0.42);
         assert!(v.get("media_position_updated_at").is_none());
+    }
+
+    #[test]
+    fn oembed_cache_is_bounded_fifo() {
+        let mut cache = BoundedCache::<String>::default();
+        for i in 0..70 {
+            cache.insert(format!("spotify:artist:{}", i), format!("Artist {}", i));
+        }
+        // The 6 oldest entries were evicted to stay at the cap.
+        assert!(!cache.contains("spotify:artist:0"));
+        assert!(!cache.contains("spotify:artist:5"));
+        assert!(cache.contains("spotify:artist:6"));
+        assert_eq!(cache.get("spotify:artist:69"), Some("Artist 69"));
+        // Refreshing an existing key doesn't evict anything...
+        cache.insert("spotify:artist:69".to_string(), "Artist 69!".to_string());
+        assert!(cache.contains("spotify:artist:6"));
+        assert_eq!(cache.get("spotify:artist:69"), Some("Artist 69!"));
+        // ...and a new insert evicts the next-oldest entry.
+        cache.insert("spotify:artist:70".to_string(), "Artist 70".to_string());
+        assert!(!cache.contains("spotify:artist:6"));
+        assert_eq!(cache.get("spotify:artist:70"), Some("Artist 70"));
+    }
+
+    #[test]
+    fn artist_label_resolves_from_oembed_cache() {
+        let mut st = PlaybackState {
+            item_creators: vec![CreatorRef {
+                uri: "spotify:artist:xyz".to_string(),
+                name: None,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(st.artist_label(), None);
+        st.oembed
+            .insert("spotify:artist:xyz".to_string(), "Manic Focus".to_string());
+        assert_eq!(st.artist_label(), Some("Manic Focus".to_string()));
+    }
+
+    #[test]
+    fn artist_label_prefers_inline_then_queue_then_oembed() {
+        let mut st = PlaybackState {
+            item_creators: vec![
+                CreatorRef {
+                    uri: "spotify:artist:1".to_string(),
+                    name: Some("Inline".to_string()),
+                },
+                CreatorRef {
+                    uri: "spotify:artist:2".to_string(),
+                    name: None,
+                },
+            ],
+            ..Default::default()
+        };
+        st.queue_meta
+            .artist_names
+            .insert("spotify:artist:2".to_string(), "FromQueue".to_string());
+        // oEmbed is the last resort: a cached name loses to queue metadata.
+        st.oembed
+            .insert("spotify:artist:2".to_string(), "FromOEmbed".to_string());
+        assert_eq!(st.artist_label(), Some("Inline".to_string()));
+    }
+
+    #[test]
+    fn artist_label_uses_queue_uris_when_snapshot_has_no_creators() {
+        let mut st = PlaybackState {
+            media_content_id: Some("spotify:track:abc".to_string()),
+            ..Default::default()
+        };
+        // The track was seen in the queue with an artist URI but no name.
+        st.track_artist_uris.insert(
+            "spotify:track:abc".to_string(),
+            vec!["spotify:artist:xyz".to_string()],
+        );
+        assert_eq!(st.artist_label(), None);
+        // oEmbed later resolves the artist URI: the label appears even though
+        // the playback snapshot shipped with empty creator decorations.
+        st.oembed
+            .insert("spotify:artist:xyz".to_string(), "Manic Focus".to_string());
+        assert_eq!(st.artist_label(), Some("Manic Focus".to_string()));
     }
 }

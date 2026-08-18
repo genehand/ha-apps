@@ -1,6 +1,6 @@
 [package]
 name = "soloist-bridge"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Home Assistant bridge for Spotify Soloist (WebSocket API -> MQTT discovery)"
@@ -30,6 +30,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] 
 
 # Error handling
 anyhow = "1"
+
+# Unix signals (graceful SIGTERM to the soloist daemon on shutdown)
+libc = "0.2"
 
 # Configuration
 clap = { version = "4", features = ["derive", "env"] }
