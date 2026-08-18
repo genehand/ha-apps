@@ -774,14 +774,17 @@ where
                     None => return Err(anyhow!("websocket stream ended")),
                 }
             }
-            _ = &mut bootstrap_timeout => {
-                if !bootstrapped {
-                    info!("No auth_state received within 5s; fetching playback state anyway");
-                    send_command(&mut ws, &SoloistCommand::GetState).await?;
-                    send_command(&mut ws, &SoloistCommand::GetQueue { limit: Some(10) })
-                        .await?;
-                    bootstrapped = true;
-                }
+            // Precondition, not a body guard: once `bootstrapped` is true the
+            // branch is disabled and the fired `Sleep` is never polled again.
+            // Otherwise a completed tokio Sleep stays permanently Ready and
+            // this select would busy-spin at 100% CPU whenever soloist is
+            // idle (both other branches pending).
+            _ = &mut bootstrap_timeout, if !bootstrapped => {
+                info!("No auth_state received within 5s; fetching playback state anyway");
+                send_command(&mut ws, &SoloistCommand::GetState).await?;
+                send_command(&mut ws, &SoloistCommand::GetQueue { limit: Some(10) })
+                    .await?;
+                bootstrapped = true;
             }
         }
     }
@@ -1244,6 +1247,9 @@ mod tests {
             r##"{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:abc","entity_type":"track","decorations":{"identity":{"name":"My Song"},"visual_identity":{"cover":[{"url":"https://i.scdn.co/small","size":"small"},{"url":"https://i.scdn.co/large","size":"large"}]},"parent":{"entity":{"uri":"spotify:album:def","entity_type":"album","decorations":{"identity":{"name":"Album Name"}}}},"creators":[{"entity":{"uri":"spotify:artist:ghi","entity_type":"artist","decorations":{"identity":{"name":"Artist Name"}}}}],"playback":{"duration_ms":210000,"content_ratings":[]}}},"context":{"uri":"spotify:playlist:jkl","entity_type":"playlist","decorations":{"identity":{"name":"Today's Top Hits"}}},"position":{"position_ms":45000,"timestamp_ms":1747654321000,"speed":1.0},"volume":65,"is_active":true,"options":{"shuffle":false,"repeat":"context"},"available_actions":{"pause":{}}}"##,
         )
         .await;
+        // The power switch defaults to off; this test exercises playback-state
+        // parsing, so report normally.
+        state.write().await.set_power(true);
         let st = state.read().await;
         assert_eq!(st.ha_state(), "playing");
         assert_eq!(st.track.as_deref(), Some("My Song"));
@@ -1512,5 +1518,53 @@ mod tests {
         assert!(binary_needs_refresh(&path));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Regression test for the 100% CPU busy-loop that hit `handle_connection`:
+    /// a `tokio::time::Sleep` that has fired stays Ready on every re-poll, so a
+    /// `select!` branch polling it must be gated by a precondition
+    /// (`.await, if !bootstrapped`). Without the gate, an otherwise idle loop
+    /// (all other branches pending) spins at full CPU, only stopping when the
+    /// real-time deadline below fires, and racks up tens of thousands of
+    /// iterations in the process. With the gate, the loop parks: the fired
+    /// timer is polled once, then the loop sleeps on the pending channel until
+    /// the deadline fires.
+    #[tokio::test(flavor = "current_thread")]
+    async fn expired_timer_branch_parks_when_gated() {
+        // A timer that has already fired, like the 5s bootstrap timeout in
+        // `handle_connection` after it elapses.
+        let expired = tokio::time::sleep(Duration::from_millis(1));
+        tokio::pin!(expired);
+        // A deadline the loop must reach; real time, so even a (hypothetical)
+        // busy loop eventually breaks out and trips the iteration assertions.
+        let deadline = tokio::time::sleep(Duration::from_millis(50));
+        tokio::pin!(deadline);
+        let (_tx, mut rx) = mpsc::channel::<u8>(4);
+
+        // The fixed pattern: once the gate flips false the fired timer is no
+        // longer polled, so the loop parks on the pending channel until the
+        // deadline fires. The buggy pattern (no precondition) instead spins:
+        // the fired timer is immediately ready every iteration, so the loop
+        // never yields until the deadline interrupts it.
+        let mut gated = true;
+        let mut iters = 0u64;
+        loop {
+            tokio::select! {
+                _ = rx.recv() => {}
+                _ = &mut expired, if gated => gated = false,
+                _ = &mut deadline => break,
+            }
+            iters += 1;
+            assert!(
+                iters < 1_000_000,
+                "select loop busy-spun {} times instead of parking",
+                iters
+            );
+        }
+        assert!(
+            iters < 10,
+            "gated loop should park on the pending channel, not spin ({} iters)",
+            iters
+        );
     }
 }

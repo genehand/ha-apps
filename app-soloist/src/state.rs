@@ -35,7 +35,7 @@ pub struct QueueMeta {
 }
 
 /// Playback state shared between the soloist WebSocket client and the MQTT bridge.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PlaybackState {
     /// soloist status: idle, playing, paused, buffering
     pub status: String,
@@ -70,36 +70,6 @@ pub struct PlaybackState {
     /// until playback actually starts ("playing"/"buffering"), after which
     /// paused is reported normally until the power switch is turned off again.
     pub awaiting_playing: bool,
-}
-
-impl Default for PlaybackState {
-    fn default() -> Self {
-        Self {
-            status: String::new(),
-            track: None,
-            artist: None,
-            album: None,
-            artwork_url: None,
-            media_content_id: None,
-            source: None,
-            volume: 0,
-            shuffle: false,
-            repeat: String::new(),
-            media_duration_ms: None,
-            position_anchor: PositionAnchor::default(),
-            logged_in: false,
-            is_active: false,
-            device_name: String::new(),
-            upcoming: Vec::new(),
-            queue_meta: QueueMeta::default(),
-            soloist_running: false,
-            last_error: None,
-            // The power switch defaults to ON: normal reporting until the
-            // user explicitly turns it off.
-            powered_on: true,
-            awaiting_playing: false,
-        }
-    }
 }
 
 impl PlaybackState {
@@ -236,6 +206,7 @@ mod tests {
             status: "playing".to_string(),
             ..Default::default()
         };
+        st.set_power(true);
         assert_eq!(st.ha_state(), "playing");
 
         st.set_power(false);
@@ -302,9 +273,9 @@ mod tests {
     }
 
     #[test]
-    fn default_state_is_powered_on() {
+    fn default_state_is_powered_off() {
         let st = PlaybackState::default();
-        assert!(st.powered_on);
+        assert!(!st.powered_on);
         assert!(!st.awaiting_playing);
         assert_eq!(st.ha_state(), "idle");
     }
@@ -323,6 +294,10 @@ mod tests {
             upcoming: vec!["Next".to_string()],
             ..Default::default()
         };
+
+        // Default is powered off. Switch it on so the media attributes
+        // are visible for the first half of the test.
+        st.set_power(true);
 
         // Powered on: media attributes are populated.
         let on = st.attributes();
