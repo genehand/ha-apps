@@ -20,7 +20,13 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
 - **soloist-bridge** (Rust, `src/`):
   - `main.rs` — orchestration: spawns soloist daemon + ws client + MQTT bridge
   - `config.rs` — CLI/env config (clap). `SOLOIST_WS_URL` override skips daemon spawning
-  - `soloist.rs` — WebSocket client, event parsing (serde), command serialization, daemon supervisor
+  - `soloist.rs` — module root; re-exports `run_client`, `SoloistCommand`, `SoloistDaemon`
+  - `soloist/events.rs` — wire-format model for the Soloist WebSocket API
+  - `soloist/commands.rs` — command serialization (`SoloistCommand`)
+  - `soloist/client.rs` — WebSocket client lifecycle (`run_client`, connection handling)
+  - `soloist/apply.rs` — event parsing + application to state (`handle_text`, `apply_*` helpers)
+  - `soloist/oembed.rs` — oEmbed artist-name fallback (`OembedResolver`)
+  - `soloist/daemon.rs` — soloist binary download/refresh + daemon supervisor (`SoloistDaemon`)
   - `state.rs` — shared `PlaybackState` + position anchor passthrough
   - `mqtt.rs` — MQTT discovery (sensor + active + power switches), state publishing, command translation
 
