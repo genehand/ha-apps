@@ -544,6 +544,94 @@ class TestDeviceRegistry:
             finally:
                 patcher.unpatch()
 
+    @pytest.mark.asyncio
+    async def test_async_get_device_id_by_identifier(self):
+        """Test async_get_device_id_by_identifier finds a device via identifiers."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                registry = dr.async_get(hass)
+                residence = registry.async_get_or_create(
+                    config_entry_id="entry_1",
+                    identifiers={("leviton_decora_smart_wifi", "residence_1")},
+                    name="Residence",
+                )
+
+                # Lookup with matching config entry -> returns device id
+                device_id = dr.async_get_device_id_by_identifier(
+                    hass,
+                    ("leviton_decora_smart_wifi", "residence_1"),
+                    config_entry_id="entry_1",
+                )
+                assert device_id == residence.id
+
+                # Same identifier under a different config entry -> not found
+                with pytest.raises(ValueError):
+                    dr.async_get_device_id_by_identifier(
+                        hass,
+                        ("leviton_decora_smart_wifi", "residence_1"),
+                        config_entry_id="entry_2",
+                    )
+
+                # Unknown identifier -> not found
+                with pytest.raises(ValueError):
+                    dr.async_get_device_id_by_identifier(
+                        hass,
+                        ("leviton_decora_smart_wifi", "residence_unknown"),
+                        config_entry_id="entry_1",
+                    )
+            finally:
+                patcher.unpatch()
+
+    @pytest.mark.asyncio
+    async def test_async_get_device_by_identifier_scoped_to_config_entry(self):
+        """Test async_get_device_by_identifier requires ownership by config entry."""
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                registry = dr.async_get(hass)
+                registry.async_get_or_create(
+                    config_entry_id="entry_1",
+                    identifiers={("leviton_decora_smart_wifi", "device_1")},
+                    name="Device 1",
+                )
+
+                device = registry.async_get_device_by_identifier(
+                    ("leviton_decora_smart_wifi", "device_1"), "entry_1"
+                )
+                assert device is not None
+                assert device.name == "Device 1"
+
+                # Identifier exists but owned by a different config entry
+                assert (
+                    registry.async_get_device_by_identifier(
+                        ("leviton_decora_smart_wifi", "device_1"), "entry_2"
+                    )
+                    is None
+                )
+            finally:
+                patcher.unpatch()
+
 
 class TestMqttStub:
     """Tests for the homeassistant.components.mqtt stub."""

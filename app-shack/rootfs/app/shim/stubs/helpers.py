@@ -121,6 +121,21 @@ class DeviceRegistry:
         """Get a device by id."""
         return self._devices.get(device_id)
 
+    def async_get_device_by_identifier(self, identifier, config_entry_id):
+        """Get the device with the identifier, owned by the config entry.
+
+        Identifiers are unique within a config entry, so unlike async_get_device
+        the lookup cannot be ambiguous. Mirrors HA's
+        DeviceRegistry.async_get_device_by_identifier.
+        """
+        for device in self._devices.values():
+            if (
+                config_entry_id in device.config_entries
+                and identifier in device.identifiers
+            ):
+                return device
+        return None
+
     def async_get_or_create_for_config_entry(self, config_entry_id: str):
         """Get all devices associated with a config entry."""
         return [
@@ -481,6 +496,25 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     device_registry.format_mac = lambda x: x
     device_registry.async_entries_for_config_entry = lambda *args, **kwargs: []
     device_registry.async_get_device = lambda *args, **kwargs: None
+
+    def async_get_device_id_by_identifier(hass, identifier, *, config_entry_id):
+        """Get the id of the device with the identifier, owned by the config entry.
+
+        Convenience wrapper for linking a device to its via device through
+        via_device_id. Mirrors HA's
+        device_registry.async_get_device_id_by_identifier.
+        """
+        device = _get_device_registry(hass).async_get_device_by_identifier(
+            identifier, config_entry_id
+        )
+        if device is None:
+            raise ValueError(
+                f"There is no device with identifier {identifier} in config entry "
+                f"{config_entry_id}"
+            )
+        return device.id
+
+    device_registry.async_get_device_id_by_identifier = async_get_device_id_by_identifier
     homeassistant.helpers.device_registry = device_registry
     sys.modules["homeassistant.helpers.device_registry"] = device_registry
 
