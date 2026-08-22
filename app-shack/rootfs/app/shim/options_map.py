@@ -134,9 +134,13 @@ def patch_select_descriptions(domain: str, module: Any, integration_path: Path) 
         "SELECT_DESCRIPTIONS",
         "SELECT_ENTITY_DESCRIPTIONS",
         "DESCRIPTIONS",
+        # Some integrations (e.g. nest_protect) name their select description
+        # list SENSOR_DESCRIPTIONS. Kept last so a generic DESCRIPTIONS list
+        # wins when both exist in the same module (only the first matching
+        # variable is patched per module).
+        "SENSOR_DESCRIPTIONS",
     ]
 
-    patched_count = 0
     modules_to_check = [module]
 
     # Also check submodules that might contain select descriptions (e.g., select.py, sensor.py)
@@ -170,6 +174,8 @@ def patch_select_descriptions(domain: str, module: Any, integration_path: Path) 
             f"Checking module {check_module.__name__} for select descriptions"
         )
 
+        patched_count = 0
+
         for var_name in description_vars:
             if not hasattr(check_module, var_name):
                 continue
@@ -185,6 +191,18 @@ def patch_select_descriptions(domain: str, module: Any, integration_path: Path) 
             # Patch descriptions that don't already have options_map
             for desc in descriptions:
                 if not hasattr(desc, "key"):
+                    continue
+
+                # Only patch descriptions that look like select entity
+                # descriptions (they carry options or options_key). Other
+                # platforms (e.g. nest_protect's sensor.py) may use the same
+                # variable name for real sensor descriptions, and stamping
+                # options_map onto those would be misleading. Note: shim
+                # base classes default options to None, so check the value,
+                # not mere presence.
+                if not getattr(desc, "options", None) and not getattr(
+                    desc, "options_key", None
+                ):
                     continue
 
                 # Check if description already has options_map

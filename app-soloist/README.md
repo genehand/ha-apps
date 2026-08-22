@@ -164,9 +164,9 @@ playback or stops the soloist daemon, it only gates the reported state:
   actually starts (`playing`), and only then reports `paused` states normally
   again (until the switch is turned off).
 
-The power state resets to **ON** when the bridge restarts. To actually stop
-the audio, use the play/pause commands (or the Spotify app) — the power
-switch just hides playback from Home Assistant.
+The power state resets to off when the bridge restarts. To control the audio,
+use the play/pause commands (or the Spotify app) — the power switch just hides
+playback from Home Assistant.
 
 While **off**, the bridge publishes nothing further to MQTT (the state and
 attributes are static), so soloist events — e.g. `position_sync` ticks during

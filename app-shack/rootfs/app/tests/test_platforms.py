@@ -647,6 +647,85 @@ class TestOptionsMapRegistry:
         finally:
             clear_translations_cache()
 
+    def test_patch_select_descriptions_sensor_descriptions_var(self):
+        """Test patching select descriptions in a SENSOR_DESCRIPTIONS var.
+
+        nest_protect names its select description list SENSOR_DESCRIPTIONS,
+        while its sensor platform uses the same name for real sensor
+        descriptions. Only the select ones (which carry options) should be
+        patched with options_map.
+        """
+        import dataclasses
+        import tempfile
+        import json
+        from pathlib import Path
+        from shim.options_map import (
+            load_integration_translations,
+            patch_select_descriptions,
+            clear_translations_cache,
+        )
+
+        clear_translations_cache()
+
+        try:
+            @dataclasses.dataclass(frozen=True)
+            class SelectDescription:
+                key: str
+                options: list = None
+
+            @dataclasses.dataclass(frozen=True)
+            class SensorDescription:
+                key: str
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                integration_path = Path(tmpdir)
+                translations_dir = integration_path / "translations"
+                translations_dir.mkdir()
+
+                translations = {
+                    "entity": {
+                        "select": {
+                            "night_light_brightness": {
+                                "state": {
+                                    "low": "Low",
+                                    "medium": "Medium",
+                                    "high": "High",
+                                }
+                            }
+                        }
+                    }
+                }
+
+                with open(translations_dir / "en.json", "w") as f:
+                    json.dump(translations, f)
+
+                select_desc = SelectDescription(
+                    key="night_light_brightness",
+                    options=["low", "medium", "high"],
+                )
+                sensor_desc = SensorDescription(key="battery_level")
+
+                class FakeModule:
+                    SENSOR_DESCRIPTIONS = [select_desc, sensor_desc]
+
+                patch_select_descriptions(
+                    "test_integration", FakeModule, integration_path
+                )
+
+                # Select description patched with only its own options
+                assert hasattr(select_desc, "options_map")
+                assert select_desc.options_map == {
+                    "low": "Low",
+                    "medium": "Medium",
+                    "high": "High",
+                }
+
+                # Sensor description left untouched
+                assert not hasattr(sensor_desc, "options_map")
+
+        finally:
+            clear_translations_cache()
+
 
 class TestNumberEntityValueClamping:
     """Tests for number entity value clamping in MQTT publish."""
