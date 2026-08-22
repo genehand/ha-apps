@@ -39,6 +39,7 @@ class DeviceInfo:
     sw_version: Optional[str] = None
     hw_version: Optional[str] = None
     via_device: Optional[tuple] = None
+    via_device_id: Optional[str] = None
     entry_type: Optional[str] = None
     configuration_url: Optional[str] = None
     suggested_area: Optional[str] = None
@@ -61,6 +62,7 @@ class DeviceEntry:
     hw_version: Optional[str] = None
     entry_type: Optional[str] = None
     via_device: Optional[tuple] = None
+    via_device_id: Optional[str] = None
     configuration_url: Optional[str] = None
     suggested_area: Optional[str] = None
 
@@ -90,6 +92,7 @@ class DeviceRegistry:
         hw_version=None,
         entry_type=None,
         via_device=None,
+        via_device_id=None,
         **kwargs,
     ):
         """Get or create a device entry."""
@@ -111,6 +114,7 @@ class DeviceRegistry:
             hw_version=hw_version,
             entry_type=entry_type,
             via_device=via_device,
+            via_device_id=via_device_id,
             configuration_url=configuration_url,
             suggested_area=suggested_area,
         )

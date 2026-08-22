@@ -632,6 +632,54 @@ class TestDeviceRegistry:
             finally:
                 patcher.unpatch()
 
+    @pytest.mark.asyncio
+    async def test_device_info_accepts_via_device_id(self):
+        """Test DeviceInfo accepts via_device_id (HA current API).
+
+        Mirrors leviton_decora_smart_wifi entity.py device_info property which
+        passes via_device_id=dr.async_get_device_id_by_identifier(...).
+        """
+        from shim.import_patch import ImportPatcher
+        from shim.core import HomeAssistant
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hass = HomeAssistant(Path(tmpdir))
+            patcher = ImportPatcher(hass)
+            patcher.patch()
+
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                registry = dr.async_get(hass)
+                residence = registry.async_get_or_create(
+                    config_entry_id="entry_1",
+                    identifiers={("leviton_decora_smart_wifi", "residence_1")},
+                    name="Residence",
+                )
+
+                via_id = dr.async_get_device_id_by_identifier(
+                    hass,
+                    ("leviton_decora_smart_wifi", "residence_1"),
+                    config_entry_id="entry_1",
+                )
+                info = dr.DeviceInfo(
+                    configuration_url="https://example.com",
+                    identifiers={("leviton_decora_smart_wifi", "device_1")},
+                    manufacturer="Leviton",
+                    model="D215S",
+                    name="Switch",
+                    serial_number="1234",
+                    suggested_area="Living Room",
+                    sw_version="1.0",
+                    via_device_id=via_id,
+                )
+                assert info.via_device_id == residence.id
+                assert info.name == "Switch"
+            finally:
+                patcher.unpatch()
+
 
 class TestMqttStub:
     """Tests for the homeassistant.components.mqtt stub."""
