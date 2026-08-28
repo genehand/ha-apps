@@ -346,6 +346,12 @@ class FanEntity(Entity):
         if self.supported_features & SUPPORT_OSCILLATE:
             config["oscillation_command_topic"] = f"{base_topic}/oscillation_set"
             config["oscillation_state_topic"] = f"{base_topic}/oscillation_state"
+            # HA's MQTT fan defaults payload_oscillation_on/off to
+            # "oscillate_on"/"oscillate_off"; pin them to ON/OFF so commands
+            # and state round-trip consistently with our command routing
+            # (manager.py) and state publishing (_mqtt_publish).
+            config["payload_oscillation_on"] = "ON"
+            config["payload_oscillation_off"] = "OFF"
 
         if self.entity_category:
             config["entity_category"] = self.entity_category

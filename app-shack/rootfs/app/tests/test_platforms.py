@@ -1571,6 +1571,79 @@ class TestFanEntitySpeedRange:
         assert received_percentages[1] == 100  # Not converted
 
 
+class TestFanDiscoveryOscillationPayloads:
+    """Tests for fan oscillation payloads in MQTT discovery config.
+
+    HA's MQTT fan defaults payload_oscillation_on/off to
+    "oscillate_on"/"oscillate_off"; the shim pins them to ON/OFF so commands
+    and state round-trip consistently with manager.py routing and
+    _mqtt_publish state publishing.
+    """
+
+    async def _publish_and_get_config(self, supported_features):
+        """Publish fan discovery and return the parsed config dict."""
+        import json
+
+        from unittest.mock import MagicMock
+
+        from shim.platforms.fan import FanEntity
+
+        class TestFan(FanEntity):
+            def __init__(self):
+                self._attr_unique_id = "test_fan_unique"
+                self._attr_name = "Test Fan"
+                self._attr_supported_features = supported_features
+
+        entity = TestFan()
+        entity.entity_id = "fan.test_fan"
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states = MagicMock()
+        mock_hass.states.get.return_value = None
+        entity.hass = mock_hass
+
+        await entity._publish_mqtt_discovery()
+
+        # Find the publish call for the discovery config topic
+        discovery_topic = "homeassistant/fan/test-fan/config"
+        for call in mock_mqtt.publish.call_args_list:
+            if call.args[0] == discovery_topic:
+                return json.loads(call.args[1])
+        raise AssertionError(f"No discovery published to {discovery_topic}")
+
+    @pytest.mark.asyncio
+    async def test_oscillation_payloads_pinned_to_on_off(self):
+        """Discovery config pins payload_oscillation_on/off to ON/OFF."""
+        from shim.platforms.fan import SUPPORT_OSCILLATE
+
+        config = await self._publish_and_get_config(
+            supported_features=SUPPORT_OSCILLATE
+        )
+
+        assert config["oscillation_command_topic"] == (
+            "homeassistant/fan/test-fan/oscillation_set"
+        )
+        assert config["oscillation_state_topic"] == (
+            "homeassistant/fan/test-fan/oscillation_state"
+        )
+        assert config["payload_oscillation_on"] == "ON"
+        assert config["payload_oscillation_off"] == "OFF"
+
+    @pytest.mark.asyncio
+    async def test_no_oscillation_payloads_without_oscillate_feature(self):
+        """No oscillation keys are published when OSCILLATE is unsupported."""
+        config = await self._publish_and_get_config(supported_features=0)
+
+        assert "oscillation_command_topic" not in config
+        assert "oscillation_state_topic" not in config
+        assert "payload_oscillation_on" not in config
+        assert "payload_oscillation_off" not in config
+
+
 class TestHomeAssistantUtilPercentage:
     """Tests for homeassistant.util.percentage compatibility with integrations.
 

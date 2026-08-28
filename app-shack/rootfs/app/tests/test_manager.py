@@ -191,6 +191,42 @@ class TestManagerCommandRouting:
         entity.async_oscillate.assert_called_once_with(False)
 
     @pytest.mark.asyncio
+    async def test_route_command_oscillation_set_ha_payloads(self):
+        """Test HA's default payload_oscillation_on/off values.
+
+        HA's MQTT fan publishes payload_oscillation_on/off, which default to
+        "oscillate_on"/"oscillate_off" (not "ON"/"OFF"). Both must route to
+        the correct boolean.
+        """
+        manager = self._create_manager()
+
+        # Create a mock entity with async_oscillate
+        entity = MagicMock()
+        entity.entity_id = "fan.test_entity"
+        entity.async_oscillate = AsyncMock()
+
+        # Route HA's default oscillation payloads
+        await manager._route_command(entity, "oscillation_set", "oscillate_on")
+        entity.async_oscillate.assert_called_once_with(True)
+        entity.async_oscillate.reset_mock()
+
+        await manager._route_command(entity, "oscillation_set", "oscillate_off")
+        entity.async_oscillate.assert_called_once_with(False)
+        entity.async_oscillate.reset_mock()
+
+        # Case-insensitive variants and common manual payloads
+        await manager._route_command(entity, "oscillation_set", "OSCILLATE_ON")
+        entity.async_oscillate.assert_called_once_with(True)
+        entity.async_oscillate.reset_mock()
+
+        await manager._route_command(entity, "oscillation_set", "TRUE")
+        entity.async_oscillate.assert_called_once_with(True)
+        entity.async_oscillate.reset_mock()
+
+        await manager._route_command(entity, "oscillation_set", "1")
+        entity.async_oscillate.assert_called_once_with(True)
+
+    @pytest.mark.asyncio
     async def test_route_command_error_handling(self):
         """Test that errors in command routing are properly caught and logged."""
         manager = self._create_manager()

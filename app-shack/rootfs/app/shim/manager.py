@@ -435,10 +435,19 @@ class ShimManager:
 
             elif command_type == "oscillation_set":
                 # Fan oscillation
+                # HA's MQTT fan publishes payload_oscillation_on/off, which
+                # default to "oscillate_on"/"oscillate_off" (not "ON"/"OFF").
+                # Accept both the HA defaults and the plain ON/OFF form.
+                oscillating = payload.upper() in (
+                    "ON",
+                    "OSCILLATE_ON",
+                    "TRUE",
+                    "1",
+                )
                 if hasattr(entity, "async_oscillate"):
-                    await entity.async_oscillate(payload.upper() == "ON")
+                    await entity.async_oscillate(oscillating)
                 elif hasattr(entity, "oscillate"):
-                    entity.oscillate(payload.upper() == "ON")
+                    entity.oscillate(oscillating)
                 await self._refresh_entity_state(entity)
 
             elif command_type == "brightness_set":
