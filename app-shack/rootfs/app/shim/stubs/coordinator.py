@@ -196,6 +196,13 @@ class DataUpdateCoordinator(Generic[T]):
             _LOGGER.debug(
                 f"Coordinator '{self.name}' data fetched successfully: {self.data}"
             )
+        except UpdateFailed as err:
+            # Match Home Assistant: only log an error when the coordinator is
+            # transitioning from a successful state.
+            self.last_exception = err
+            if self._last_update_success:
+                self.logger.error(f"Error fetching {self.name} data: {err}")
+            self._last_update_success = False
         except (UnboundLocalError, NameError) as e:
             # Handle buggy integrations that use 'raise X from error' where
             # 'error' variable doesn't exist
@@ -215,6 +222,9 @@ class DataUpdateCoordinator(Generic[T]):
             self.logger.error(f"Error fetching {self.name} data: {e}")
             self._last_update_success = False
             self.last_exception = e
+
+        if self._last_update_success and not previous_update_success:
+            self.logger.info(f"Fetching {self.name} data recovered")
 
         # Notify listeners on success or on transition from success to failure
         if self._last_update_success or previous_update_success:
@@ -245,9 +255,11 @@ class UpdateFailed(Exception):
 
     Handles malformed messages that integrations might pass,
     such as printf-style format strings without proper formatting.
+
+    ``message`` is optional to match Home Assistant.
     """
 
-    def __init__(self, message, *args, **kwargs):
+    def __init__(self, message="", *args, **kwargs):
         # Handle the case where message is a printf-style format string
         # but args weren't properly passed (common integration bug)
         if isinstance(message, str) and "%" in message and not args:

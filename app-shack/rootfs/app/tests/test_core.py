@@ -897,6 +897,26 @@ class TestUpdateFailed:
             assert str(e) == "Wrapped error"
             assert e.__cause__ is original_error
 
+    def test_update_failed_no_message(self):
+        """Test UpdateFailed can be raised without a message (HA parity).
+
+        Real HA's UpdateFailed.__init__ accepts ``*args``, so integrations
+        (e.g. moonraker v1.13.4) legitimately ``raise UpdateFailed()`` when
+        their host is unreachable.  The shim must not require a message.
+        """
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        exc = UpdateFailed()
+        assert str(exc) == ""
+        assert isinstance(exc, Exception)
+
+        # Also valid with an exception chained via 'from'
+        original_error = ValueError("Original error")
+        try:
+            raise UpdateFailed() from original_error
+        except UpdateFailed as e:
+            assert e.__cause__ is original_error
+
 
 class TestDataUpdateCoordinator:
     """Test cases for DataUpdateCoordinator."""
@@ -1013,6 +1033,100 @@ class TestDataUpdateCoordinator:
         assert not coordinator.last_update_success
         assert isinstance(coordinator.last_exception, UnboundLocalError)
         assert "some other unbound local issue" in str(coordinator.last_exception)
+
+    @pytest.mark.asyncio
+    async def test_coordinator_bare_updatefailed_no_message(self, tmp_path):
+        """Moonraker-style bare UpdateFailed() must not crash async_refresh.
+
+        Regression test: the shim UpdateFailed used to require a positional
+        ``message`` argument, so moonraker's ``raise UpdateFailed()`` for an
+        unreachable host surfaced a confusing TypeError ("UpdateFailed.__init__()
+        missing 1 required positional argument: 'message'") as the logged error.
+        """
+        from homeassistant.helpers.update_coordinator import (
+            DataUpdateCoordinator,
+            UpdateFailed,
+        )
+        from shim.core import HomeAssistant
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class UnreachableCoordinator(DataUpdateCoordinator):
+            """Coordinator that raises UpdateFailed() like moonraker."""
+
+            async def _async_update_data(self):
+                raise UpdateFailed()
+
+        coordinator = UnreachableCoordinator(
+            hass,
+            logger=logging.getLogger(__name__),
+            name="Test Unreachable",
+            update_interval=None,
+        )
+
+        await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+        assert isinstance(coordinator.last_exception, UpdateFailed)
+
+    @pytest.mark.asyncio
+    async def test_coordinator_updatefailed_logs_only_on_transition(
+        self,
+        tmp_path,
+        caplog,
+    ):
+        """UpdateFailed is only logged when transitioning to failure (HA parity).
+
+        While a host is down for a long time, moonraker emits its own
+        unreachable WARNING each poll; the coordinator must not additionally
+        log an ERROR on every cycle.  Recovery is logged at INFO, like HA.
+        """
+        from homeassistant.helpers.update_coordinator import (
+            DataUpdateCoordinator,
+            UpdateFailed,
+        )
+        from shim.core import HomeAssistant
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class FlakyCoordinator(DataUpdateCoordinator):
+            """Coordinator that fails until flipped healthy."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.down = True
+
+            async def _async_update_data(self):
+                if self.down:
+                    raise UpdateFailed()
+                return {"ok": True}
+
+        coordinator = FlakyCoordinator(
+            hass,
+            logger=logging.getLogger(__name__),
+            name="Test Flaky",
+            update_interval=None,
+        )
+
+        # First refresh: success -> failure transition logs one error
+        caplog.set_level(logging.ERROR)
+        caplog.clear()
+        await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+        assert "Error fetching Test Flaky data" in caplog.text
+
+        # Subsequent failures while still down must not log again
+        caplog.clear()
+        await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+        assert "Error fetching Test Flaky data" not in caplog.text
+
+        # Recovery after an outage is logged at INFO
+        coordinator.down = False
+        caplog.set_level(logging.INFO)
+        caplog.clear()
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        assert "Fetching Test Flaky data recovered" in caplog.text
 
 
 class TestEvent:

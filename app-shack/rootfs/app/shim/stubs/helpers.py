@@ -11,10 +11,10 @@ import sys
 import types
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, Never, Optional
+from typing import Any, ClassVar, Never, Optional
 
 import aiohttp
 import voluptuous as vol
@@ -29,7 +29,17 @@ _global_device_registry = None
 
 @dataclass
 class DeviceInfo:
-    """Device info for entities."""
+    """Device info for entities.
+
+    Mirrors HA's ``DeviceInfo`` (a ``TypedDict``, i.e. a plain dict at
+    runtime), so integrations may read and write it like a dict
+    (``device_info[ATTR_VIA_DEVICE] = (DOMAIN, id)``) as well as with the
+    constructor kwargs / attribute access used across the shim.
+
+    Keys backed by a dataclass field are always present with their default
+    values; item assignment maps onto the field. Keys that are not modeled
+    fields are stored in ``_extra`` so item access never fails for them.
+    """
 
     identifiers: set = field(default_factory=set)
     connections: set = field(default_factory=set)
@@ -44,6 +54,81 @@ class DeviceInfo:
     configuration_url: Optional[str] = None
     suggested_area: Optional[str] = None
     serial_number: Optional[str] = None
+
+    # Dict-protocol storage for keys that are not dataclass fields.
+    _extra: dict = field(default_factory=dict, repr=False, compare=False)
+
+    _field_names_cache: ClassVar[Optional[tuple]] = None
+
+    @classmethod
+    def _field_names(cls) -> tuple:
+        """Return the keys backed by dataclass fields (declaration order)."""
+        if cls._field_names_cache is None:
+            cls._field_names_cache = tuple(
+                f.name for f in fields(cls) if not f.name.startswith('_')
+            )
+        return cls._field_names_cache
+
+    def __getitem__(self, key: str) -> Any:
+        """Return the value for ``key`` (a field or a stored extra key)."""
+        if key in self._field_names():
+            return getattr(self, key)
+        return self._extra[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Set ``key`` to ``value`` like real HA's dict-based DeviceInfo."""
+        if key in self._field_names():
+            setattr(self, key, value)
+        else:
+            self._extra[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        """Delete ``key``, resetting a field to its default if it is one."""
+        if key in self._field_names():
+            item = next(f for f in fields(self) if f.name == key)
+            if item.default_factory is not MISSING:
+                setattr(self, key, item.default_factory())
+            else:
+                setattr(self, key, item.default)
+        else:
+            del self._extra[key]
+
+    def __contains__(self, key: object) -> bool:
+        """Return whether ``key`` is a field or a stored extra key."""
+        return key in self._field_names() or key in self._extra
+
+    def __iter__(self):
+        """Iterate over the keys like a dict."""
+        return iter(self.keys())
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Return the value for ``key`` or ``default`` when absent."""
+        if key in self:
+            return self[key]
+        return default
+
+    def keys(self) -> list:
+        """Return field and extra keys in declaration/insertion order."""
+        return list(self._field_names()) + list(self._extra)
+
+    def values(self) -> list:
+        """Return the values for :meth:`keys`."""
+        return [self[key] for key in self.keys()]
+
+    def items(self) -> list:
+        """Return ``(key, value)`` pairs for :meth:`keys`."""
+        return [(key, self[key]) for key in self.keys()]
+
+    def update(self, other=(), **kwargs: Any) -> None:
+        """Update from a mapping/iterable of pairs plus keyword arguments."""
+        if isinstance(other, Mapping):
+            for key in other:
+                self[key] = other[key]
+        else:
+            for key, value in other:
+                self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
 
 
 @dataclass
