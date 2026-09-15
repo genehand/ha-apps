@@ -2073,3 +2073,76 @@ class TestSelectorUpdates:
         selector = TextSelector(TextSelectorConfig(type="number"))
         result = convert_form_value("not_a_number", selector)
         assert result == "not_a_number"
+
+
+class TestBinarySensorMqttPublishBadState:
+    """Regression tests for binary sensors whose is_on property raises.
+
+    Moonraker binary sensors derive ``is_on`` from ``coordinator.data["status"]``;
+    when the upstream payload lost that key the exception escaped
+    ``_mqtt_publish`` and was logged as an error on every update.
+    """
+
+    def _make_sensor(self):
+        from shim.platforms.binary_sensor import BinarySensorEntity
+
+        class BadIsOnSensor(BinarySensorEntity):
+            @property
+            def is_on(self):
+                return {"status": {}}["status"]["filament_detected"]
+
+        sensor = BadIsOnSensor()
+        sensor.entity_id = "binary_sensor.moonraker_fsensor"
+        sensor._attr_unique_id = "moonraker_fsensor"
+        return sensor
+
+    def test_publish_does_not_raise_and_publishes_unavailable(self):
+        from unittest.mock import MagicMock
+
+        sensor = self._make_sensor()
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
+        sensor.hass = mock_hass
+
+        # Must not raise
+        sensor._mqtt_publish()
+
+        state_calls = [
+            call
+            for call in mock_mqtt.publish.call_args_list
+            if call[0][0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        assert state_calls[0][0][1] == "unavailable"
+
+    def test_publish_still_reports_on_and_off(self):
+        from unittest.mock import MagicMock
+
+        from shim.platforms.binary_sensor import BinarySensorEntity
+
+        sensor = BinarySensorEntity()
+        sensor.entity_id = "binary_sensor.plain"
+        sensor._attr_unique_id = "plain"
+        sensor._attr_is_on = True
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
+        sensor.hass = mock_hass
+
+        sensor._mqtt_publish()
+
+        state_calls = [
+            call
+            for call in mock_mqtt.publish.call_args_list
+            if call[0][0].endswith("/state")
+        ]
+        assert state_calls[0][0][1] == "ON"

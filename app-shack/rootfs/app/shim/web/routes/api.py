@@ -61,8 +61,8 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
                     {
                         "entity_id": entity.entity_id,
                         "name": entity.name,
-                        "state": entity.state,
-                        "available": entity.available,
+                        "state": entity._safe_state(),
+                        "available": entity._safe_available(),
                     }
                 )
 

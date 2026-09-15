@@ -1886,3 +1886,285 @@ class TestAsyncWriteHaState:
         call_args = mock_hass.states.async_set.call_args
         assert call_args[0][0] == "sensor.bad_state"
         assert call_args[0][1] == STATE_UNAVAILABLE
+
+
+class TestSafeStateHelper:
+    """Tests for Entity._safe_state / _safe_available.
+
+    Regression coverage for a Rinnai device that reports an empty string for
+    wifi_channel_frequency, causing float('') to raise while computing state.
+    """
+
+    def test_safe_state_returns_unavailable_on_error(self):
+        """A raising state property must resolve to STATE_UNAVAILABLE, not raise."""
+        from shim.entity import Entity, STATE_UNAVAILABLE
+
+        class BadStateEntity(Entity):
+            @property
+            def state(self):
+                return float("")
+
+        entity = BadStateEntity()
+        entity.entity_id = "sensor.bad_state"
+
+        assert entity._safe_state() == STATE_UNAVAILABLE
+
+    def test_safe_state_logs_identical_error_once(self, caplog):
+        """Repeated identical failures must not spam a warning every cycle."""
+        import logging
+
+        from shim.entity import Entity, STATE_UNAVAILABLE
+
+        class BadStateEntity(Entity):
+            @property
+            def state(self):
+                return float("")
+
+        entity = BadStateEntity()
+        entity.entity_id = "sensor.bad_state"
+
+        with caplog.at_level(logging.WARNING, logger="shim.entity"):
+            entity._safe_state()
+            entity._safe_state()
+            entity._safe_state()
+
+        matching = [
+            r for r in caplog.records if "Error computing state for sensor.bad_state" in r.message
+        ]
+        assert len(matching) == 1
+        assert entity._safe_state() == STATE_UNAVAILABLE
+
+    def test_safe_state_clears_error_when_state_recovers(self, caplog):
+        """Once state computes reliably, a later error should warn again."""
+        import logging
+
+        from shim.entity import Entity
+
+        class FlakyEntity(Entity):
+            def __init__(self):
+                self.broken = True
+
+            @property
+            def state(self):
+                if self.broken:
+                    raise ValueError("could not convert string to float: ''")
+                return "42"
+
+        entity = FlakyEntity()
+        entity.entity_id = "sensor.flaky"
+
+        with caplog.at_level(logging.WARNING, logger="shim.entity"):
+            assert entity._safe_state() == "unavailable"
+            entity.broken = False
+            assert entity._safe_state() == "42"
+            assert entity._last_state_error is None
+            entity.broken = True
+            assert entity._safe_state() == "unavailable"
+
+        matching = [
+            r for r in caplog.records if "Error computing state for sensor.flaky" in r.message
+        ]
+        assert len(matching) == 2
+
+    def test_safe_state_passes_through_valid_state(self):
+        """A healthy state property is returned unchanged."""
+        from shim.entity import Entity
+
+        class GoodEntity(Entity):
+            @property
+            def state(self):
+                return "42"
+
+        entity = GoodEntity()
+        entity.entity_id = "sensor.good"
+
+        assert entity._safe_state() == "42"
+        assert entity._last_state_error is None
+
+    def test_safe_available_false_on_error(self):
+        """A raising availability property must be treated as unavailable."""
+        from shim.entity import Entity
+
+        class BadAvailableEntity(Entity):
+            @property
+            def available(self):
+                return float("")
+
+        entity = BadAvailableEntity()
+        entity.entity_id = "sensor.bad_available"
+
+        assert entity._safe_available() is False
+
+    def test_safe_available_passes_through_valid_value(self):
+        """A healthy availability property is returned unchanged."""
+        from shim.entity import Entity
+
+        class GoodEntity(Entity):
+            @property
+            def available(self):
+                return True
+
+        entity = GoodEntity()
+        entity.entity_id = "sensor.good"
+
+        assert entity._safe_available() is True
+
+    def test_bad_mqtt_publish_logs_once_and_does_not_raise(self, caplog):
+        """A raising _mqtt_publish must warn once, not once per update cycle."""
+        import logging
+        from unittest.mock import MagicMock
+
+        from shim.entity import Entity
+
+        class BrokenMqttEntity(Entity):
+            @property
+            def state(self):
+                return "on"
+
+            def _mqtt_publish(self):
+                raise KeyError("status")
+
+        mock_hass = MagicMock()
+        mock_hass.states.get.return_value = None
+
+        entity = BrokenMqttEntity()
+        entity.hass = mock_hass
+        entity.entity_id = "sensor.broken_mqtt"
+        entity._attr_unique_id = "broken"
+
+        with caplog.at_level(logging.ERROR, logger="shim.entity"):
+            entity.async_write_ha_state()
+            entity.async_write_ha_state()
+            entity.async_write_ha_state()
+
+        matching = [
+            r for r in caplog.records if "Error in _mqtt_publish" in r.message
+        ]
+        assert len(matching) == 1
+
+    def test_discovery_update_skips_property_that_raises(self):
+        """getattr's default must not let a raising property escape."""
+        from unittest.mock import MagicMock
+
+        from shim.entity import Entity
+
+        class BadIconEntity(Entity):
+            @property
+            def icon(self):
+                raise KeyError("status")
+
+        mock_hass = MagicMock()
+        entity = BadIconEntity()
+        entity.hass = mock_hass
+        entity.entity_id = "sensor.bad_icon"
+
+        # Must not raise, and nothing new should be registered
+        assert entity._check_and_publish_discovery_update(["icon"]) is False
+        assert "icon" not in entity._mqtt_discovery_props_registered
+
+
+class TestSensorMqttPublishBadState:
+    """Regression tests for publishing a sensor whose state property raises."""
+
+    def _make_sensor(self):
+        from shim.platforms.sensor import SensorEntity
+
+        class BadSensor(SensorEntity):
+            @property
+            def native_value(self):
+                # Mirrors the Rinnai wifi_channel_frequency bug
+                return float("")
+
+        sensor = BadSensor()
+        sensor.entity_id = "sensor.211200190WZD5_wifi_channel_frequency"
+        sensor._attr_unique_id = "rinnai_wifi_channel_frequency"
+        sensor._attr_state_class = "measurement"
+        sensor._attr_native_unit_of_measurement = "MHz"
+        return sensor
+
+    def test_sensor_publish_does_not_raise_and_publishes_unavailable(self):
+        """A numeric sensor with a raising state must publish 'unavailable'.
+
+        Previously the state_class branch published an empty string, and the
+        exception propagated out of _mqtt_publish and was logged as an error.
+        """
+        from unittest.mock import MagicMock
+
+        sensor = self._make_sensor()
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
+        sensor.hass = mock_hass
+
+        # Must not raise
+        sensor._mqtt_publish()
+
+        state_calls = [
+            call for call in mock_mqtt.publish.call_args_list
+            if call[0][0].endswith("/state")
+        ]
+        assert len(state_calls) == 1
+        assert state_calls[0][0][1] == "unavailable"
+
+    def test_sensor_async_write_ha_state_publishes_unavailable(self):
+        """The full write path (state machine + MQTT) tolerates a bad state."""
+        from unittest.mock import MagicMock
+
+        from shim.entity import STATE_UNAVAILABLE
+
+        sensor = self._make_sensor()
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
+        sensor.hass = mock_hass
+
+        sensor.async_write_ha_state()
+
+        mock_hass.states.async_set.assert_called_once()
+        assert mock_hass.states.async_set.call_args[0][1] == STATE_UNAVAILABLE
+
+        state_calls = [
+            call for call in mock_mqtt.publish.call_args_list
+            if call[0][0].endswith("/state")
+        ]
+        assert state_calls[0][0][1] == STATE_UNAVAILABLE
+
+    def test_sensor_publish_still_uses_empty_string_for_none_value(self):
+        """A valid sensor with state_class=None still publishes '' for HA.
+
+        This preserves the pre-existing behaviour for genuinely empty numeric
+        sensors (not the exception path).
+        """
+        from unittest.mock import MagicMock
+
+        from shim.platforms.sensor import SensorEntity
+
+        sensor = SensorEntity()
+        sensor.entity_id = "sensor.numeric_empty"
+        sensor._attr_unique_id = "numeric_empty"
+        sensor._attr_state_class = "measurement"
+        sensor._attr_native_value = None
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = None
+        sensor.hass = mock_hass
+
+        sensor._mqtt_publish()
+
+        state_calls = [
+            call for call in mock_mqtt.publish.call_args_list
+            if call[0][0].endswith("/state")
+        ]
+        assert state_calls[0][0][1] == ""

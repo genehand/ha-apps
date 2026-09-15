@@ -149,8 +149,8 @@ def register_routes(app: FastAPI, shim_manager, template_dir: Path) -> None:
             {
                 "entity_id": e.entity_id,
                 "name": e.name or e.entity_id,
-                "state": e.state,
-                "available": e.available,
+                "state": e._safe_state(),
+                "available": e._safe_available(),
                 "registry_enabled": registry.get_registry_entry(e.entity_id)
                 is None or not registry.get_registry_entry(e.entity_id).disabled,
             }

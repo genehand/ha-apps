@@ -145,7 +145,7 @@ class UpdateEntity(Entity):
 
         # Publish state
         state_topic = f"{base_topic}/state"
-        state = self.state
+        state = self._safe_state()
         if state is not None:
             mqtt.publish(state_topic, state, qos=0, retain=True)
 

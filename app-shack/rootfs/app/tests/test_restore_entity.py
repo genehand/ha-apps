@@ -289,3 +289,33 @@ class TestRestoreSensor:
         
         sensor_data = await entity.async_get_last_sensor_data()
         assert sensor_data is None
+
+    @pytest.mark.asyncio
+    async def test_restore_sensor_skips_save_when_state_raises(self, hass):
+        """A raising state must not be persisted as 'unavailable' nor raise.
+
+        Regression coverage for a Rinnai device field that fails float('')
+        conversion while computing state.
+        """
+        from shim.platforms.sensor import SensorEntity, RestoreSensor
+
+        class BadStateRestoreSensor(SensorEntity, RestoreSensor):
+            @property
+            def native_value(self):
+                return float("")
+
+        entity = BadStateRestoreSensor()
+        entity.hass = hass
+        entity._added = True
+        entity.entity_id = "sensor.bad_restore"
+        entity._attr_unique_id = "bad_restore_001"
+
+        # Must not raise
+        entity.async_write_ha_state()
+
+        state = hass.states.get("sensor.bad_restore")
+        assert state is not None
+        assert state.state == "unavailable"
+
+        storage = Storage(hass.shim_dir)
+        assert storage.load_entity_state("sensor.bad_restore") is None

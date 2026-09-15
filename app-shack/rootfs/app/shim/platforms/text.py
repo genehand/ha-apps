@@ -148,7 +148,7 @@ class TextEntity(Entity):
 
         # Publish state
         state_topic = f"{base_topic}/state"
-        state = self.state
+        state = self._safe_state()
         _LOGGER.debug(f"  Publishing state '{state}' to {state_topic}")
         if state is not None:
             mqtt.publish(state_topic, str(state), qos=0, retain=True)

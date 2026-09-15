@@ -12,6 +12,7 @@ from typing import Any, Dict, Final, Optional
 import voluptuous as vol
 
 from shim.entity import (
+    STATE_UNAVAILABLE,
     Entity,
     EntityDescription,
     build_mqtt_device_config,
@@ -186,8 +187,8 @@ class RestoreSensor(RestoreEntity):
             return
 
         storage = Storage(shim_dir)
-        state_value = getattr(self, 'state', None)
-        if state_value is not None:
+        state_value = self._safe_state()
+        if state_value is not None and state_value != STATE_UNAVAILABLE:
             # Build attributes dict for restoration
             attributes = {}
             # Save unit_of_measurement if available (for sensor restoration)
@@ -338,29 +339,39 @@ class SensorEntity(Entity):
             _LOGGER.debug(f"  Skipping: no base topic for {self.entity_id}")
             return
 
-        # Publish state
+        # Publish state. _safe_state() turns a raising state property (e.g. a
+        # device field that fails float() conversion) into STATE_UNAVAILABLE so
+        # one broken sensor can't abort the write.
         state_topic = f"{base_topic}/state"
-        state = self.state
-        native_val = self.native_value
-        _LOGGER.debug(
-            f"  Publishing state for {self.entity_id}: "
-            f"state={state!r}, native_value={native_val!r}, "
-            f"state_class={self.state_class}"
-        )
+        state = self._safe_state()
 
-        if state is not None and state != "None":
-            _LOGGER.debug(f"  Publishing to {state_topic}: {state}")
-            mqtt.publish(state_topic, state, qos=0, retain=True)
-        elif self.state_class:
-            # For sensors with state_class (numeric), publish empty string instead of 'unavailable'
-            # to avoid HA warnings about non-numeric values
-            _LOGGER.debug(
-                f"  Publishing empty string to {state_topic} (has state_class)"
-            )
-            mqtt.publish(state_topic, "", qos=0, retain=True)
-        else:
+        if state == STATE_UNAVAILABLE:
+            # Do not recompute native_value here - it is what raised in the
+            # first place. Publishing an empty string for a numeric sensor
+            # would surface as 'unknown' in HA instead of 'unavailable'.
             _LOGGER.debug(f"  Publishing 'unavailable' to {state_topic}")
-            mqtt.publish(state_topic, "unavailable", qos=0, retain=True)
+            mqtt.publish(state_topic, STATE_UNAVAILABLE, qos=0, retain=True)
+        else:
+            native_val = self.native_value
+            _LOGGER.debug(
+                f"  Publishing state for {self.entity_id}: "
+                f"state={state!r}, native_value={native_val!r}, "
+                f"state_class={self.state_class}"
+            )
+
+            if state is not None and state != "None":
+                _LOGGER.debug(f"  Publishing to {state_topic}: {state}")
+                mqtt.publish(state_topic, state, qos=0, retain=True)
+            elif self.state_class:
+                # For sensors with state_class (numeric), publish empty string instead of 'unavailable'
+                # to avoid HA warnings about non-numeric values
+                _LOGGER.debug(
+                    f"  Publishing empty string to {state_topic} (has state_class)"
+                )
+                mqtt.publish(state_topic, "", qos=0, retain=True)
+            else:
+                _LOGGER.debug(f"  Publishing 'unavailable' to {state_topic}")
+                mqtt.publish(state_topic, STATE_UNAVAILABLE, qos=0, retain=True)
 
         # Publish attributes using base class helper
         self._publish_mqtt_attributes()

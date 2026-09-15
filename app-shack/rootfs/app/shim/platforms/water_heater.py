@@ -267,7 +267,7 @@ class WaterHeaterEntity(Entity):
 
         # Track new states and republish discovery if needed
         # This handles entities that report states not in their operation_list
-        current_state = self.state
+        current_state = self._safe_state()
         if current_state is not None:
             # Track seen states
             if not hasattr(self, "_mqtt_seen_states"):
@@ -304,7 +304,7 @@ class WaterHeaterEntity(Entity):
 
         # Publish state (operation mode)
         state_topic = f"{base_topic}/state"
-        state = self.state
+        state = self._safe_state()
         if state is not None:
             mqtt.publish(state_topic, str(state), qos=0, retain=True)
 

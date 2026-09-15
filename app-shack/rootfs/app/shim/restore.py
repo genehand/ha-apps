@@ -120,13 +120,17 @@ class RestoreEntity:
             return
 
         storage = Storage(shim_dir)
-        state_value = getattr(self, 'state', None)
+        # Use the safe accessor: the state property can raise for malformed
+        # integration payloads, and failing to persist a value must not abort
+        # the state write.
+        state_value = self._safe_state() if hasattr(self, "_safe_state") else None
         extra_data = None
         if hasattr(self, 'extra_restore_state_data'):
             extra = self.extra_restore_state_data
             if extra is not None:
                 extra_data = extra.as_dict()
-        if state_value is not None:
+        # Don't overwrite a previously good value with 'unavailable'.
+        if state_value is not None and str(state_value) != "unavailable":
             storage.save_entity_state(
                 entity_id, str(state_value), extra_data=extra_data
             )

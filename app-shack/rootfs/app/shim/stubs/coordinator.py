@@ -152,16 +152,31 @@ class DataUpdateCoordinator(Generic[T]):
         _LOGGER.debug(
             f"DataUpdateCoordinator '{self.name}' updating {len(self._listeners)} listeners"
         )
+        # Track the most recent error per callback so an integration that raises
+        # on every refresh (e.g. code that reads a coordinator key that is
+        # missing) logs once instead of once per listener per cycle.
+        if not hasattr(self, "_last_listener_errors"):
+            self._last_listener_errors = {}
+        errors = self._last_listener_errors
+        seen = set()
         for update_callback, _ in list(self._listeners.values()):
+            callback_name = getattr(update_callback, '__name__', repr(update_callback))
+            seen.add(callback_name)
             try:
                 update_callback()
             except Exception as e:
                 import traceback
-                callback_name = getattr(update_callback, '__name__', repr(update_callback))
-                _LOGGER.error(
-                    f"Error in listener callback {callback_name} for coordinator '{self.name}': {e}"
-                )
+                message = str(e)
+                if errors.get(callback_name) != message:
+                    errors[callback_name] = message
+                    _LOGGER.error(
+                        f"Error in listener callback {callback_name} for coordinator '{self.name}': {e}"
+                    )
                 _LOGGER.debug(f"Listener callback traceback: {traceback.format_exc()}")
+        # Forget errors for callbacks that no longer exist (e.g. removed entities).
+        for callback_name in list(errors):
+            if callback_name not in seen:
+                del errors[callback_name]
 
     async def async_shutdown(self):
         """Cancel any scheduled refresh and ignore new runs."""
@@ -190,7 +205,9 @@ class DataUpdateCoordinator(Generic[T]):
 
         try:
             _LOGGER.debug(f"Coordinator '{self.name}' fetching data...")
-            self.data = await self._async_update_data()
+            data = await self._async_update_data()
+            self._validate_refresh_data(data)
+            self.data = data
             self._last_update_success = True
             self.last_exception = None
             _LOGGER.debug(
@@ -229,6 +246,24 @@ class DataUpdateCoordinator(Generic[T]):
         # Notify listeners on success or on transition from success to failure
         if self._last_update_success or previous_update_success:
             self.async_update_listeners()
+
+    @staticmethod
+    def _validate_refresh_data(data):
+        """Reject a JSON-RPC error envelope returned as if it were real data.
+
+        Some clients (notably ``moonraker_api``) resolve JSON-RPC errors as a
+        normal result ``{"error": {"code": ..., "message": ...}}`` instead of
+        raising, so ``_async_update_data`` reports success with data that has
+        none of the keys the entities expect. Treating that as a failed update
+        preserves the last good ``self.data``, so listener callbacks keep
+        reading a valid payload while the coordinator reports failure.
+        """
+        if not isinstance(data, dict):
+            return
+        error = data.get("error")
+        # A JSON-RPC 2.0 error object always carries both "code" and "message".
+        if isinstance(error, dict) and "code" in error and "message" in error:
+            raise UpdateFailed(f"upstream returned error: {error}")
 
     async def async_request_refresh(self):
         """Request a refresh."""

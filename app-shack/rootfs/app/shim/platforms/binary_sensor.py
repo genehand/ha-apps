@@ -9,6 +9,7 @@ from typing import Optional
 import voluptuous as vol
 
 from ..entity import (
+    STATE_UNAVAILABLE,
     ToggleEntity,
     EntityDescription,
     format_device_identifiers,
@@ -93,9 +94,18 @@ class BinarySensorEntity(ToggleEntity):
         if not base_topic:
             return
 
-        # Publish state
+        # Publish state. `is_on` is often an integration property derived from
+        # device/coordinator data, so guard it: a malformed payload must not
+        # abort the publish, it should surface as unavailable.
         state_topic = f"{base_topic}/state"
-        state = "ON" if self.is_on else "OFF"
+        try:
+            state = "ON" if self.is_on else "OFF"
+        except Exception as exc:
+            _LOGGER.debug(
+                f"  Error computing is_on for {self.entity_id}: {exc}; "
+                f"publishing unavailable"
+            )
+            state = STATE_UNAVAILABLE
         mqtt.publish(state_topic, state, qos=0, retain=True)
 
         # Publish attributes using base class helper

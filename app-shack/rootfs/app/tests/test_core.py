@@ -1128,6 +1128,135 @@ class TestDataUpdateCoordinator:
         assert coordinator.last_update_success
         assert "Fetching Test Flaky data recovered" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_coordinator_rejects_jsonrpc_error_envelope(self, tmp_path):
+        """A JSON-RPC error result must not replace good coordinator data.
+
+        ``moonraker_api`` resolves JSON-RPC errors as a result dict
+        ``{"error": {"code": ..., "message": ...}}`` instead of raising, so
+        moonraker's coordinator stored data without a top-level ``status`` key
+        and every entity's callback raised ``KeyError: 'status'``.
+        """
+        from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+        from shim.core import HomeAssistant
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class MoonrakerLikeCoordinator(DataUpdateCoordinator):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.return_error = False
+
+            async def _async_update_data(self):
+                if self.return_error:
+                    return {"error": {"code": -32602, "message": "Invalid params"}}
+                return {"status": {"print_stats": {"state": "standby"}}}
+
+        coordinator = MoonrakerLikeCoordinator(
+            hass,
+            logger=logging.getLogger(__name__),
+            name="Test Moonraker",
+            update_interval=None,
+        )
+
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        assert coordinator.data["status"]["print_stats"]["state"] == "standby"
+
+        # A listener mirrors moonraker's ``data["status"]`` access pattern.
+        listener_errors = []
+
+        def listener():
+            try:
+                coordinator.data["status"]
+            except Exception as exc:  # pragma: no cover - failure path
+                listener_errors.append(exc)
+
+        coordinator.async_add_listener(listener)
+
+        coordinator.return_error = True
+        await coordinator.async_refresh()
+
+        # The refresh is reported as failed and the last good payload is kept.
+        assert not coordinator.last_update_success
+        assert coordinator.data["status"]["print_stats"]["state"] == "standby"
+        assert listener_errors == []
+
+    @pytest.mark.asyncio
+    async def test_coordinator_non_error_dict_is_accepted(self, tmp_path):
+        """A normal dict that merely contains data is still stored."""
+        from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+        from shim.core import HomeAssistant
+
+        hass = HomeAssistant(config_dir=tmp_path)
+
+        class NormalCoordinator(DataUpdateCoordinator):
+            async def _async_update_data(self):
+                return {"status": {}, "machine_update": {"foo": "bar"}}
+
+        coordinator = NormalCoordinator(
+            hass,
+            logger=logging.getLogger(__name__),
+            name="Test Normal",
+            update_interval=None,
+        )
+
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        assert coordinator.data["machine_update"] == {"foo": "bar"}
+
+    def test_coordinator_listener_error_logged_once(self, caplog):
+        """A persistently failing listener logs once, not once per cycle."""
+        from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+
+        class Coord(DataUpdateCoordinator):
+            pass
+
+        coordinator = Coord(None, logger=logging.getLogger(__name__), name="Test")
+
+        def broken_listener():
+            raise KeyError("status")
+
+        coordinator.async_add_listener(broken_listener)
+
+        with caplog.at_level(logging.ERROR, logger="shim.stubs.coordinator"):
+            coordinator.async_update_listeners()
+            coordinator.async_update_listeners()
+            coordinator.async_update_listeners()
+
+        matching = [
+            r for r in caplog.records
+            if "Error in listener callback broken_listener" in r.message
+        ]
+        assert len(matching) == 1
+
+    def test_coordinator_listener_error_relogged_when_message_changes(self, caplog):
+        """A different failure from the same listener is reported again."""
+        from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+
+        class Coord(DataUpdateCoordinator):
+            pass
+
+        coordinator = Coord(None, logger=logging.getLogger(__name__), name="Test")
+        state = {"key": "status"}
+
+        def flaky_listener():
+            raise KeyError(state["key"])
+
+        coordinator.async_add_listener(flaky_listener)
+
+        with caplog.at_level(logging.ERROR, logger="shim.stubs.coordinator"):
+            coordinator.async_update_listeners()
+            coordinator.async_update_listeners()
+            state["key"] = "other"
+            coordinator.async_update_listeners()
+
+        matching = [
+            r for r in caplog.records
+            if "Error in listener callback flaky_listener" in r.message
+        ]
+        assert len(matching) == 2
+
 
 class TestEvent:
     """Test cases for Event class."""

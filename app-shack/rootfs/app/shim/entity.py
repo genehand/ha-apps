@@ -514,6 +514,9 @@ class Entity:
     _attr_unique_id: Optional[str] = None
     _attr_unit_of_measurement: Optional[str] = None
     _unrecorded_attributes: frozenset = frozenset()
+    # Last exception message seen while computing state; used to de-duplicate
+    # warnings for entities whose state property raises on every update.
+    _last_state_error: Optional[str] = None
 
     def __init__(self):
         """Initialize the entity."""
@@ -698,6 +701,50 @@ class Entity:
         """Return the state of the entity."""
         return None
 
+    def _safe_state(self) -> Any:
+        """Return the entity state, falling back to STATE_UNAVAILABLE on error.
+
+        Integration-provided state properties can raise (for example a device
+        payload with an empty numeric field, where ``float('')`` fails). A
+        single broken entity must never abort state publishing, so failures
+        are converted to ``STATE_UNAVAILABLE``.
+
+        Identical repeated errors are only logged once to avoid spamming the
+        log on every update cycle; the warning is re-emitted if the error
+        changes, and silently cleared once the state computes successfully.
+        """
+        try:
+            state = self.state
+        except Exception as exc:
+            message = str(exc)
+            if message != getattr(self, "_last_state_error", None):
+                _LOGGER.warning(
+                    f"Error computing state for {self.entity_id}: {exc}; "
+                    f"setting state to unavailable"
+                )
+                self._last_state_error = message
+            return STATE_UNAVAILABLE
+
+        if getattr(self, "_last_state_error", None) is not None:
+            self._last_state_error = None
+        return state
+
+    def _safe_available(self) -> bool:
+        """Return entity availability, treating a raising property as unavailable.
+
+        Availability is often derived from the same integration data as the
+        state, so it can raise for the same reasons. Callers such as the web
+        API must not blow up because one entity has a malformed payload.
+        """
+        try:
+            return bool(self.available)
+        except Exception as exc:
+            _LOGGER.debug(
+                f"Error computing availability for {self.entity_id}: {exc}; "
+                f"treating entity as unavailable"
+            )
+            return False
+
     def _get_mqtt_base_topic(self) -> Optional[str]:
         """Get the base MQTT topic for this entity.
 
@@ -792,7 +839,7 @@ class Entity:
 
         # Publish state
         state_topic = f"{base_topic}/state"
-        state = self.state
+        state = self._safe_state()
         if state is not None:
             mqtt.publish(state_topic, str(state), qos=0, retain=True)
 
@@ -876,7 +923,15 @@ class Entity:
 
         for prop in properties:
             if prop not in registered:
-                value = getattr(self, prop, None)
+                try:
+                    value = getattr(self, prop, None)
+                except Exception as exc:
+                    # getattr's default only swallows AttributeError, and these
+                    # are integration-overridable properties.
+                    _LOGGER.debug(
+                        f"Error reading {prop} for {self.entity_id}: {exc}"
+                    )
+                    continue
                 if value is not None:
                     registered.add(prop)
                     needs_update = True
@@ -922,14 +977,7 @@ class Entity:
             )
             return
 
-        try:
-            state = self.state
-        except Exception as exc:
-            _LOGGER.warning(
-                f"Error computing state for {self.entity_id}: {exc}; "
-                f"setting state to unavailable"
-            )
-            state = STATE_UNAVAILABLE
+        state = self._safe_state()
         _LOGGER.debug(f"  State value: {state}")
         _LOGGER.debug(f"  Has _mqtt_publish: {hasattr(self, '_mqtt_publish')}")
         if state is None:
@@ -971,7 +1019,16 @@ class Entity:
             try:
                 self._mqtt_publish()
             except Exception as e:
-                _LOGGER.error(f"  Error in _mqtt_publish for {self.entity_id}: {e}")
+                # A single broken entity must not spam the log on every update;
+                # warn once per distinct error message.
+                message = str(e)
+                if message != getattr(self, "_last_mqtt_publish_error", None):
+                    self._last_mqtt_publish_error = message
+                    _LOGGER.error(
+                        f"  Error in _mqtt_publish for {self.entity_id}: {e}"
+                    )
+            else:
+                self._last_mqtt_publish_error = None
         else:
             _LOGGER.debug(f"  No _mqtt_publish method for {self.entity_id}")
 
