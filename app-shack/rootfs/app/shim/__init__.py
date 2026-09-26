@@ -9,6 +9,19 @@ from pathlib import Path
 
 import yaml
 
+# Probatio is Home Assistant's maintained, drop-in reimplementation of
+# voluptuous, and HA 2026.9+ integrations import it directly (e.g.
+# `import probatio` in a config flow). Register it under the `voluptuous` name
+# before any shim module imports voluptuous so both spellings resolve to the
+# same classes. That matters because probatio.Required / probatio.Optional
+# markers and probatio.UNDEFINED are distinct classes/objects from
+# voluptuous's, and the shim's schema parsing uses isinstance/default identity
+# checks against `voluptuous`. This must happen before the `.hass` import below,
+# which transitively imports voluptuous at module level.
+from probatio.compat import install_as_voluptuous
+
+install_as_voluptuous()
+
 from .hass import HomeAssistant
 from .models import State, ConfigEntry
 from .registries import StateMachine, ConfigEntries

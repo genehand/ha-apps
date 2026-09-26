@@ -58,6 +58,28 @@ For integrations (they import from `homeassistant.core` which is patched to `shi
 
 **We dogfood `shim.core`** - all internal code (tests, scripts) imports from `shim.core` rather than the split modules directly. This ensures the re-export layer is always tested and working for integrations.
 
+### Schema Library: probatio (voluptuous)
+
+HA 2026.9 moved config validation to [`probatio`](https://probatio.frenck.dev/), a
+maintained drop-in reimplementation of voluptuous. Integrations now
+`import probatio` directly, but `probatio` is provided by HA core and is therefore
+*not* listed in integration manifests.
+
+The shim depends on `probatio` and calls `probatio.compat.install_as_voluptuous()`
+at the top of `shim/__init__.py`, before any shim module imports voluptuous. This
+registers probatio under the `voluptuous` name so that:
+
+- `import probatio` (new integrations) and `import voluptuous as vol` (shim
+  internals, older integrations) resolve to the same classes.
+- `isinstance(key, vol.Required)` and `key.default is vol.UNDEFINED` checks in
+  `shim/web/schema.py` and `shim/web/routes/config_flows.py` keep working.
+  Probatio's markers and `UNDEFINED` sentinel are distinct objects from
+  voluptuous's, so a mixed namespace silently renders every field as optional.
+
+Bootstrap order matters: `install_as_voluptuous()` must run before anything
+imports voluptuous, otherwise a `RuntimeWarning` is emitted and any references
+already bound to the real voluptuous keep pointing at it.
+
 ### Adding New Stub Modules
 
 When adding support for new Home Assistant modules:

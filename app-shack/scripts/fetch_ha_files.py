@@ -435,13 +435,12 @@ __version__ = "{version}"'''
     else:
         print(f"✓ Successfully fetched HA {version} files!")
         print(f"\nNext steps:")
-        print(f"  1. Update import_patch.py to use these files:")
-        print(f"     - Replace shim.const with shim.ha_fetched.const")
-        print(f"     - Replace shim.exceptions with shim.ha_fetched.exceptions")
-        print(f"  2. Delete old manual files:")
-        print(f"     - shim/const.py (908 lines)")
-        print(f"     - shim/exceptions.py (92 lines)")
-        print(f"  3. Test that integrations still load properly")
+        print(f"  1. Review the fetch output for new relative imports in const.py:")
+        print(f"     - Add a clean_const_py() regex for any new .util/.helpers/.generated import")
+        print(f"     - Add a ha_fetched/_stub_<module>.py if the target has no shim equivalent")
+        print(f"  2. Verify the fetched files load standalone:")
+        print(f"     cd rootfs/app && uv run pytest tests/ -v -m 'not integration'")
+        print(f"  3. Verify integrations still load properly")
     print(f"{'=' * 60}")
 
 

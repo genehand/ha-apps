@@ -381,13 +381,16 @@ __version__ = "{version}"
     else:
         print(f"✓ Successfully fetched HACS {version} files!")
         print(f"\nNext steps:")
-        print(f"  1. Update requirements.txt:")
+        print(f"  1. Ensure HACS dependencies are declared in rootfs/app/pyproject.toml:")
         print(f"     aiogithubapi>=22.10.1")
         print(f"     awesomeversion>=22.9.0")
+        print(f"     Then sync the environment:")
+        print(f"     cd rootfs/app && uv sync")
         print(f"  2. Import HACS utilities in your code:")
         print(f"     from shim.hacs_fetched.utils.version import compare_versions")
         print(f"     from shim.hacs_fetched.utils.queue_manager import QueueManager")
-        print(f"  3. Test version comparison and validation")
+        print(f"  3. Test version comparison and validation:")
+        print(f"     cd rootfs/app && uv run pytest tests/ -v -m 'not integration'")
     print(f"{'=' * 60}")
 
 

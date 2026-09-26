@@ -1,6 +1,6 @@
 [project]
 name = "app-shack"
-version = "0.14.10"
+version = "0.15.0"
 description = "Home Assistant compatibility layer for running integrations outside of HA"
 requires-python = ">=3.14"
 dependencies = [
@@ -13,6 +13,12 @@ dependencies = [
     "jinja2>=3.1.0",
     "aiohttp>=3.9.0",
     "voluptuous>=0.14.0",
+    # Probatio is HA's maintained, drop-in reimplementation of voluptuous.
+    # `shim/__init__.py` registers it under the `voluptuous` name at startup so
+    # shim internals and integrations share a single schema implementation.
+    # Integrations on HA 2026.9+ import `probatio` directly, whose markers and
+    # UNDEFINED sentinel are distinct classes from voluptuous's.
+    "probatio>=0.12.0",
     "pyjwt>=2.8.0",
     "yarl>=1.9.0",
     "python-multipart>=0.0.6",
