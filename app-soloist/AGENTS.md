@@ -32,7 +32,8 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
 
 ## Key Design Decisions
 
-- **Audio**: soloist needs a PulseAudio backend. `run.sh` starts a null-sink PulseAudio
+- **Audio**: soloist needs a PulseAudio backend. The s6 `run` script starts a null-sink
+  PulseAudio
   (silent) unless `PULSE_SERVER` is set (supervisor-injected when `audio: true`). No audio
   passthrough by default — this is a passive track-info + controls device.
 - **No MQTT media_player** (HA's MQTT integration doesn't support it): the add-on publishes a
@@ -79,10 +80,10 @@ cargo build --release
 # Local Docker image
 ./build.sh            # amd64
 ./build.sh aarch64    # ARM64
+```
 
 The soloist binary is not part of the image: the bridge downloads it at startup
 into the persistent data dir (see the architecture notes above).
-```
 
 The binary will be at `target/release/soloist-bridge`.
 
@@ -94,12 +95,12 @@ SOLOIST_WS_URL=ws://127.0.0.1:9090 MQTT_HOST=homeassistant.local cargo run
 
 # Let the bridge spawn soloist itself (needs a real API key)
 SOLOIST_API_KEY=xxx MQTT_HOST=homeassistant.local cargo run
+```
 
 The bridge downloads and refreshes the soloist binary itself into
 `<data-dir>/bin/soloist` (locally: `soloist-data/bin/soloist`) — no manual install
 or PATH setup needed, same as in the add-on. Requires network access to
 `soloist-builds.spotifycdn.com`.
-```
 
 Config is via env vars (see `config.rs`): `DEVICE_NAME`, `SOLOIST_API_KEY`,
 `SOLOIST_WS_URL`, `SOLOIST_DATA_DIR`, `SOLOIST_CACHE_DIR`, `INITIAL_VOLUME`, `MQTT_HOST`,

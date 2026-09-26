@@ -1,4 +1,4 @@
-#!/command/with-contenv bash
+#!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
 # Home Assistant Community Add-on: Soloist
@@ -17,13 +17,13 @@ if MQTT_RESPONSE=$(curl -s --max-time 5 --request GET \
     -H "Authorization: Bearer ${SUPERVISOR_TOKEN:-}" \
     -H "Content-Type: application/json" \
     "${SUPERVISOR_API:-http://supervisor}/services/mqtt" 2>/dev/null); then
-    MQTT_RESULT=$(echo "${MQTT_RESPONSE}" | jq -r '.result // empty' 2>/dev/null)
+    MQTT_RESULT=$(bashio::jq "${MQTT_RESPONSE}" '.result' 2>/dev/null) || true
     if [ "${MQTT_RESULT}" = "ok" ]; then
-        MQTT_JSON=$(echo "${MQTT_RESPONSE}" | jq '.data')
-        export MQTT_HOST=$(echo "${MQTT_JSON}" | jq -r '.host // empty')
-        export MQTT_PORT=$(echo "${MQTT_JSON}" | jq -r '.port // "1883"')
-        export MQTT_USERNAME=$(echo "${MQTT_JSON}" | jq -r '.username // ""')
-        export MQTT_PASSWORD=$(echo "${MQTT_JSON}" | jq -r '.password // ""')
+        MQTT_JSON=$(bashio::jq "${MQTT_RESPONSE}" '.data')
+        export MQTT_HOST=$(bashio::jq "${MQTT_JSON}" '.host // empty')
+        export MQTT_PORT=$(bashio::jq "${MQTT_JSON}" '.port // "1883"')
+        export MQTT_USERNAME=$(bashio::jq "${MQTT_JSON}" '.username // ""')
+        export MQTT_PASSWORD=$(bashio::jq "${MQTT_JSON}" '.password // ""')
         bashio::log.info "Using MQTT credentials from Supervisor"
     fi
 fi
