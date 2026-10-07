@@ -1,4 +1,4 @@
-FROM ghcr.io/home-assistant/base-python:3.14-alpine3.23
+FROM ghcr.io/home-assistant/base-python:3.14-alpine3.24
 
 ARG BUILD_VERSION
 ENV BUILD_VERSION=${BUILD_VERSION}

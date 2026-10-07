@@ -65,9 +65,17 @@ maintained drop-in reimplementation of voluptuous. Integrations now
 `import probatio` directly, but `probatio` is provided by HA core and is therefore
 *not* listed in integration manifests.
 
+**`probatio` is the only schema library the shim ships — upstream `voluptuous` must
+never be a dependency** (it was removed in 0.15.x). `voluptuous` still shows up in
+shim code and in older integrations, but every `import voluptuous` resolves to
+probatio through the alias below; installing the real package adds nothing and
+only risks a mixed namespace if it is imported before the shim aliases it.
+
 The shim depends on `probatio` and calls `probatio.compat.install_as_voluptuous()`
 at the top of `shim/__init__.py`, before any shim module imports voluptuous. This
-registers probatio under the `voluptuous` name so that:
+registers probatio under the `voluptuous` name (including the
+`voluptuous.schema_builder` / `validators` / `error` / `util` / `humanize`
+submodules that dependencies like `annotatedyaml` reach into) so that:
 
 - `import probatio` (new integrations) and `import voluptuous as vol` (shim
   internals, older integrations) resolve to the same classes.
@@ -77,8 +85,21 @@ registers probatio under the `voluptuous` name so that:
   voluptuous's, so a mixed namespace silently renders every field as optional.
 
 Bootstrap order matters: `install_as_voluptuous()` must run before anything
-imports voluptuous, otherwise a `RuntimeWarning` is emitted and any references
-already bound to the real voluptuous keep pointing at it.
+imports voluptuous. With real voluptuous absent, a pre-shim `import voluptuous`
+now fails outright with `ModuleNotFoundError` instead of silently binding the real
+module and emitting a `RuntimeWarning`. That makes `main.py`'s `from shim import ...`
+ordering (and test modules importing `shim` first) load-bearing — keep
+`import voluptuous as vol` out of module scope in anything that can run before
+`shim/__init__.py`.
+
+One lingering hole: an integration whose manifest lists `voluptuous` in
+`requirements` will get it `uv pip install`ed back into the venv by
+`IntegrationManager.install_requirements()` (`shim/integrations/manager.py`). It is
+harmless while the alias is in `sys.modules`, but it re-adds the wheel to the image;
+filter core-provided packages there if that becomes a problem.
+
+Known gaps in probatio's voluptuous surface: `voluptuous.Msgs` is not exported
+(`Required`, `Optional`, `UNDEFINED`, `_compile_scalar`, etc. are).
 
 ### Adding New Stub Modules
 

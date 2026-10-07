@@ -17,6 +17,7 @@ Regression: loading ``leviton_decora_smart_wifi`` failed with
 'probatio'`` after that integration moved to ``import probatio``.
 """
 
+import importlib.metadata
 import sys
 import types
 from pathlib import Path
@@ -57,6 +58,30 @@ class TestProbatioIsAvailable:
         assert vol.Required is probatio.Required
         assert vol.Optional is probatio.Optional
         assert vol.UNDEFINED is probatio.UNDEFINED
+
+
+class TestVoluptuousIsNotInstalled:
+    """Upstream voluptuous must not be shipped; probatio replaces it.
+
+    Regression: ``voluptuous>=0.14.0`` was a direct dependency until it was
+    dropped. It is dead weight at best (``install_as_voluptuous()`` shadows it
+    in ``sys.modules``) and a mixed-namespace bug at worst, if anything manages
+    to import it before ``shim/__init__.py`` aliases probatio over it.
+    """
+
+    def test_voluptuous_distribution_is_not_installed(self):
+        """No distribution should provide the real ``voluptuous`` package."""
+        with pytest.raises(importlib.metadata.PackageNotFoundError):
+            importlib.metadata.version("voluptuous")
+
+    def test_voluptuous_module_comes_from_probatio(self):
+        """The ``voluptuous`` module on disk is probatio's shim, not a wheel."""
+        import probatio
+        import shim  # noqa: F401  # installs the alias
+        import voluptuous
+
+        probatio_root = Path(probatio.__file__).parent
+        assert Path(voluptuous.__file__).is_relative_to(probatio_root)
 
 
 class TestProbatioSchemaParsing:
