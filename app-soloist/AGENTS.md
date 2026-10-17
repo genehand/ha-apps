@@ -162,7 +162,10 @@ soloist (daemon) ── WebSocket (127.0.0.1:0, port in <data-dir>/ws.port) ─�
   advertised for `seek_forward`/`seek_backward`), `media_content_rating` (the first
   `playback.content_ratings` label, held in `PlaybackState::content_rating`),
   `media_content_type` (`music`/`podcast` from `entity_type`), `media_series_title` (an
-  **episode's** `parent` is its show, not an album) and `is_ad`. An `ad` item never
+  **episode's** `parent` is its show, not an album) and `is_ad`. Purely-optional
+  attributes are *omitted* from the payload when unknown (and when powered off) rather
+  than sent as `"Unknown"`/`null`: `media_album_name` is dropped unless soloist reported
+  an album for the item, so HA shows no album instead of a bogus one. An `ad` item never
   overwrites the track identity (it only flips `is_ad`, keeping the track URI the sticky
   rules key on), and a queue entry without a name is skipped rather than published as a
   bare `spotify:track:` URI.

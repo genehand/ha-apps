@@ -426,10 +426,16 @@ impl PlaybackState {
 /// The media attributes are `Option`s so they can be published as `null` while
 /// the power switch is off (no stale track info for a powered-off device);
 /// device-level attributes (volume, shuffle, repeat, ...) are always present.
+/// Purely-optional attributes (`media_album_name`, `media_series_title`, ...)
+/// are dropped from the payload instead of serialized as `null`.
 #[derive(Serialize)]
 pub struct StateAttributes<'a> {
     pub media_title: Option<&'a str>,
     pub media_artist: Option<&'a str>,
+    /// Omitted entirely when the item has no album (most podcasts, and any
+    /// track whose album soloist never reported) so HA shows no album rather
+    /// than a bogus `"Unknown"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub media_album_name: Option<&'a str>,
     /// Show name for a podcast episode (`media_content_type: podcast`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -484,7 +490,11 @@ impl<'a> PlaybackState {
         StateAttributes {
             media_title: media_visible.then_some(self.track.as_deref().unwrap_or("Unknown")),
             media_artist: media_visible.then_some(self.artist.as_deref().unwrap_or("Unknown")),
-            media_album_name: media_visible.then_some(self.album.as_deref().unwrap_or("Unknown")),
+            media_album_name: if media_visible {
+                self.album.as_deref()
+            } else {
+                None
+            },
             media_series_title: if media_visible {
                 self.media_series_title.as_deref()
             } else {
@@ -690,6 +700,30 @@ mod tests {
         // Device-level attributes stay populated; position anchor is omitted.
         assert_eq!(v["volume"], 0.42);
         assert!(v.get("media_position_updated_at").is_none());
+    }
+
+    /// A missing album is omitted, not published as `"Unknown"`: HA should show
+    /// no album (many podcasts have none) instead of a fake one.
+    #[test]
+    fn album_is_omitted_when_unknown() {
+        let mut st = PlaybackState {
+            status: "playing".to_string(),
+            track: Some("My Song".to_string()),
+            artist: Some("Artist".to_string()),
+            album: None,
+            ..Default::default()
+        };
+        st.set_power(true);
+
+        assert_eq!(st.attributes().media_album_name, None);
+        let v = serde_json::to_value(st.attributes()).unwrap();
+        assert!(v.get("media_album_name").is_none());
+        // Title and artist keep their placeholder: they are always expected.
+        assert_eq!(v["media_title"], "My Song");
+
+        st.album = Some("Album".to_string());
+        let v = serde_json::to_value(st.attributes()).unwrap();
+        assert_eq!(v["media_album_name"], "Album");
     }
 
     #[test]
