@@ -9,6 +9,8 @@
 //!   [`crate::state::PlaybackState`]
 //! - [`oembed`] — last-resort artist-name resolution via Spotify's public
 //!   oEmbed API
+//! - [`embed`] — track-metadata fallback via Spotify's public embed page (used
+//!   when a snapshot ships a bare track URI with no identity or creators)
 //! - [`daemon`] — soloist binary download/refresh and the daemon supervisor
 //!
 //! [`run_client`], [`SoloistCommand`], and [`SoloistDaemon`] are the public
@@ -18,7 +20,8 @@ mod apply;
 mod client;
 mod commands;
 mod daemon;
-mod events;
+mod embed;
+pub(crate) mod events;
 mod oembed;
 
 pub use client::run_client;

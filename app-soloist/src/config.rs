@@ -60,6 +60,32 @@ pub struct Cli {
     )]
     pub initial_volume: Option<u8>,
 
+    /// Route audio to a specific PipeWire node name or ID (PipeWire only)
+    #[arg(
+        long,
+        env = "PIPEWIRE_DEVICE",
+        help = "PipeWire node to route audio to (name or ID); ignored with PulseAudio"
+    )]
+    pub pipewire_device: Option<String>,
+
+    /// Cap the volatile playback cache: 0 = no limit, otherwise at least 100 MB
+    #[arg(
+        long,
+        env = "CACHE_SIZE_MB",
+        help = "Volatile playback cache cap in MB (0 = no limit, otherwise >= 100)"
+    )]
+    pub cache_size_mb: Option<u32>,
+
+    /// Store (or replace) the Spotify Connect session on startup, then serve normally.
+    /// No `env`: clap's boolean flags parse env values strictly (`true`/`false`),
+    /// so `SOLOIST_PAIR=1` would abort the process. The add-on uses `pair` in
+    /// options.json; local runs use `--pair`.
+    #[arg(
+        long,
+        help = "Run soloist in pair mode at startup (re-pair), then start the daemon"
+    )]
+    pub pair: bool,
+
     /// MQTT broker host
     #[arg(
         long,
@@ -126,6 +152,12 @@ pub struct OptionsFile {
     #[serde(default)]
     pub initial_volume: Option<u8>,
     #[serde(default)]
+    pub pipewire_device: Option<String>,
+    #[serde(default)]
+    pub cache_size_mb: Option<u32>,
+    #[serde(default)]
+    pub pair: Option<bool>,
+    #[serde(default)]
     pub mqtt_host: Option<String>,
     #[serde(default)]
     pub mqtt_port: Option<u16>,
@@ -168,6 +200,12 @@ pub struct Config {
     pub soloist_data_dir: PathBuf,
     pub soloist_cache_dir: PathBuf,
     pub initial_volume: Option<u8>,
+    /// PipeWire node to route audio to (empty = system default).
+    pub pipewire_device: Option<String>,
+    /// Volatile playback cache cap in MB (0 = no limit, otherwise >= 100).
+    pub cache_size_mb: Option<u32>,
+    /// Run `soloist --pair` once at startup before the supervised daemon.
+    pub pair: bool,
     pub mqtt_host: String,
     pub mqtt_port: u16,
     pub mqtt_username: Option<String>,
@@ -209,6 +247,27 @@ impl Config {
             cli.initial_volume
         } else {
             options.initial_volume
+        };
+
+        let pipewire_device = if explicit("pipewire_device") {
+            cli.pipewire_device
+        } else {
+            options.pipewire_device
+        }
+        .filter(|d| !d.trim().is_empty());
+
+        let cache_size_mb = if explicit("cache_size_mb") {
+            cli.cache_size_mb
+        } else {
+            options.cache_size_mb
+        };
+
+        // Whether the value passed validation is decided when the daemon builds
+        // its command line (`SoloistDaemon::new`), where warnings are logged.
+        let pair = if explicit("pair") {
+            cli.pair
+        } else {
+            options.pair.unwrap_or(cli.pair)
         };
 
         let mqtt_host = if explicit("mqtt_host") {
@@ -279,6 +338,9 @@ impl Config {
             soloist_data_dir,
             soloist_cache_dir: cli.soloist_cache_dir,
             initial_volume,
+            pipewire_device,
+            cache_size_mb,
+            pair,
             mqtt_host,
             mqtt_port,
             mqtt_username,
@@ -362,5 +424,50 @@ mod tests {
     fn slugify_handles_spaces_and_caps() {
         assert_eq!(slugify("My Soloist Device"), "my_soloist_device");
         assert_eq!(slugify("Soloist!"), "soloist");
+    }
+
+    #[test]
+    fn daemon_options_come_from_the_options_file() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("PIPEWIRE_DEVICE");
+        std::env::remove_var("CACHE_SIZE_MB");
+        let options = OptionsFile {
+            pipewire_device: Some("alsa_output.hdmi".into()),
+            cache_size_mb: Some(512),
+            pair: Some(true),
+            ..Default::default()
+        };
+        let cfg = config_with(&[], options);
+        assert_eq!(cfg.pipewire_device.as_deref(), Some("alsa_output.hdmi"));
+        assert_eq!(cfg.cache_size_mb, Some(512));
+        assert!(cfg.pair);
+        // Defaults when nothing sets them.
+        let cfg = config_with(&[], OptionsFile::default());
+        assert_eq!(cfg.pipewire_device, None);
+        assert_eq!(cfg.cache_size_mb, None);
+        assert!(!cfg.pair);
+    }
+
+    #[test]
+    fn pair_comes_from_the_cli_flag_or_the_options_file() {
+        let _g = ENV_LOCK.lock().unwrap();
+        assert!(!config_with(&[], OptionsFile::default()).pair);
+        assert!(config_with(&["--pair"], OptionsFile::default()).pair);
+        let options = OptionsFile {
+            pair: Some(true),
+            ..Default::default()
+        };
+        assert!(config_with(&[], options).pair);
+    }
+
+    #[test]
+    fn blank_pipewire_device_is_treated_as_unset() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("PIPEWIRE_DEVICE");
+        let options = OptionsFile {
+            pipewire_device: Some("  ".into()),
+            ..Default::default()
+        };
+        assert_eq!(config_with(&[], options).pipewire_device, None);
     }
 }

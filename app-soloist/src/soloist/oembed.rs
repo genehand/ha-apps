@@ -64,6 +64,13 @@ impl OembedResolver {
         }
     }
 
+    /// Lookups requested but not yet completed. Test-only seam: lets a test
+    /// assert that a fully-identified snapshot fires *no* request at all.
+    #[cfg(test)]
+    pub(crate) async fn pending_lookups(&self) -> usize {
+        self.in_flight.lock().await.len()
+    }
+
     fn spawn_lookup(&self, uri: String) {
         let state = self.state.clone();
         let state_tx = self.state_tx.clone();
@@ -104,21 +111,19 @@ impl OembedResolver {
 /// the URI came from the item's own snapshot or from queue metadata.
 pub(crate) fn apply_oembed_result(state: &mut PlaybackState, uri: &str, name: &str) -> bool {
     state.oembed.insert(uri.to_string(), name.to_string());
-    let label = state.artist_label();
-    if state.artist != label {
-        debug!(
-            "oEmbed artist updated: {} = {}; {} -> {}",
-            uri,
-            name,
-            state.artist.as_deref().unwrap_or("<none>"),
-            label.as_deref().unwrap_or("<none>")
-        );
-        state.artist = label;
-        true
-    } else {
+    let previous = state.artist.clone();
+    if !state.refresh_artist() {
         debug!("oEmbed artist cached for queued: {} = {}", uri, name);
-        false
+        return false;
     }
+    debug!(
+        "oEmbed artist updated: {} = {}; {} -> {}",
+        uri,
+        name,
+        previous.as_deref().unwrap_or("<none>"),
+        state.artist.as_deref().unwrap_or("<none>")
+    );
+    true
 }
 
 /// Build the URL for Spotify's public oEmbed endpoint from an artist URI.

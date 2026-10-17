@@ -99,6 +99,14 @@ impl MqttBridge {
         let mut discovery_published = false;
         // For mute restore: last non-zero volume we set/heard
         let mut last_volume: u8 = 80;
+        // Availability value already published on this broker connection (`None`
+        // = not published yet). Availability only changes when the soloist socket
+        // connects or disconnects, but every state update offers to publish it,
+        // so re-sending the same retained value would add pointless MQTT traffic
+        // (and would break the "a powered-off device generates no MQTT traffic"
+        // property). Reset per connection: a broker restart may have lost the
+        // retained value.
+        let mut last_availability: Option<bool> = None;
 
         // Command topics we subscribe to (full list including generic command topic)
         let cmd_topics: Vec<String> = [
@@ -133,14 +141,21 @@ impl MqttBridge {
             tokio::select! {
                 // State change notifications from the soloist client
                 _ = self.state_rx.recv() => {
-                    // While the power switch is off the published state is
-                    // static (idle + null attributes), so there is nothing to
+                    // While the power switch is off the published playback state
+                    // is static (idle + null attributes), so there is nothing to
                     // republish: stay quiet on MQTT until power comes back on.
-                    // The power command itself publishes the fresh state, so
-                    // the single power-off publish is the last one until then.
-                    if discovery_published && self.playback_state.read().await.powered_on {
-                        if let Err(e) = self.publish_state(&client, device_id).await {
-                            error!("Failed to publish state: {}", e);
+                    // The power command itself publishes the fresh state, so the
+                    // single power-off publish is the last one until then.
+                    // Availability is connection health rather than playback, so
+                    // it is kept up to date either way.
+                    if discovery_published {
+                        let powered_on = self.playback_state.read().await.powered_on;
+                        if powered_on {
+                            if let Err(e) = self.publish_state(&client, device_id, &mut last_availability).await {
+                                error!("Failed to publish state: {}", e);
+                            }
+                        } else if let Err(e) = self.publish_availability(&client, device_id, &mut last_availability).await {
+                            error!("Failed to publish availability: {}", e);
                         }
                     }
                 }
@@ -164,11 +179,11 @@ impl MqttBridge {
                             if connack.code == ConnectReturnCode::Success {
                                 debug!("Connected to MQTT broker");
                                 if !discovery_published {
-                                    if let Err(e) = self.publish_discovery_configs(&client, device_id).await {
+                                    if let Err(e) = self.publish_discovery_configs(&client, device_id, &mut last_availability).await {
                                         error!("Failed to publish discovery configs: {}", e);
                                     } else {
                                         discovery_published = true;
-                                        if let Err(e) = self.publish_state(&client, device_id).await {
+                                        if let Err(e) = self.publish_state(&client, device_id, &mut last_availability).await {
                                             error!("Failed to publish initial state: {}", e);
                                         }
                                     }
@@ -190,7 +205,7 @@ impl MqttBridge {
                             // soloist command): handle it before translation.
                             if publish.topic == format!("soloist/{}/power/set", device_id) {
                                 if let Err(e) =
-                                    self.handle_power_command(&client, device_id, &payload).await
+                                    self.handle_power_command(&client, device_id, &payload, &mut last_availability).await
                                 {
                                     error!("Failed to process power command: {}", e);
                                 }
@@ -346,13 +361,28 @@ impl MqttBridge {
         // early with a clearer message. get_auth_state / get_state / get_queue
         // are diagnostics and always pass through.
         let commands = commands?;
-        if commands_require_auth(&commands) && !self.playback_state.read().await.logged_in {
-            warn!(
-                "Ignoring {} command(s): soloist is not logged in (open the Spotify app \
-                 and select this device)",
-                commands.len()
-            );
-            return None;
+        if commands_require_auth(&commands) {
+            // Drop commands soloist would reject anyway, with a message that says
+            // which of the two preconditions is actually missing.
+            let (connected, logged_in) = {
+                let st = self.playback_state.read().await;
+                (st.ws_connected, st.logged_in)
+            };
+            if !connected {
+                warn!(
+                    "Ignoring {} command(s): the soloist WebSocket API is not connected",
+                    commands.len()
+                );
+                return None;
+            }
+            if !logged_in {
+                warn!(
+                    "Ignoring {} command(s): soloist is not paired to Spotify (open the \
+                     Spotify app and select this device)",
+                    commands.len()
+                );
+                return None;
+            }
         }
         Some(commands)
     }
@@ -366,17 +396,24 @@ impl MqttBridge {
         client: &AsyncClient,
         device_id: &str,
         payload: &str,
+        last_availability: &mut Option<bool>,
     ) -> Result<()> {
         let Some(on) = parse_bool(payload) else {
             return Ok(());
         };
         self.playback_state.write().await.set_power(on);
-        self.publish_state(client, device_id).await?;
+        self.publish_state(client, device_id, last_availability)
+            .await?;
         info!("Power switch set to {}", if on { "ON" } else { "OFF" });
         Ok(())
     }
 
-    async fn publish_discovery_configs(&self, client: &AsyncClient, device_id: &str) -> Result<()> {
+    async fn publish_discovery_configs(
+        &self,
+        client: &AsyncClient,
+        device_id: &str,
+        last_availability: &mut Option<bool>,
+    ) -> Result<()> {
         let device_name = &self.config.device_name;
 
         // Main playback sensor with all media attributes
@@ -484,14 +521,51 @@ impl MqttBridge {
             power_topic
         );
 
-        let avail_topic = format!("soloist/{}/availability", device_id);
-        client
-            .publish(avail_topic, QoS::AtLeastOnce, true, "online")
+        // Availability is connection health, not "the bridge is running": publish
+        // the current value now so HA has it before the first state update.
+        self.publish_availability(client, device_id, last_availability)
             .await?;
         Ok(())
     }
 
-    async fn publish_state(&self, client: &AsyncClient, device_id: &str) -> Result<()> {
+    /// Publish the MQTT availability topic from connection health. The MQTT
+    /// connection to the broker is independent of soloist, so this is the only
+    /// way Home Assistant learns that the daemon (or its WebSocket API) is
+    /// gone: without it the entities stay "available" on the last snapshot.
+    /// Re-publishing an unchanged value is skipped (`last_availability` holds what
+    /// this broker connection already sent).
+    async fn publish_availability(
+        &self,
+        client: &AsyncClient,
+        device_id: &str,
+        last_availability: &mut Option<bool>,
+    ) -> Result<()> {
+        let connected = self.playback_state.read().await.ws_connected;
+        if *last_availability == Some(connected) {
+            return Ok(());
+        }
+        let payload = if connected { "online" } else { "offline" };
+        let topic = format!("soloist/{}/availability", device_id);
+        if let Err(e) = client.try_publish(&topic, QoS::AtLeastOnce, true, payload) {
+            // Dropped on a full channel: leave it unrecorded so the next state
+            // update retries instead of leaving HA on a stale value.
+            debug!("MQTT channel full; dropping {} publish: {}", topic, e);
+            return Ok(());
+        }
+        *last_availability = Some(connected);
+        debug!("Published availability: {}", payload);
+        Ok(())
+    }
+
+    async fn publish_state(
+        &self,
+        client: &AsyncClient,
+        device_id: &str,
+        last_availability: &mut Option<bool>,
+    ) -> Result<()> {
+        // Availability first: it is connection health, not playback.
+        self.publish_availability(client, device_id, last_availability)
+            .await?;
         // Snapshot the full payload set under the lock, then drop the lock
         // before any network work: holding the state lock across MQTT sends
         // could deadlock against tasks that need the write lock (e.g. oEmbed

@@ -20,6 +20,10 @@ use crate::state::PlaybackState;
 /// window (the daemon exits with code 10 when a build has expired).
 const BINARY_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// How long `pair` mode waits for the user to pick the device in the Spotify
+/// app before giving up and starting the normal daemon.
+const PAIR_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// Map the compile-time architecture to the soloist CDN archive name.
 fn soloist_arch() -> Result<&'static str> {
     match std::env::consts::ARCH {
@@ -154,6 +158,17 @@ pub struct SoloistDaemon {
     data_dir: PathBuf,
     cache_dir: PathBuf,
     initial_volume: Option<u8>,
+    /// PipeWire node to route audio to (`--pipewire-device`); only meaningful
+    /// when soloist ends up using PipeWire.
+    pipewire_device: Option<String>,
+    /// Volatile playback cache cap in MB (`--cache-size`). `None` = soloist's own
+    /// default (no limit): the flag is only added for values >= 100, since 0 and
+    /// 1..=99 are either redundant or rejected by soloist (validated in
+    /// [`SoloistDaemon::new`]).
+    cache_size_mb: Option<u32>,
+    /// Run `soloist --pair` once at startup (store or replace the Spotify
+    /// Connect session) before starting the daemon.
+    pair: bool,
     state: Arc<RwLock<PlaybackState>>,
     state_tx: broadcast::Sender<()>,
 }
@@ -177,6 +192,45 @@ async fn stop_child_gracefully(child: &mut tokio::process::Child) {
             let _ = child.wait().await;
         }
     }
+}
+
+/// Stream a child's stdout/stderr into our logs.
+fn stream_output(child: &mut tokio::process::Child) {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    if let Some(out) = stdout {
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                info!("[soloist] {}", line);
+            }
+        });
+    }
+    if let Some(err) = stderr {
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(err).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                warn!("[soloist] {}", line);
+            }
+        });
+    }
+}
+
+/// Extra hint for exit code 1: soloist writes `soloist.pid` into the data
+/// directory while it runs, and the command-line reference lists "another
+/// Spotify Soloist process already using the data directory" as a cause of exit
+/// 1 — so a pid that is still alive is worth naming. A stale pid file (no such
+/// process) is ignored.
+fn live_pid_hint(data_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(data_dir.join("soloist.pid")).ok()?;
+    let pid: i32 = raw.trim().parse().ok()?;
+    if pid <= 0 {
+        return None;
+    }
+    // SAFETY: signal 0 performs only the existence/permission check and sends
+    // nothing. `pid > 0` is guaranteed above (0 or -1 would target a group).
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    alive.then(|| format!("soloist.pid lists a live process, pid {}", pid))
 }
 
 /// Remove the soloist playback-state restore snapshot written into
@@ -224,9 +278,123 @@ impl SoloistDaemon {
             data_dir: config.soloist_data_dir.clone(),
             cache_dir: config.soloist_cache_dir.clone(),
             initial_volume: config.initial_volume,
+            // `--cache-size` accepts only 0 (no limit) or >= 100 MB; anything else
+            // makes soloist exit 1 at startup, which would look like a broken app
+            // and restart forever. 0 is also soloist's default (omitting the flag),
+            // so it is left unset rather than passed through.
+            cache_size_mb: match config.cache_size_mb {
+                Some(0) | None => None,
+                Some(mb) if mb >= 100 => Some(mb),
+                Some(mb) => {
+                    warn!(
+                        "Ignoring cache_size_mb={}: soloist accepts 0 (no limit) or at least 100",
+                        mb
+                    );
+                    None
+                }
+            },
+            pipewire_device: config
+                .pipewire_device
+                .clone()
+                .filter(|d| !d.trim().is_empty()),
+            pair: config.pair,
             state,
             state_tx,
         })
+    }
+
+    /// The daemon's command line, shared by the normal daemon and pair mode; the
+    /// caller appends `--ws` or `--pair`.
+    fn base_command(&self) -> Command {
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("--device-name")
+            .arg(&self.device_name)
+            .arg("--api-key")
+            .arg(&self.api_key)
+            .arg("--data-dir")
+            .arg(&self.data_dir)
+            .arg("--cache-dir")
+            .arg(&self.cache_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(v) = self.initial_volume {
+            cmd.arg("--initial-volume").arg(v.to_string());
+        }
+        if let Some(device) = &self.pipewire_device {
+            cmd.arg("--pipewire-device").arg(device);
+        }
+        if let Some(mb) = self.cache_size_mb {
+            cmd.arg("--cache-size").arg(mb.to_string());
+        }
+        cmd
+    }
+
+    /// Run `soloist --pair` once — the documented way to store or replace the
+    /// Spotify Connect session. It clears the stored session and exits as soon
+    /// as the user picks the device in the Spotify app, so it is bounded by
+    /// [`PAIR_TIMEOUT`] and signal-aware; the normal daemon starts afterwards
+    /// either way (a failed pair run must not wedge the app).
+    ///
+    /// Returns `true` when a shutdown signal arrived during pairing: the caller
+    /// must return as well rather than start the daemon, because that signal has
+    /// already been consumed (the daemon's own `select!` would never see it, and
+    /// an aborted supervisor would leave the spawned soloist orphaned).
+    async fn run_pair_mode(
+        &self,
+        sigterm: &mut tokio::signal::unix::Signal,
+        sigint: &mut tokio::signal::unix::Signal,
+    ) -> Result<bool> {
+        info!(
+            "`pair` option is set: running soloist in pair mode — open the Spotify app on \
+             the same network and select \"{}\" from the device picker",
+            self.device_name
+        );
+        warn!(
+            "While the `pair` option stays enabled, every start clears the stored Spotify \
+             session and asks to pair again — turn it back off once pairing succeeded"
+        );
+        std::fs::create_dir_all(&self.data_dir)?;
+        std::fs::create_dir_all(&self.cache_dir)?;
+
+        let mut cmd = self.base_command();
+        cmd.arg("--pair");
+        let mut child = cmd.spawn().context("failed to spawn soloist --pair")?;
+        stream_output(&mut child);
+
+        let (status, shutdown) = tokio::select! {
+            status = child.wait() => (Some(status.context("failed to wait on soloist --pair")?), false),
+            _ = sigterm.recv() => {
+                info!("Shutdown signal received during pairing");
+                stop_child_gracefully(&mut child).await;
+                (None, true)
+            }
+            _ = sigint.recv() => {
+                info!("Interrupt signal received during pairing");
+                stop_child_gracefully(&mut child).await;
+                (None, true)
+            }
+            _ = tokio::time::sleep(PAIR_TIMEOUT) => {
+                warn!(
+                    "Pairing timed out after {} minutes (no device was selected); starting \
+                     the normal daemon",
+                    PAIR_TIMEOUT.as_secs() / 60
+                );
+                stop_child_gracefully(&mut child).await;
+                (None, false)
+            }
+        };
+        match status {
+            Some(status) if status.success() => {
+                info!("Pairing finished: soloist stored the Spotify Connect session")
+            }
+            Some(status) => warn!(
+                "Pair mode exited with {} — the stored session may be unchanged (see the \
+                 [soloist] log lines above)",
+                status
+            ),
+            None => {}
+        }
+        Ok(shutdown)
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -238,6 +406,10 @@ impl SoloistDaemon {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        // Pair mode runs once per bridge start, before the supervised daemon (it
+        // needs the freshly downloaded binary and then hands over to the normal
+        // daemon on the next loop iteration).
+        let mut pair_done = !self.pair;
         loop {
             // Ensure a fresh soloist binary before spawning: download when the
             // binary is missing (first run), older than 7 days, or after an
@@ -261,6 +433,19 @@ impl SoloistDaemon {
                     }
                 }
             }
+            if !pair_done {
+                pair_done = true;
+                match self.run_pair_mode(&mut sigterm, &mut sigint).await {
+                    // Shutting down (the signal was consumed by pair mode).
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(e) => warn!("Pair mode failed: {:#}", e),
+                }
+                // Next iteration starts the normal daemon (with the session that
+                // was just stored, if pairing succeeded).
+                continue;
+            }
+
             info!("Starting soloist daemon: {}", self.bin.display());
             std::fs::create_dir_all(&self.data_dir)?;
             std::fs::create_dir_all(&self.cache_dir)?;
@@ -273,23 +458,12 @@ impl SoloistDaemon {
             // last paused track before the live session state arrives.
             remove_restore_state(&self.data_dir);
 
-            let mut cmd = Command::new(&self.bin);
-            cmd.arg("--device-name")
-                .arg(&self.device_name)
-                .arg("--api-key")
-                .arg(&self.api_key)
-                .arg("--data-dir")
-                .arg(&self.data_dir)
-                .arg("--cache-dir")
-                .arg(&self.cache_dir)
-                .arg("--ws")
-                .arg("127.0.0.1:0")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-
-            if let Some(v) = self.initial_volume {
-                cmd.arg("--initial-volume").arg(v.to_string());
-            }
+            let mut cmd = self.base_command();
+            // The port must be loopback-only: the WebSocket API has no
+            // authentication of any kind (see the API reference's security
+            // section). Port 0 lets the OS pick, and the daemon publishes the
+            // real port in <data-dir>/ws.port, which the ws client polls.
+            cmd.arg("--ws").arg("127.0.0.1:0");
 
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
@@ -311,24 +485,7 @@ impl SoloistDaemon {
             };
 
             // Stream soloist output to our logs
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
-            if let Some(out) = stdout {
-                tokio::spawn(async move {
-                    let mut lines = tokio::io::BufReader::new(out).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        info!("[soloist] {}", line);
-                    }
-                });
-            }
-            if let Some(err) = stderr {
-                tokio::spawn(async move {
-                    let mut lines = tokio::io::BufReader::new(err).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        warn!("[soloist] {}", line);
-                    }
-                });
-            }
+            stream_output(&mut child);
 
             {
                 let mut st = self.state.write().await;
@@ -362,7 +519,17 @@ impl SoloistDaemon {
                         force_redownload = true;
                         Some("soloist build expired (exit 10): downloading a newer build and restarting".into())
                     }
-                    1 => Some("soloist exited with code 1 (see soloist logs); check SOLOIST_API_KEY and data directory permissions".into()),
+                    1 => Some(format!(
+                        "soloist exited with code 1 (see the [soloist] log lines above); common \
+                         causes: invalid API key or arguments, an unwritable data dir {} or cache \
+                         dir {}, or another soloist process still using the data dir{}",
+                        self.data_dir.display(),
+                        self.cache_dir.display(),
+                        match live_pid_hint(&self.data_dir) {
+                            Some(hint) => format!(" ({})", hint),
+                            None => String::new(),
+                        }
+                    )),
                     other => Some(format!("soloist exited with code {}", other)),
                 };
             }

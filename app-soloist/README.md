@@ -32,6 +32,28 @@ Soloist is an official Spotify client that:
    - `switch.soloist_active` — make Soloist the active Connect device
    - `switch.soloist_power` — reporting gate (see [Power Switch](#power-switch))
 
+## Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `device_name` | `Soloist` | Name shown in Spotify and Home Assistant |
+| `soloist_api_key` | – | [Soloist API key](https://developer.spotify.com/dashboard/soloist) (required) |
+| `initial_volume` | `100` | Volume applied when soloist starts (`0`-`100`) |
+| `pipewire_device` | – | Route audio to a specific PipeWire node (name or ID). Only applies when soloist uses PipeWire — the app runs PulseAudio, so this is normally unused |
+| `cache_size_mb` | `0` | Cap for soloist's volatile playback cache: `0` = no limit (soloist's default, the flag is omitted), otherwise at least `100`. Values between `1` and `99` are ignored (soloist would refuse to start) |
+| `pair` | `false` | Run `soloist --pair` once at startup to store **or replace** the Spotify Connect session, then start normally. See below |
+| `mqtt_host` / `mqtt_port` / `mqtt_username` / `mqtt_password` | Supervisor MQTT service | MQTT broker connection |
+| `log_level` | `info` | Log verbosity |
+
+### Re-pairing (`pair`)
+
+Pairing normally happens by picking the **Soloist** device in the Spotify app. If the
+stored session is broken (or belongs to another account), enable `pair`, start the app,
+select the device in the Spotify app, and **turn `pair` back off**: pair mode clears the
+stored session every time it runs, so leaving the option enabled re-pairs on every start.
+The bridge logs a reminder, and gives up after 10 minutes so a missed pairing cannot wedge
+the app.
+
 ## Media Player Entity
 
 Home Assistant's MQTT integration doesn't support `media_player` entities.  This app publishes a sensor plus MQTT command topics. Install [Template Media Player](https://github.com/EuleMitKeule/template-media-player) via HACS and add this to your `configuration.yaml` to get a fully controllable media player.  
@@ -56,9 +78,11 @@ media_player:
           source: "{{ state_attr('sensor.soloist', 'source') }}"
           entity_picture: "{{ state_attr('sensor.soloist', 'media_image_url') }}"
 
-          media_content_type: music
+          media_content_type: "{{ state_attr('sensor.soloist', 'media_content_type') or 'music' }}"
           media_title: "{{ state_attr('sensor.soloist', 'media_title') }}"
           media_album_name: "{{ state_attr('sensor.soloist', 'media_album_name') }}"
+          media_series_title: "{{ state_attr('sensor.soloist', 'media_series_title') }}"
+          media_content_rating: "{{ state_attr('sensor.soloist', 'media_content_rating') }}"
           media_artist: "{{ state_attr('sensor.soloist', 'media_artist') }}"
           media_content_id: "{{ state_attr('sensor.soloist', 'media_content_id') }}"
           media_position: "{{ state_attr('sensor.soloist', 'media_position') }}"
@@ -150,6 +174,24 @@ media_player:
 
 Replace `soloist/soloist/...` topics with `soloist/<mqtt_device_id>/...` if you changed `mqtt_device_id` (defaults to the slugified device name).
 
+The sensor also carries `available_actions` (what soloist says is possible right now,
+e.g. `["pause", "seek", "seek_forward", "skip_next"]`), `seek_step_ms` (the step size
+advertised for relative seeks), `media_content_rating` (`explicit`), `is_ad`, `upcoming`,
+`logged_in`, `is_active`, `soloist_connected`, `device_name`, `volume`,
+`is_volume_muted`, `shuffle` and `repeat` — useful for gating dashboard buttons or
+automations on what the device can actually do.
+A podcast episode reports `media_content_type: podcast` with the show in
+`media_series_title`; an ad break keeps the current track's metadata and only sets
+`is_ad: true`.
+
+### Availability
+
+All entities go `unavailable` whenever the bridge cannot reach soloist's local WebSocket
+API (daemon restarting, build being re-downloaded, WebSocket API disabled). This is
+intentional: a stale "idle" media player that still shows the last track is worse for
+automations than an unavailable one. `sensor.soloist`'s `soloist_connected` attribute
+carries the same signal as a plain attribute.
+
 ## Power Switch
 
 `switch.soloist_power` is a **reporting-only** switch — it never pauses
@@ -168,10 +210,11 @@ The power state resets to off when the bridge restarts. To control the audio,
 use the play/pause commands (or the Spotify app) — the power switch just hides
 playback from Home Assistant.
 
-While **off**, the bridge publishes nothing further to MQTT (the state and
-attributes are static), so soloist events — e.g. `position_sync` ticks during
-background playback — generate no MQTT traffic. Turning the switch back on
-republishes the full state immediately.
+While **off**, the bridge publishes no further playback state or attributes, so soloist
+events — e.g. `position_sync` ticks during background playback — generate no MQTT
+traffic. Turning the switch back on republishes the full state immediately. Availability
+is not part of that gate: it tracks the WebSocket connection (and is only published when
+it actually changes), so it keeps working while powered off.
 
 ## Audio
 

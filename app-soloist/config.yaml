@@ -1,6 +1,6 @@
 slug: app-soloist
 name: Soloist
-version: 0.3.2
+version: 0.4.0
 url: https://github.com/genehand/ha-apps/blob/main/app-soloist/README.md
 
 init: false
@@ -26,6 +26,9 @@ options:
   device_name: "Soloist"
   soloist_api_key: ""
   initial_volume: 100
+  pipewire_device: ""
+  cache_size_mb: 0
+  pair: false
   mqtt_host: core-mosquitto
   mqtt_port: 1883
   mqtt_username: ""
@@ -35,6 +38,12 @@ schema:
   device_name: str
   soloist_api_key: password
   initial_volume: "int(0,100)?"
+  # Only applies if soloist ends up using PipeWire; empty = system default.
+  pipewire_device: str?
+  # Volatile playback cache cap in MB: 0 = no limit, otherwise at least 100.
+  cache_size_mb: "int(0,100000)?"
+  # Run soloist in pair mode once at bridge start (replace the stored session).
+  pair: bool?
   mqtt_host: str?
   mqtt_port: int?
   mqtt_username: str?

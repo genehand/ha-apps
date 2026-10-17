@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::soloist::apply::{handle_text, LAST_EVENT_MS};
 use crate::soloist::commands::SoloistCommand;
+use crate::soloist::embed::EmbedResolver;
 use crate::soloist::oembed::OembedResolver;
 use crate::state::{now_unix_ms, PlaybackState};
 
@@ -33,13 +34,22 @@ pub async fn run_client(
     // Artist-name fallback via oEmbed; created once so its cache survives
     // WebSocket reconnects.
     let resolver = OembedResolver::new(state.clone(), state_tx.clone());
+    // Track-metadata fallback via the public embed page, for snapshots that
+    // ship a bare track URI (no identity, no creators) — the case where the
+    // oEmbed pass above has no artist URI to look up.
+    let embed = EmbedResolver::new(state.clone(), state_tx.clone());
 
     // Watchdog heartbeat: logs liveness independently of the state lock, so a
     // wedge is distinguishable from a quiet system. The "last soloist event"
     // timestamp is lock-free (updated in handle_text), so it keeps advancing
     // even if the state lock is wedged.
+    let watchdog_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
+        // Logged once per bridge run (not per connection): the documented
+        // first-run state is `logged_in: false` until the device is picked in
+        // the Spotify app, and the README is otherwise the only place saying so.
+        let mut pair_hint_logged = false;
         loop {
             interval.tick().await;
             let last_event_age =
@@ -48,6 +58,21 @@ pub async fn run_client(
                 "watchdog: alive; last soloist event {}s ago",
                 last_event_age / 1000
             );
+            // A connected-but-idle API that reports no session for a while is
+            // the unpaired state (a freshly connected one has just sent
+            // auth_state, so the age gate keeps this from firing too early).
+            if !pair_hint_logged && last_event_age > 15_000 {
+                let st = watchdog_state.read().await;
+                if st.ws_connected && !st.logged_in {
+                    info!(
+                        "Soloist is not paired to Spotify: open the Spotify app on the same \
+                         network, open the device picker and select \"{}\" (one-time pairing). \
+                         Set the `pair` option to re-pair an existing session instead.",
+                        st.device_name
+                    );
+                    pair_hint_logged = true;
+                }
+            }
         }
     });
     let mut backoff: u64 = 1;
@@ -65,6 +90,8 @@ pub async fn run_client(
         match tokio_tungstenite::connect_async(&url).await {
             Ok((ws, _)) => {
                 backoff = 1;
+                state.write().await.ws_connected = true;
+                let _ = state_tx.send(());
                 if let Err(e) = handle_connection(
                     ws,
                     &state,
@@ -72,15 +99,21 @@ pub async fn run_client(
                     &mut cmd_rx,
                     cmd_tx.clone(),
                     &resolver,
+                    &embed,
                 )
                 .await
                 {
                     warn!("Soloist WebSocket connection ended: {}", e);
                 }
                 {
+                    // Nothing about the previous session is true any more. The
+                    // server re-sends auth_state on connect, so `logged_in` is
+                    // re-established then; until that happens the MQTT auth gate
+                    // rejects commands instead of buffering them for replay.
                     let mut st = state.write().await;
-                    st.set_status("idle");
-                    st.is_active = false;
+                    st.ws_connected = false;
+                    st.logged_in = false;
+                    st.clear_session();
                 }
                 let _ = state_tx.send(());
             }
@@ -170,6 +203,7 @@ async fn handle_connection<S>(
     cmd_rx: &mut mpsc::Receiver<SoloistCommand>,
     cmd_tx: mpsc::Sender<SoloistCommand>,
     resolver: &OembedResolver,
+    embed: &EmbedResolver,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
@@ -211,7 +245,8 @@ where
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if handle_text(&text, state, state_tx, Some(resolver)).await == Some(true)
+                        if handle_text(&text, state, state_tx, Some(resolver), Some(embed)).await
+                            == Some(true)
                             && !bootstrapped
                         {
                             info!("Soloist authenticated; fetching playback state and queue");
