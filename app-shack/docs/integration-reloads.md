@@ -33,6 +33,24 @@ Pressing the reload button calls `IntegrationLoader.reload_config_entry()`, whic
 2. **Re-loads the integration** (`setup_integration`) — re-imports the module, calls `async_setup` + `async_setup_entry`, re-creates all entities with fresh MQTT discovery configs
 3. **Re-creates the reload button** — the button itself is re-created as part of the setup
 
+### Unload Callbacks (`entry.async_on_unload`)
+
+Step 1 also runs every callback registered with `entry.async_on_unload(...)`, matching
+HA's `ConfigEntry.async_unload`. This is what actually tears an integration down:
+integrations register socket closes and task cancels there rather than in
+`async_unload_entry` (localtuya registers `dev.close`, which closes its Tuya TCP
+connection and stops the reconnect loop).
+
+Without it, a reload leaves the previous instance running next to the new one. For
+localtuya that is two local clients for the same device; Tuya firmware serves one,
+so it resets both and the coordinator logs
+`Disconnected due to: [Errno 104] Connection reset by peer` every
+`RECONNECT_INTERVAL` (5 s) forever.
+
+Callbacks run LIFO, awaitables are awaited (the reload does not complete until they
+finish), errors are logged and swallowed, and the list is cleared afterwards so the
+next setup registers a fresh generation.
+
 ### MQTT Behavior
 
 - The **MQTT connection is NOT disconnected** during a reload — only the entities for that integration are re-published

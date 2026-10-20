@@ -15,7 +15,7 @@ from shim.entity import (
     STATE_UNAVAILABLE,
     Entity,
     EntityDescription,
-    build_mqtt_device_config,
+    build_entity_mqtt_device_config,
     format_device_identifiers,
     get_device_info_attr,
     get_entity_name_for_discovery,
@@ -423,7 +423,7 @@ class SensorEntity(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_mqtt_device_config(self.device_info)
+            config["device"] = build_entity_mqtt_device_config(self)
 
         if self.device_class:
             config["device_class"] = self.device_class

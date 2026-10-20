@@ -13,12 +13,14 @@ import inspect
 import aiohttp
 import zipfile
 import shutil
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from awesomeversion import AwesomeVersion, AwesomeVersionStrategy
 from awesomeversion.exceptions import AwesomeVersionException
+from packaging.requirements import InvalidRequirement, Requirement
 
 from ..logging import get_logger
 from ..storage import Storage
@@ -149,6 +151,7 @@ class IntegrationInfo:
         requirements: Optional[List[str]] = None,
         dependencies: Optional[List[str]] = None,
         full_name: Optional[str] = None,
+        installed_requirements: Optional[List[str]] = None,
         _release_notes_cache: Optional[List[Dict[str, Any]]] = None,
     ):
         self.domain = domain
@@ -166,6 +169,11 @@ class IntegrationInfo:
         self.requirements = requirements or []
         self.dependencies = dependencies or []
         self.full_name = full_name  # HACS full_name (owner/repo) for HACS default repos
+        # Exact requirement strings known to be satisfied in the venv. Only
+        # consulted for requirements ``packaging`` cannot verify (direct URL /
+        # VCS pins, editable installs) so those are not reinstalled on every
+        # start.
+        self.installed_requirements = installed_requirements or []
         # Volatile cache for fetched release notes (not persisted to storage)
         self._release_notes_cache: Optional[List[Dict[str, Any]]] = _release_notes_cache
 
@@ -186,6 +194,7 @@ class IntegrationInfo:
             "config_flow": self.config_flow,
             "requirements": self.requirements,
             "dependencies": self.dependencies,
+            "installed_requirements": self.installed_requirements,
             "full_name": self.full_name,
         }
 
@@ -2076,8 +2085,130 @@ class IntegrationManager:
             return path
         return None
 
-    async def install_requirements(self, domain: str) -> bool:
-        """Install Python requirements for an integration using uv."""
+    @staticmethod
+    def _parse_requirement(requirement: str) -> Optional[Requirement]:
+        """Parse a PEP 508 requirement string, or None when it is not one.
+
+        Handles every form manifests actually ship: ``pkg==1.0``,
+        ``pkg[extra]>=1.0,<2``, ``pkg; python_version>"3.9"`` and direct
+        references such as ``pkg @ git+https://...#subdirectory=python``.
+        """
+        try:
+            return Requirement(requirement)
+        except (InvalidRequirement, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _installed_version(name: str) -> Optional[str]:
+        """Return the installed version of a distribution, or None.
+
+        Blocking (``importlib.metadata`` opens the dist-info ``METADATA`` file),
+        so callers on the event loop must go through
+        :meth:`_installed_versions` / ``asyncio.to_thread``.
+
+        In-process on purpose: the app runs from the same venv requirements are
+        installed into (``UV_PROJECT_ENVIRONMENT=/data/.venv``), so shelling out
+        to ``uv pip show`` per requirement on every start is wasted work.
+        """
+        try:
+            return distribution_version(name)
+        except PackageNotFoundError:
+            return None
+        except Exception:  # noqa: BLE001 - never let metadata quirks block setup
+            return None
+
+    def _installed_versions(self, requirements: List[str]) -> Dict[str, Optional[str]]:
+        """Sync I/O primitive: installed version per requirement's distribution.
+
+        Safe from sync code and tests; call it via ``asyncio.to_thread`` from
+        async code so the METADATA reads stay off the event loop.
+        """
+        versions: Dict[str, Optional[str]] = {}
+        for requirement in requirements:
+            parsed = self._parse_requirement(requirement)
+            if parsed is None or parsed.name in versions:
+                continue
+            versions[parsed.name] = self._installed_version(parsed.name)
+        return versions
+
+    def _requirement_satisfied(
+        self,
+        info: IntegrationInfo,
+        requirement: str,
+        installed_versions: Optional[Dict[str, Optional[str]]] = None,
+    ) -> Tuple[bool, str]:
+        """Decide whether a requirement string is already satisfied.
+
+        Returns ``(satisfied, reason)``; the reason is logged when it is not.
+        Version specifiers are compared against the installed distribution.
+        Direct URL / VCS requirements (and anything ``packaging`` cannot parse)
+        are instead compared with the requirement strings recorded as installed,
+        since a URL cannot be verified against an installed version - without
+        that record ``uv pip install`` (and a git fetch) would run on every boot.
+
+        Args:
+            info: Owning integration info (for the install record).
+            requirement: Requirement string from the manifest.
+            installed_versions: Pre-resolved ``{distribution: version}`` map.
+                Callers on the event loop should pass the result of
+                ``asyncio.to_thread(self._installed_versions, ...)``; without it
+                this does a blocking metadata read.
+        """
+        record = getattr(info, "installed_requirements", None) or []
+        parsed = self._parse_requirement(requirement)
+        if parsed is None:
+            if requirement in record:
+                return True, ""
+            return False, "not a parsable PEP 508 requirement and no install record"
+
+        # A marker that does not match this environment means the requirement is
+        # not needed at all (uv would skip it too); treating it as unsatisfied
+        # would shell out to uv on every start forever.
+        try:
+            if parsed.marker is not None and not parsed.marker.evaluate():
+                return True, ""
+        except Exception:  # noqa: BLE001 - unparseable environment, fall through
+            pass
+
+        if installed_versions is not None:
+            installed = installed_versions.get(parsed.name)
+        else:
+            installed = self._installed_version(parsed.name)
+        if installed is None:
+            return False, f"{parsed.name} is not installed"
+        if parsed.specifier and not parsed.specifier.contains(
+            installed, prereleases=True
+        ):
+            return False, f"installed {installed} does not satisfy {parsed.specifier}"
+        if parsed.url and requirement not in record:
+            return False, "direct URL requirement not installed from this URL yet"
+        return True, ""
+
+    async def _record_installed_requirements(self, info: IntegrationInfo) -> None:
+        """Persist which requirement strings are satisfied (idempotent)."""
+        record = list(info.requirements)
+        if record == (getattr(info, "installed_requirements", None) or []):
+            return
+        info.installed_requirements = record
+        try:
+            await asyncio.to_thread(self._save_integrations)
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug(
+                f"Could not persist installed requirements for {info.domain}: {e}"
+            )
+
+    async def install_requirements(self, domain: str, *, force: bool = False) -> bool:
+        """Install Python requirements for an integration using uv.
+
+        Called for every integration on every start, so anything already present
+        in the venv is skipped (see ``_requirement_satisfied``). Only the
+        outstanding requirements are handed to a single ``uv pip install``.
+
+        Args:
+            domain: Integration domain.
+            force: Reinstall every requirement regardless of what is installed
+                (e.g. to repair a broken environment).
+        """
         info = self._integrations.get(domain)
         if not info:
             _LOGGER.warning(f"Integration {domain} not found in _integrations")
@@ -2104,113 +2235,79 @@ class IntegrationManager:
 
         _LOGGER.debug(f"Integration {domain} has requirements: {info.requirements}")
 
-        # Use system uv with the venv's Python
-        uv_cmd = "uv"
-        venv_python = self._venv_dir / "bin" / "python"
-        uv_env = os.environ.copy()
+        # Resolve installed versions once, off the event loop: importlib.metadata
+        # reads the dist-info METADATA file, which the blocking-call detector
+        # flags (and which would stall every other task during startup).
+        installed_versions: Dict[str, Optional[str]] = {}
+        if not force:
+            installed_versions = await asyncio.to_thread(
+                self._installed_versions, info.requirements
+            )
 
-        installed_any = False
-
+        pending: List[str] = []
         for requirement in info.requirements:
-            try:
-                # Parse package name (without version specifiers)
-                pkg_name = (
-                    requirement.split("==")[0].split(">=")[0].split("<=")[0].strip()
+            if not force:
+                satisfied, reason = self._requirement_satisfied(
+                    info, requirement, installed_versions
                 )
+                if satisfied:
+                    _LOGGER.info(f"Requirement already satisfied: {requirement}")
+                    continue
+                _LOGGER.debug(f"Requirement {requirement} needs installing: {reason}")
+            pending.append(requirement)
 
-                # Check if requirement is already installed using uv pip show
-                check_cmd = [
-                    uv_cmd,
-                    "pip",
-                    "show",
-                    pkg_name,
-                    "--python",
-                    str(venv_python),
-                ]
+        if not pending:
+            _LOGGER.debug(
+                f"All {len(info.requirements)} requirements already satisfied for "
+                f"{domain}, nothing to install"
+            )
+            # Backfill the record for installs that predate it, so direct URL
+            # requirements stay skipped from the next start onwards.
+            await self._record_installed_requirements(info)
+            return True
 
-                check_proc = await asyncio.create_subprocess_exec(
-                    *check_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=uv_env,
-                )
-                stdout, _ = await check_proc.communicate()
+        _LOGGER.info(f"Installing requirements for {domain}: {', '.join(pending)}")
 
-                if check_proc.returncode == 0:
-                    # Package is installed, check version if specified
-                    if (
-                        "==" in requirement
-                        or ">=" in requirement
-                        or "<=" in requirement
-                    ):
-                        # Parse installed version from uv pip show output
-                        installed_version = None
-                        for line in stdout.decode().strip().split("\n"):
-                            if line.startswith("Version:"):
-                                installed_version = line.split(":", 1)[1].strip()
-                                break
+        # Use system uv with the venv's Python
+        venv_python = self._venv_dir / "bin" / "python"
+        install_cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(venv_python),
+            *pending,
+        ]
 
-                        if installed_version:
-                            # Check if version matches
-                            req_clean = requirement.strip()
-                            if req_clean.endswith(f"=={installed_version}"):
-                                _LOGGER.info(
-                                    f"Requirement already satisfied: {requirement}"
-                                )
-                                continue
-                            elif "==" not in req_clean:
-                                # For >= or <=, we'll let uv handle it
-                                _LOGGER.info(
-                                    f"Requirement {requirement} has version {installed_version} installed, checking if update needed"
-                                )
-                    else:
-                        # No version specified, package exists
-                        _LOGGER.info(f"Requirement already satisfied: {requirement}")
-                        continue
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *install_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy(),
+            )
+            stdout, stderr = await proc.communicate()
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.error(f"Failed to install requirements for {domain}: {e}")
+            return False
 
-                _LOGGER.info(f"Installing requirement: {requirement}")
+        if proc.returncode != 0:
+            _LOGGER.error(
+                f"Failed to install requirements for {domain}: {stderr.decode()}"
+            )
+            return False
 
-                # Build uv pip install command
-                install_cmd = [
-                    uv_cmd,
-                    "pip",
-                    "install",
-                    "--python",
-                    str(venv_python),
-                    requirement,
-                ]
-
-                proc = await asyncio.create_subprocess_exec(
-                    *install_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=uv_env,
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    _LOGGER.error(f"Failed to install {requirement}: {stderr.decode()}")
-                    return False
-                _LOGGER.info(f"Successfully installed {requirement}")
-                _LOGGER.debug(f"uv output: {stdout.decode()}")
-
-                installed_any = True
-            except Exception as e:
-                _LOGGER.error(f"Failed to install {requirement}: {e}")
-                return False
+        for requirement in pending:
+            _LOGGER.info(f"Successfully installed {requirement}")
+        _LOGGER.debug(f"uv output: {stdout.decode()}")
 
         # Invalidate import cache so newly installed packages can be imported
-        if installed_any:
-            import importlib
+        importlib.invalidate_caches()
+        _LOGGER.info(
+            f"Invalidated import cache after installing requirements for {domain}"
+        )
 
-            importlib.invalidate_caches()
-            _LOGGER.info(
-                f"Invalidated import cache after installing requirements for {domain}"
-            )
-        else:
-            _LOGGER.debug(
-                f"All requirements already satisfied for {domain}, no cache invalidation needed"
-            )
-
+        await self._record_installed_requirements(info)
         return True
 
     async def uninstall_requirements(self, domain: str) -> bool:
@@ -2231,27 +2328,29 @@ class IntegrationManager:
 
         _LOGGER.info(f"Uninstalling requirements for {domain}: {info.requirements}")
 
-        # Use system uv with the venv's Python
         uv_cmd = "uv"
-        venv_python = self._venv_dir / "bin" / "python"
-        env = os.environ.copy()
         venv_python = self._venv_dir / "bin" / "python"
         env = os.environ.copy()
 
         uninstalled_any = False
         for requirement in info.requirements:
             try:
-                # Extract just the package name (strip version specifiers)
-                package_name = (
-                    requirement.split("==")[0]
-                    .split(">=")[0]
-                    .split("<=")[0]
-                    .split(">")[0]
-                    .split("<")[0]
-                    .split("~=")[0]
-                    .split("!=")[0]
-                    .strip()
-                )
+                # Extract just the package name (strip specifiers, extras, markers)
+                parsed = self._parse_requirement(requirement)
+                if parsed is not None:
+                    package_name = parsed.name
+                else:
+                    package_name = (
+                        requirement.split("==")[0]
+                        .split(">=")[0]
+                        .split("<=")[0]
+                        .split(">")[0]
+                        .split("<")[0]
+                        .split("~=")[0]
+                        .split("!=")[0]
+                        .split(" @ ")[0]
+                        .strip()
+                    )
 
                 # Check if package is installed using uv pip show
                 show_cmd = [
@@ -2319,5 +2418,15 @@ class IntegrationManager:
             _LOGGER.info(
                 f"Invalidated import cache after uninstalling requirements for {domain}"
             )
+
+        # Nothing is installed any more, so drop the satisfaction record too.
+        if info.installed_requirements:
+            info.installed_requirements = []
+            try:
+                await asyncio.to_thread(self._save_integrations)
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.debug(
+                    f"Could not persist installed requirements for {domain}: {e}"
+                )
 
         return True

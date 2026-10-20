@@ -241,8 +241,26 @@ class ConfigEntries:
                     self._abort_reauth_flows(entry)
                     entries.pop(i)
                     self._save_entries()
+                    self._clear_devices(entry)
                     _LOGGER.info(f"Removed config entry {entry_id}")
                     return
+
+    def _clear_devices(self, entry: ConfigEntry) -> None:
+        """Drop the device registry rows of a removed entry (HA parity).
+
+        HA removes a device together with its config entry
+        (``ConfigEntries._async_clean_up``); without this the shim keeps rows
+        for an integration that no longer exists, and those rows feed back into
+        MQTT discovery name/manufacturer lookups.
+        """
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            dr.async_get(self._hass).async_clear_config_entry(
+                entry.entry_id, entry.domain
+            )
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug(f"Could not clear devices for {entry.entry_id}: {e}")
 
     def async_update_entry(self, entry: ConfigEntry, **kwargs) -> bool:
         """Update an entry.
@@ -506,16 +524,24 @@ class ConfigEntries:
                                     return
 
                                 # Add to entity registry
-                                from .entity import EntityRegistry
+                                from .entity import EntityRegistry, register_entity_device
 
+                                # Set up entity in hass
+                                entity.hass = self._hass
+                                # Register the entity's device *before*
+                                # async_added_to_hass (HA parity): integrations
+                                # read the device registry from there, and
+                                # localtuya >= 2026.10.0 raises if the gateway
+                                # device of a sub-device has no row yet.
+                                register_entity_device(
+                                    self._hass, entity, entry.entry_id
+                                )
                                 registry = EntityRegistry()
                                 registry.register(entity)
                                 # Persisted enable/disable overrides are
                                 # applied inside register() (reading the
                                 # storage-backed overrides cache), so the
                                 # entry's enabled state survives restarts.
-                                # Set up entity in hass
-                                entity.hass = self._hass
                                 _LOGGER.debug(
                                     f"Calling async_added_to_hass for {entity.entity_id} (type: {type(entity).__name__})"
                                 )

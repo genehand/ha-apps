@@ -1093,6 +1093,87 @@ class TestAvailableVersionsAndDownload:
         ]
 
     @pytest.mark.asyncio
+    async def test_install_records_tag_version_when_manifest_is_stale(
+        self, integration_manager
+    ):
+        """The installed git tag wins over an un-bumped manifest.json.
+
+        Upstream releases sometimes ship without bumping manifest.json (e.g.
+        nws_alerts 6.8 still says 6.7.3). The tag is the canonical version, so
+        recording it keeps the update badge from re-firing forever.
+        """
+        integration_manager._hacs_repos["owner/repo"] = {
+            "domain": "nws_alerts",
+            "name": "NWS Alerts",
+            "repository_url": "https://github.com/owner/repo",
+            "full_name": "owner/repo",
+            "last_version": "6.8",
+            "manifest": {"version": "6.7.3"},
+        }
+
+        stale_manifest = {
+            "domain": "nws_alerts",
+            "name": "NWS Alerts",
+            "version": "6.7.3",
+            "config_flow": True,
+            "requirements": [],
+        }
+
+        with patch.object(
+            integration_manager,
+            "_download_integration",
+            new=AsyncMock(return_value="nws_alerts"),
+        ), patch.object(
+            integration_manager, "_load_manifest", return_value=stale_manifest
+        ), patch.object(
+            integration_manager, "is_unsupported_repo", return_value=None
+        ), patch.object(
+            integration_manager, "_save_integrations"
+        ), patch.object(
+            integration_manager,
+            "install_requirements",
+            new=AsyncMock(return_value=True),
+        ):
+            result = await integration_manager.install_integration(
+                "owner/repo", source="hacs_default", wait=True
+            )
+
+        assert result is True
+        info = integration_manager._integrations["nws_alerts"]
+        assert info.version == "6.8"
+        assert info.latest_version == "6.8"
+
+    @pytest.mark.asyncio
+    async def test_update_check_clears_flag_when_tag_matches_cdn(
+        self, integration_manager
+    ):
+        """A tag-recorded version matches CDN last_version even if manifest lags."""
+        info = self._make_info(integration_manager)
+        info.source = "hacs_default"
+        info.enabled = True
+        info.version = "6.8"  # recorded from the git tag
+        info.update_available = True
+        info.latest_version = "6.8"
+
+        integration_manager._hacs_repos = {
+            "owner/repo": {
+                "repository_url": "https://github.com/owner/repo",
+                "last_version": "6.8",
+            }
+        }
+
+        with patch.object(
+            integration_manager,
+            "fetch_hacs_repositories",
+            new=AsyncMock(return_value=integration_manager._hacs_repos),
+        ), patch.object(integration_manager, "_save_integrations"):
+            updates = await integration_manager.check_for_updates()
+
+        assert updates == []
+        assert info.update_available is False
+        assert info.latest_version is None
+
+    @pytest.mark.asyncio
     async def test_install_requirements_recovers_from_manifest(self, integration_manager):
         """install_requirements re-reads the manifest when info.requirements is empty."""
         info = self._make_info(integration_manager)
@@ -1107,19 +1188,21 @@ class TestAvailableVersionsAndDownload:
                 self.returncode = returncode
 
             async def communicate(self):
-                return (b"Name: libdyson-neon\nVersion: 1.6.0\n", b"")
+                return (b"Audited 1 package\n", b"")
 
         async def fake_exec(*args, **kwargs):
             call_log.append(args)
-            # "uv pip show" -> not installed (rc=1); "uv pip install" -> success (rc=0)
-            if "show" in args:
-                return FakeProc(1)
             return FakeProc(0)
 
         with patch.object(
             integration_manager, "_load_manifest", return_value=manifest
         ), patch.object(
             integration_manager, "_save_integrations"
+        ), patch.object(
+            # Simulate a venv where the package is not installed yet.
+            IntegrationManager,
+            "_installed_version",
+            return_value=None,
         ), patch(
             "shim.integrations.manager.asyncio.create_subprocess_exec",
             side_effect=fake_exec,

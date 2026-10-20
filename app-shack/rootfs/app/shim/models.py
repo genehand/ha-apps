@@ -243,16 +243,64 @@ class ConfigEntry(Generic[T]):
 
         return False
 
-    async def _run_unload_callbacks(self) -> None:
-        """Run all registered unload callbacks."""
-        for callback in self._on_unload_callbacks:
+    async def _run_unload_callbacks(self, hass: Optional["HomeAssistant"] = None) -> None:
+        """Run (and clear) the callbacks registered with ``async_on_unload``.
+
+        Mirrors Home Assistant's ``ConfigEntry._async_process_on_unload``: run
+        LIFO, await anything that returns an awaitable, log instead of raising,
+        and drop them afterwards so a later setup starts a fresh generation.
+
+        This is what actually tears an integration down. Integrations register
+        socket closes and task cancels here (localtuya: ``dev.close``), so
+        skipping it leaves the previous instance connected while the reloaded
+        one tries to talk to the same device.
+
+        Args:
+            hass: The HomeAssistant instance, when available. Used for the last
+                step of HA's teardown (telling the device registry the entry
+                unloaded); everything else works without it.
+        """
+        callbacks, self._on_unload_callbacks = self._on_unload_callbacks, []
+        for callback in reversed(callbacks):
             try:
-                if inspect.iscoroutinefunction(callback):
-                    await callback()
-                else:
-                    callback()
+                result = callback()
+                if inspect.isawaitable(result):
+                    await result
             except Exception as e:
                 _LOGGER.error(f"Error in unload callback: {e}")
+
+        # Give tasks created through entry.async_create_task /
+        # async_create_background_task time to finish after their cancellation,
+        # like HA's 10s wait, so a reload does not overlap the old generation.
+        pending_tasks = {
+            task
+            for task in (
+                *getattr(self, "_tasks", ()),
+                *getattr(self, "_background_tasks", ()),
+            )
+            if not task.done()
+        }
+        if pending_tasks:
+            _, still_pending = await asyncio.wait(pending_tasks, timeout=10)
+            for task in still_pending:
+                _LOGGER.warning(
+                    f"Unloading {self.title} ({self.domain}) config entry. "
+                    f"Task {task} did not complete in time"
+                )
+
+        # HA's last teardown step: tell the device registry the entry unloaded.
+        # Devices survive (they are removed when the entry is removed), this
+        # only forgets which rows the finished setup generation created.
+        if hass is not None:
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                dr.async_get(hass).async_config_entry_unloaded(self.entry_id)
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.debug(
+                    f"Could not notify the device registry that {self.entry_id} "
+                    f"unloaded: {e}"
+                )
 
     def async_start_reauth(
         self,

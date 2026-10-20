@@ -24,7 +24,7 @@
       "version": "2.3.1"
     },
     "finity69x2/nws_alerts": {
-      "version": "6.7.3"
+      "version": "6.8"
     },
     "heyajohnny/cryptoinfo": {
       "version": "1.0.10"
@@ -52,7 +52,7 @@
       "notes": "Webhooks aren't supported"
     },
     "xZetsubou/hass-localtuya": {
-      "version": "2026.7.0"
+      "version": "2026.10.0"
     }
   }
 }

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Callable
 from ..logging import get_logger, set_current_integration
 from ..hass import HomeAssistant
 from ..models import ConfigEntry, _slugify_name
-from ..entity import EntityRegistry
+from ..entity import EntityRegistry, register_entity_device
 from ..import_patch import setup_import_patching
 from ..options_map import patch_select_descriptions
 from .manager import IntegrationManager, IntegrationInfo
@@ -263,6 +263,10 @@ class IntegrationLoader:
             else:
                 _LOGGER.error(f"Integration {domain} setup returned False")
                 entry.state = "setup_error"
+                # HA runs the on-unload callbacks when setup fails, so a
+                # partially started integration (sockets opened, tasks created
+                # before the failing step) does not keep running unsupervised.
+                await entry._run_unload_callbacks(self._hass)
                 return False
 
         except Exception as e:
@@ -271,6 +275,7 @@ class IntegrationLoader:
             _LOGGER.error(f"Failed to setup integration {domain}: {e}")
             _LOGGER.debug(f"Setup error traceback:\n{traceback.format_exc()}")
             entry.state = "setup_error"
+            await entry._run_unload_callbacks(self._hass)
             return False
         finally:
             set_current_integration(None)
@@ -306,11 +311,23 @@ class IntegrationLoader:
 
             module = self._loaded_integrations[domain]
 
-            # Check for async_unload_entry
+            # Check for async_unload_entry. A raising unload_entry must not skip
+            # the rest of the teardown: the caller (install_and_reload) goes on
+            # to set the entry up again, and anything left running here becomes a
+            # duplicate instance next to the new one.
             if hasattr(module, "async_unload_entry"):
-                result = await module.async_unload_entry(self._hass, entry)
-                if not result:
-                    _LOGGER.warning(f"Integration {domain} unload returned False")
+                try:
+                    result = await module.async_unload_entry(self._hass, entry)
+                except Exception as e:
+                    import traceback
+
+                    _LOGGER.error(f"async_unload_entry failed for {domain}: {e}")
+                    _LOGGER.debug(
+                        f"async_unload_entry traceback:\n{traceback.format_exc()}"
+                    )
+                else:
+                    if not result:
+                        _LOGGER.warning(f"Integration {domain} unload returned False")
 
             # Clear shutdown flag
             if hasattr(self._hass, "_shim_shutdown_in_progress"):
@@ -335,6 +352,14 @@ class IntegrationLoader:
 
             # Clean up reload button tracking for this entry
             self._remove_reload_button(entry.entry_id)
+
+            # Run callbacks registered via entry.async_on_unload(). Home
+            # Assistant does this as part of entry unload; without it the
+            # integration never gets to close sockets or cancel the tasks it
+            # created, and a reload leaves the old instance running next to
+            # the new one (localtuya: two TCP clients fighting over one device,
+            # which the device answers with ECONNRESET every RECONNECT_INTERVAL).
+            await entry._run_unload_callbacks(self._hass)
 
             # Call async_unload for global cleanup if no more entries
             entries = self._hass.config_entries.async_entries(domain)
@@ -467,13 +492,21 @@ class IntegrationLoader:
         # Register with loader
         self.register_entity(platform, entity)
 
+        # Set up entity in hass
+        entity.hass = self._hass
+
+        # Register the entity's device before async_added_to_hass (HA parity);
+        # the reload button's device_info may be inherited from a platform
+        # entity of the same integration, in which case this matches that row.
+        register_entity_device(
+            self._hass, entity, getattr(entity, "_attr_config_entry_id", None)
+        )
+
         # Add to entity registry
         registry = EntityRegistry()
         registry.setup(self._hass)
         registry.register(entity)
 
-        # Set up entity in hass
-        entity.hass = self._hass
         await entity.async_added_to_hass()
 
         # Publish MQTT discovery and initial state

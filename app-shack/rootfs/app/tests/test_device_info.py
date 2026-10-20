@@ -144,7 +144,14 @@ class TestDeviceInfoLocaltuyaPattern:
 
     @pytest.mark.asyncio
     async def test_subdevice_device_info_does_not_raise(self):
-        """Evaluate the real localtuya property for a sub-device entity."""
+        """Evaluate the real localtuya property for a sub-device entity.
+
+        localtuya 2026.10.0 switched from the legacy ``via_device`` tuple to
+        ``via_device_id``, resolved through
+        ``dr.async_get_device_id_by_identifier()`` (HA >= 2026.8). That helper
+        raises when the gateway device is not in the registry, so the test seeds
+        the gateway and then asserts whichever form this localtuya version emits.
+        """
         from shim.core import HomeAssistant
         from shim.import_patch import ImportPatcher
 
@@ -158,9 +165,17 @@ class TestDeviceInfoLocaltuyaPattern:
                 try:
                     from custom_components.localtuya.entity import LocalTuyaEntity
                     from homeassistant.const import ATTR_VIA_DEVICE
+                    from homeassistant.helpers import device_registry as dr
                     from homeassistant.helpers.device_registry import DeviceInfo
 
+                    gateway = dr.async_get(hass).async_get_or_create(
+                        config_entry_id='entry1',
+                        identifiers={('localtuya', 'local_gw1')},
+                        name='Gateway',
+                    )
+
                     entity = object.__new__(LocalTuyaEntity)
+                    entity.hass = hass
                     entity._device_config = SimpleNamespace(
                         id='d1',
                         name='Sub device',
@@ -171,14 +186,21 @@ class TestDeviceInfoLocaltuyaPattern:
                         id='sub1',
                         is_subdevice=True,
                         gateway=SimpleNamespace(id='gw1'),
+                        _entry=SimpleNamespace(entry_id='entry1'),
                     )
 
                     info = entity.device_info
                     assert isinstance(info, DeviceInfo)
-                    assert info['via_device'] == ('localtuya', 'local_gw1')
-                    assert info.via_device == ('localtuya', 'local_gw1')
                     assert info.identifiers == {('localtuya', 'local_d1')}
-                    assert ATTR_VIA_DEVICE == 'via_device'
+                    if hasattr(dr, 'async_get_device_id_by_identifier'):
+                        # HA >= 2026.8 (localtuya >= 2026.10.0)
+                        assert info.get('via_device_id') == gateway.id
+                        assert info.get('via_device') is None
+                    else:
+                        # HA < 2026.8 (localtuya <= 2026.7.0)
+                        assert info['via_device'] == ('localtuya', 'local_gw1')
+                        assert info.via_device == ('localtuya', 'local_gw1')
+                        assert ATTR_VIA_DEVICE == 'via_device'
                 finally:
                     patcher.unpatch()
         finally:

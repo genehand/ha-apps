@@ -133,7 +133,13 @@ class DeviceInfo:
 
 @dataclass
 class DeviceEntry:
-    """Device entry stub."""
+    """Device entry stub.
+
+    Mirrors HA's ``DeviceEntry``. Since HA 2026.8 a device belongs to exactly
+    one config entry, exposed as :attr:`config_entry_id`; the legacy
+    ``config_entries`` set stays for older integrations (upstream keeps it as a
+    deprecated compatibility property).
+    """
 
     id: str
     config_entries: set
@@ -141,74 +147,126 @@ class DeviceEntry:
     identifiers: set
     manufacturer: Optional[str] = None
     model: Optional[str] = None
+    model_id: Optional[str] = None
     name: Optional[str] = None
     name_by_user: Optional[str] = None
     sw_version: Optional[str] = None
     hw_version: Optional[str] = None
+    serial_number: Optional[str] = None
     entry_type: Optional[str] = None
     via_device: Optional[tuple] = None
     via_device_id: Optional[str] = None
     configuration_url: Optional[str] = None
     suggested_area: Optional[str] = None
+    config_subentry_id: Optional[str] = None
+    disabled_by: Optional[str] = None
+
+    @property
+    def config_entry_id(self) -> Optional[str]:
+        """Return the single owning config entry (HA >= 2026.8).
+
+        ``None`` when no config entry owns the device (the shim never writes
+        such entries itself, but nothing enforces it here).
+        """
+        return next(iter(self.config_entries), None)
+
+    @property
+    def disabled(self) -> bool:
+        """Return whether the device is disabled (HA ``BaseDeviceEntry``)."""
+        return self.disabled_by is not None
+
+
+def _normalize_connections(connections) -> set:
+    """Normalize connections to ``(type, identifier)`` tuples, like HA.
+
+    Integrations may still pass the legacy ``{"mac:aa:bb:cc:dd:ee:ff"}`` string
+    form. HA normalizes it into a tuple; the shim has to do the same or a
+    device registered once per form ends up as two rows.
+    """
+    normalized = set()
+    for connection in connections or ():
+        if isinstance(connection, str):
+            conn_type, _, identifier = connection.partition(":")
+            normalized.add((conn_type, identifier))
+        else:
+            normalized.add(tuple(connection))
+    return normalized
+
+
+def _normalize_identifiers(identifiers) -> set:
+    """Normalize identifiers to hashable tuples.
+
+    HA's ``DeviceInfo.identifiers`` is a set of ``(domain, identifier)`` tuples,
+    but integrations built against older code sometimes hand over lists, which
+    cannot go into a set.
+    """
+    return {
+        tuple(identifier) if isinstance(identifier, list) else identifier
+        for identifier in identifiers or ()
+    }
 
 
 class DeviceRegistry:
-    """Device registry stub."""
+    """Device registry stub.
+
+    Creates and updates ``DeviceEntry`` rows from ``entity.device_info`` the way
+    HA's entity platform does (see ``shim.entity.register_entity_device``).
+    Integrations may rely on a device existing as soon as one of its entities is
+    added: localtuya >= 2026.10.0 resolves a sub-device's ``via_device_id``
+    through ``async_get_device_id_by_identifier``, which raises when the gateway
+    device has no row yet.
+
+    Deviations from upstream, all deliberate:
+
+    * ``config_entry_id`` is not validated against a real config entry (the
+      registry is usable standalone, e.g. from tests).
+    * Unknown keyword arguments are logged at debug level and ignored instead of
+      raising ``TypeError`` - integrations ship ``DeviceInfo`` subclasses with
+      extra keys, and aborting a whole platform setup over one is worse than
+      dropping it.
+    * A new device is not named after its config entry title, so MQTT discovery
+      payloads do not gain a ``name`` they never had before.
+    """
 
     def __init__(self, hass):
         self.hass = hass
-        self._devices = {}
+        self._devices: dict = {}
+        # Device ids registered during the current setup of each config entry,
+        # so an unload can forget them (HA's ``_live_device_ids``).
+        self._live_device_ids: dict = {}
 
-    def async_get_or_create(
-        self,
-        *,
-        config_entry_id=None,
-        configuration_url=None,
-        connections=None,
-        default_manufacturer=None,
-        default_model=None,
-        default_name=None,
-        identifiers=None,
-        manufacturer=None,
-        model=None,
-        name=None,
-        suggested_area=None,
-        sw_version=None,
-        hw_version=None,
-        entry_type=None,
-        via_device=None,
-        via_device_id=None,
-        **kwargs,
-    ):
-        """Get or create a device entry."""
-        device_id = None
-        if identifiers:
-            device_id = "_".join(str(i) for i in next(iter(identifiers)))
-        if not device_id:
-            device_id = config_entry_id or "mock_device"
-
-        device_entry = DeviceEntry(
-            id=device_id,
-            config_entries={config_entry_id} if config_entry_id else set(),
-            connections=connections or set(),
-            identifiers=identifiers or set(),
-            manufacturer=manufacturer or default_manufacturer,
-            model=model or default_model,
-            name=name or default_name,
-            sw_version=sw_version,
-            hw_version=hw_version,
-            entry_type=entry_type,
-            via_device=via_device,
-            via_device_id=via_device_id,
-            configuration_url=configuration_url,
-            suggested_area=suggested_area,
-        )
-        self._devices[device_id] = device_entry
-        return device_entry
+    # ------------------------------------------------------------------
+    # Lookups
+    # ------------------------------------------------------------------
 
     def async_get(self, device_id):
         """Get a device by id."""
         return self._devices.get(device_id)
+
+    def _get_entry(self, identifiers=None, connections=None, *, config_entry_id=None):
+        """Return the first device matching an identifier or connection.
+
+        Mirrors HA's ``DeviceRegistryItems.get_entry``: a match on *any*
+        identifier (not the whole set) identifies the device, scoped to one
+        config entry when ``config_entry_id`` is given.
+        """
+        want_identifiers = _normalize_identifiers(identifiers)
+        want_connections = _normalize_connections(connections)
+        for device in self._devices.values():
+            if (
+                config_entry_id is not None
+                and config_entry_id not in device.config_entries
+            ):
+                continue
+            if want_identifiers & set(device.identifiers):
+                return device
+            if want_connections & set(device.connections):
+                return device
+        return None
+
+    def async_get_device(self, identifiers=None, connections=None):
+        """Get a device by identifiers or connections (any config entry)."""
+        return self._get_entry(identifiers, connections)
 
     def async_get_device_by_identifier(self, identifier, config_entry_id):
         """Get the device with the identifier, owned by the config entry.
@@ -217,21 +275,186 @@ class DeviceRegistry:
         the lookup cannot be ambiguous. Mirrors HA's
         DeviceRegistry.async_get_device_by_identifier.
         """
-        for device in self._devices.values():
-            if (
-                config_entry_id in device.config_entries
-                and identifier in device.identifiers
-            ):
-                return device
-        return None
+        return self._get_entry({identifier}, config_entry_id=config_entry_id)
 
-    def async_get_or_create_for_config_entry(self, config_entry_id: str):
-        """Get all devices associated with a config entry."""
+    def async_entries_for_config_entry(self, config_entry_id):
+        """Return the devices owned by a config entry."""
         return [
             device
             for device in self._devices.values()
             if config_entry_id in device.config_entries
         ]
+
+    def async_get_or_create_for_config_entry(self, config_entry_id: str):
+        """Get all devices associated with a config entry.
+
+        Shim-only convenience name kept for existing callers; upstream spells it
+        ``async_entries_for_config_entry``.
+        """
+        return self.async_entries_for_config_entry(config_entry_id)
+
+    # ------------------------------------------------------------------
+    # Mutation
+    # ------------------------------------------------------------------
+
+    def async_get_or_create(
+        self,
+        *,
+        config_entry_id=None,
+        config_subentry_id=None,
+        configuration_url=None,
+        connections=None,
+        disabled_by=None,
+        entry_type=None,
+        hw_version=None,
+        identifiers=None,
+        manufacturer=None,
+        model=None,
+        model_id=None,
+        name=None,
+        serial_number=None,
+        suggested_area=None,
+        sw_version=None,
+        translation_key=None,
+        translation_placeholders=None,
+        via_device_id=None,
+        **kwargs,
+    ) -> DeviceEntry:
+        """Get a device, creating or updating it (HA ``async_get_or_create``).
+
+        Matches an existing device by identifier or connection intersection,
+        then merges the identifiers/connections and overwrites only the fields
+        that were actually supplied - an entity that reports nothing but
+        identifiers must not wipe what another entity of the same device filled
+        in. ``default_*`` values only fill gaps, and only on creation, like HA.
+        """
+        # Deprecated upstream, still emitted by integrations: ``via_device`` is
+        # a (domain, identifier) tuple resolved to ``via_device_id`` below.
+        default_manufacturer = kwargs.pop("default_manufacturer", None)
+        default_model = kwargs.pop("default_model", None)
+        default_name = kwargs.pop("default_name", None)
+        via_device = kwargs.pop("via_device", None)
+        kwargs.pop("created_at", None)
+        kwargs.pop("modified_at", None)
+        if kwargs:
+            _LOGGER.debug(
+                "device_registry.async_get_or_create() ignoring unknown keys %s "
+                "(identifiers=%s)",
+                sorted(kwargs),
+                identifiers,
+            )
+
+        identifiers = _normalize_identifiers(identifiers)
+        connections = _normalize_connections(connections)
+
+        device = self._get_entry(
+            identifiers, connections, config_entry_id=config_entry_id
+        )
+        created = device is None
+        if created:
+            device = DeviceEntry(
+                id=self._derive_device_id(
+                    identifiers, connections, config_entry_id, name or default_name
+                ),
+                config_entries=set(),
+                connections=set(),
+                identifiers=set(),
+                disabled_by=disabled_by,
+            )
+            self._devices[device.id] = device
+            if isinstance(via_device, (tuple, list)):
+                device.via_device = tuple(via_device)
+
+        if config_entry_id:
+            device.config_entries.add(config_entry_id)
+        if config_subentry_id is not None:
+            device.config_subentry_id = config_subentry_id
+
+        device.identifiers |= identifiers
+        device.connections |= connections
+
+        if name is not None:
+            device.name = name
+        elif default_name is not None and device.name is None:
+            device.name = default_name
+        if manufacturer is not None:
+            device.manufacturer = manufacturer
+        elif default_manufacturer is not None and device.manufacturer is None:
+            device.manufacturer = default_manufacturer
+        if model is not None:
+            device.model = model
+        elif default_model is not None and device.model is None:
+            device.model = default_model
+
+        for attr, value in (
+            ("model_id", model_id),
+            ("serial_number", serial_number),
+            ("sw_version", sw_version),
+            ("hw_version", hw_version),
+            ("configuration_url", configuration_url),
+            ("suggested_area", suggested_area),
+            ("entry_type", entry_type),
+        ):
+            if value is not None:
+                setattr(device, attr, value)
+
+        if via_device_id is not None:
+            device.via_device_id = via_device_id
+        elif isinstance(via_device, (tuple, list)):
+            self._resolve_via_device(
+                device, tuple(via_device), config_entry_id=config_entry_id
+            )
+
+        if config_entry_id:
+            self._live_device_ids.setdefault(config_entry_id, set()).add(device.id)
+        return device
+
+    def _resolve_via_device(self, device, via_device, *, config_entry_id=None):
+        """Resolve a deprecated ``via_device`` identifier tuple to a device id.
+
+        Prefers a parent in the same config entry, then any config entry, like
+        HA. An unresolvable (or self-referencing) parent is kept as the raw
+        tuple and leaves ``via_device_id`` unset, matching HA's lenient
+        behaviour for the deprecated parameter.
+        """
+        parent = self._get_entry({via_device}, config_entry_id=config_entry_id)
+        if parent is None:
+            parent = self._get_entry({via_device})
+        if parent is None or parent.id == device.id:
+            _LOGGER.debug(
+                "device %s: via_device %s not resolvable to another device",
+                device.id,
+                via_device,
+            )
+            return None
+        device.via_device = via_device
+        device.via_device_id = parent.id
+        return parent.id
+
+    def _derive_device_id(
+        self, identifiers, connections, config_entry_id, fallback_name
+    ) -> str:
+        """Build a stable device id and keep it unique in the registry.
+
+        HA uses an opaque uuid; the shim derives a readable id from the first
+        sorted identifier so ids look like ``domain_identifier``. Sorted (not
+        set order) so the same device gets the same id on every start.
+        """
+        keys = sorted(identifiers) if identifiers else sorted(connections)
+        if keys:
+            # Sorted tuples are comparable as long as each element is a str.
+            base = "_".join(str(part) for part in keys[0])
+        else:
+            base = "_".join(
+                str(part)
+                for part in (config_entry_id or "shack", fallback_name or "device")
+            )
+        device_id = base
+        suffix = 2
+        while device_id in self._devices:
+            device_id = f"{base}_{suffix}"
+            suffix += 1
+        return device_id
 
     def async_update_device(
         self,
@@ -269,6 +492,10 @@ class DeviceRegistry:
             device.via_device_id = via_device_id
         if remove_config_entry_id is not None:
             device.config_entries.discard(remove_config_entry_id)
+        if new_identifiers is not None:
+            device.identifiers = set(new_identifiers)
+        if merge_identifiers is not None:
+            device.identifiers |= set(merge_identifiers)
 
         if name_updated and self.hass:
             try:
@@ -277,6 +504,27 @@ class DeviceRegistry:
                 pass
 
         return device
+
+    def async_config_entry_unloaded(self, config_entry_id: str) -> None:
+        """Forget the live devices of a config entry that unloaded.
+
+        HA parity (``ConfigEntry._async_process_on_unload``): devices survive an
+        unload - they are only removed when the entry itself is removed - so this
+        only forgets which rows the last setup generation created.
+        """
+        self._live_device_ids.pop(config_entry_id, None)
+
+    def async_clear_config_entry(self, config_entry_id: str, domain=None) -> None:
+        """Remove every device owned by a config entry (HA parity)."""
+        self._live_device_ids.pop(config_entry_id, None)
+        for device_id, device in list(self._devices.items()):
+            if config_entry_id in device.config_entries:
+                del self._devices[device_id]
+                _LOGGER.debug(
+                    "Removed device %s after config entry %s was removed",
+                    device_id,
+                    config_entry_id,
+                )
 
     async def _republish_device_discovery(self, device):
         """Republish MQTT discovery for all entities of a device."""
@@ -583,8 +831,24 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     device_registry.EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
     device_registry.async_get = _get_device_registry
     device_registry.format_mac = lambda x: x
-    device_registry.async_entries_for_config_entry = lambda *args, **kwargs: []
-    device_registry.async_get_device = lambda *args, **kwargs: None
+
+    def async_entries_for_config_entry(registry, config_entry_id):
+        """Return the devices owned by a config entry.
+
+        Mirrors HA's module-level
+        ``device_registry.async_entries_for_config_entry(registry, entry_id)``,
+        which takes the registry, not ``hass``.
+        """
+        if registry is None:
+            registry = _get_device_registry(None)
+        return registry.async_entries_for_config_entry(config_entry_id)
+
+    def async_get_device(hass, identifiers=None, connections=None):
+        """Return the device matching any of the identifiers/connections."""
+        return _get_device_registry(hass).async_get_device(identifiers, connections)
+
+    device_registry.async_entries_for_config_entry = async_entries_for_config_entry
+    device_registry.async_get_device = async_get_device
 
     def async_get_device_id_by_identifier(hass, identifier, *, config_entry_id):
         """Get the id of the device with the identifier, owned by the config entry.

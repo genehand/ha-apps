@@ -972,10 +972,12 @@ class ShimManager:
         # This allows config flows to work for disabled integrations
         all_integrations = self._integration_manager.get_all_integrations()
         _LOGGER.info(
-            f"Installing requirements for {len(all_integrations)} integrations"
+            f"Checking requirements for {len(all_integrations)} integrations"
         )
         for info in all_integrations:
-            _LOGGER.info(f"Installing requirements for {info.domain}")
+            # Runs for every integration on every start; install_requirements()
+            # skips anything already satisfied, so log per integration at debug.
+            _LOGGER.debug(f"Checking requirements for {info.domain}")
             requirements_success = await self._integration_manager.install_requirements(
                 info.domain
             )

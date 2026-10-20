@@ -40,6 +40,8 @@ shim/
 
 > OAuth2 and Application Credentials details → [`oauth.md`](docs/oauth.md)
 > Integration Reload Buttons → [`integration-reloads.md`](docs/integration-reloads.md)
+> Integration Requirements (runtime `pip install`) → [`integration-requirements.md`](docs/integration-requirements.md)
+> Device Registry (entities → `DeviceEntry`) → [`device-registry.md`](docs/device-registry.md)
 > State Restoration (RestoreEntity) → [`state-restore.md`](docs/state-restore.md)
 > Blocking Call Detection (warn-only) → [`blocking-calls.md`](docs/blocking-calls.md)
 > Entity Enable/Disable & Polling Control → [`entity-enable-disable.md`](docs/entity-enable-disable.md)
@@ -96,7 +98,10 @@ One lingering hole: an integration whose manifest lists `voluptuous` in
 `requirements` will get it `uv pip install`ed back into the venv by
 `IntegrationManager.install_requirements()` (`shim/integrations/manager.py`). It is
 harmless while the alias is in `sys.modules`, but it re-adds the wheel to the image;
-filter core-provided packages there if that becomes a problem.
+filter core-provided packages there if that becomes a problem. See
+[`integration-requirements.md`](docs/integration-requirements.md) for how the
+satisfaction check works (and why it must stay exact — it runs for every
+integration on every start).
 
 Known gaps in probatio's voluptuous surface: `voluptuous.Msgs` is not exported
 (`Required`, `Optional`, `UNDEFINED`, `_compile_scalar`, etc. are).

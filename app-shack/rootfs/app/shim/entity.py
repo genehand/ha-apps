@@ -148,7 +148,7 @@ def get_device_info_attr(device_info: Any, attr: str, default: Any = None) -> An
         return getattr(device_info, attr, default)
 
 
-def build_mqtt_device_config(device_info: Any) -> Dict[str, Any]:
+def build_mqtt_device_config(device_info: Any, hass: Any = None) -> Dict[str, Any]:
     """Build MQTT device configuration dict from device_info.
 
     Only includes non-None values for manufacturer, model, and sw_version
@@ -156,6 +156,9 @@ def build_mqtt_device_config(device_info: Any) -> Dict[str, Any]:
 
     Args:
         device_info: Device info as a dict or DeviceInfo dataclass.
+        hass: Optional HomeAssistant instance. When given, the registry lookup
+            uses that instance's device registry; without it the shim falls back
+            to the process-global registry (fine for a single instance).
 
     Returns:
         Device configuration dict for MQTT discovery.
@@ -177,7 +180,7 @@ def build_mqtt_device_config(device_info: Any) -> Dict[str, Any]:
             from homeassistant.helpers import device_registry as dr
 
             # Get the registry - works with or without hass
-            registry = dr.async_get(None)
+            registry = dr.async_get(hass)
             if registry and hasattr(registry, "_devices"):
                 # Look for matching device in registry
                 for device_id, device in registry._devices.items():
@@ -219,6 +222,117 @@ def build_mqtt_device_config(device_info: Any) -> Dict[str, Any]:
         config["sw_version"] = sw_version
 
     return config
+
+
+def build_entity_mqtt_device_config(entity: Any) -> Dict[str, Any]:
+    """Build the MQTT discovery ``device`` block for an entity.
+
+    Convenience wrapper around :func:`build_mqtt_device_config` that reads the
+    entity's ``device_info`` and passes its ``hass`` (so the registry fallback
+    uses the right device registry instead of the process-global one).
+    """
+    return build_mqtt_device_config(
+        getattr(entity, "device_info", None), getattr(entity, "hass", None)
+    )
+
+
+def register_entity_device(
+    hass: Any, entity: Any, config_entry_id: Optional[str] = None
+) -> Any:
+    """Create/update the ``DeviceEntry`` for an entity, like HA's entity platform.
+
+    HA registers the device from ``entity.device_info`` while adding the entity
+    (``EntityPlatform._async_get_entity_device``), before
+    ``async_added_to_hass``. The shim used to skip that step entirely, so the
+    registry stayed empty; that breaks localtuya >= 2026.10.0, whose sub-device
+    ``device_info`` resolves ``via_device_id`` through
+    ``dr.async_get_device_id_by_identifier()``, which raises when the gateway
+    device has no row.
+
+    Must run *before* ``async_added_to_hass`` (integrations read the registry
+    from there) and must be idempotent (entities are re-added on every reload).
+
+    Args:
+        hass: The HomeAssistant instance.
+        entity: The entity being added.
+        config_entry_id: Owning config entry id; falls back to the value the
+            platform stamped on the entity, then to ``"shack"``.
+
+    Returns:
+        The ``DeviceEntry``, or None when the entity has no usable device info.
+    """
+    if config_entry_id is None:
+        config_entry_id = getattr(entity, "_attr_config_entry_id", None)
+    config_entry_id = config_entry_id or "shack"
+
+    # ``device_info`` is a property on integration entities and may raise (that
+    # is the failure mode this helper exists to prevent going forward). One bad
+    # entity must not abort the whole platform setup, so log loudly and go on.
+    try:
+        device_info = getattr(entity, "device_info", None)
+    except Exception as err:
+        _LOGGER.error(
+            "Could not read device_info for %s (%s): %s",
+            getattr(entity, "entity_id", None) or type(entity).__name__,
+            type(entity).__name__,
+            err,
+        )
+        return None
+
+    if not device_info:
+        return None
+
+    try:
+        if hasattr(device_info, "as_dict"):
+            fields = dict(device_info.as_dict())
+        else:
+            fields = dict(device_info)
+    except Exception as err:
+        _LOGGER.error(
+            "Could not build device fields for %s: %s",
+            getattr(entity, "entity_id", None) or type(entity).__name__,
+            err,
+        )
+        return None
+
+    # No child-device support in the shim: ``parent_device_id`` only applies to
+    # HA's ``async_get_or_create_child``. An explicit None means "main device".
+    if fields.pop("parent_device_id", None) is not None:
+        _LOGGER.debug(
+            "Ignoring parent_device_id for %s (child devices are not supported)",
+            getattr(entity, "entity_id", None),
+        )
+
+    if not fields.get("identifiers") and not fields.get("connections"):
+        _LOGGER.debug(
+            "Not registering a device for %s: device_info has no identifiers "
+            "or connections",
+            getattr(entity, "entity_id", None),
+        )
+        return None
+
+    try:
+        from homeassistant.helpers import device_registry as dr
+
+        device = dr.async_get(hass).async_get_or_create(
+            config_entry_id=config_entry_id, **fields
+        )
+    except Exception as err:
+        # Loud, but not fatal: losing a device row is better than losing every
+        # entity of the platform.
+        _LOGGER.error(
+            "Failed to register device for %s: %s",
+            getattr(entity, "entity_id", None) or type(entity).__name__,
+            err,
+        )
+        return None
+
+    # HA sets ``entity.device_entry`` so integrations can read the registry row.
+    try:
+        entity.device_entry = device
+    except Exception:
+        pass
+    return device
 
 
 def get_entity_name_for_discovery(
@@ -297,6 +411,7 @@ class RegistryEntry:
         config_entry_id: str,
         disabled: bool = False,
         disabled_by: Optional[str] = None,
+        device_id: Optional[str] = None,
     ):
         self.entity_id = entity_id
         self.unique_id = unique_id
@@ -306,6 +421,9 @@ class RegistryEntry:
         # "integration"/"user" means disabled. When only ``disabled`` is given
         # we derive it for backwards compatibility.
         self.disabled_by = disabled_by or ("integration" if disabled else None)
+        # Device registry entry id this entity belongs to (HA ``RegistryEntry``
+        # attribute). Set once the entity's device row exists.
+        self.device_id = device_id
 
 
 class EntityRegistry:
@@ -374,11 +492,13 @@ class EntityRegistry:
         # Track by config entry ID if available
         config_entry_id = getattr(entity, "_attr_config_entry_id", None)
         if config_entry_id:
+            device_entry = getattr(entity, "device_entry", None)
             entry = RegistryEntry(
                 entity_id=entity.entity_id,
                 unique_id=getattr(entity, "unique_id", entity.entity_id),
                 config_entry_id=config_entry_id,
                 disabled=not getattr(entity, "entity_registry_enabled_default", True),
+                device_id=getattr(device_entry, "id", None),
             )
             # Apply any persisted UI/MQTT override so the enabled state survives
             # app-shack restarts. A stored ``disabled_by=None`` force-enables a
@@ -576,6 +696,19 @@ class Entity:
     def device_info(self) -> Optional[Dict[str, Any]]:
         """Return device information about this entity."""
         return self._attr_device_info
+
+    @property
+    def device_entry(self) -> Optional[Any]:
+        """Return the device registry entry this entity belongs to.
+
+        Set by ``register_entity_device`` when the entity is added, mirroring
+        HA's ``Entity.device_entry``.
+        """
+        return getattr(self, "_device_entry", None)
+
+    @device_entry.setter
+    def device_entry(self, value: Optional[Any]) -> None:
+        self._device_entry = value
 
     @property
     def integration_domain(self) -> Optional[str]:
@@ -879,7 +1012,7 @@ class Entity:
         }
 
         if self.device_info:
-            config["device"] = build_mqtt_device_config(self.device_info)
+            config["device"] = build_entity_mqtt_device_config(self)
 
         if self.device_class:
             config["device_class"] = self.device_class
@@ -1171,13 +1304,29 @@ class Entity:
         return not entry.disabled
 
     async def add_to_platform_finish(self) -> None:
-        """Finish adding an entity to a platform."""
+        """Finish adding an entity to a platform.
+
+        NOTE: this is not the live entity-add path. Entities reach the shim
+        through ``ConfigEntries.async_forward_entry_setups``
+        (``shim/registries.py::_do_add``) and, for shim-owned entities, through
+        ``IntegrationLoader._register_internal_entity``. Both of those call
+        ``register_entity_device`` + ``async_added_to_hass`` themselves; this
+        method exists for integrations that call it directly and is kept in
+        sync with those paths (device registration included) so the two cannot
+        silently diverge again.
+        """
         # Check if entity is disabled by default
         if not self.entity_registry_enabled_default:
             _LOGGER.debug(f"Skipping disabled entity {self.entity_id}")
             return
 
         self._added = True
+
+        # Register the device before async_added_to_hass (HA parity): the
+        # integration may read the device registry from there.
+        device = register_entity_device(
+            self.hass, self, getattr(self, "_attr_config_entry_id", None)
+        )
 
         # Register with entity registry
         registry = EntityRegistry()
@@ -1191,9 +1340,7 @@ class Entity:
                 entity_id=self.entity_id,
                 unique_id=self.unique_id,
                 platform=self.platform.platform_name if self.platform else None,
-                device_id=self.device_info.get("identifiers", [[None]])[0][1]
-                if self.device_info
-                else None,
+                device_id=device.id if device is not None else None,
             )
 
         await self.async_added_to_hass()

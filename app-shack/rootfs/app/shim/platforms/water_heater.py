@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 from ..entity import (
     Entity,
     EntityDescription,
-    build_mqtt_device_config,
+    build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
 )
@@ -145,7 +145,7 @@ class WaterHeaterEntity(Entity):
     async def _publish_mqtt_discovery(self) -> None:
         """Publish water heater state to MQTT."""
         from ..entity import (
-            build_mqtt_device_config,
+            build_entity_mqtt_device_config,
             get_entity_name_for_discovery,
             get_mqtt_safe_unique_id,
         )
@@ -176,7 +176,7 @@ class WaterHeaterEntity(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_mqtt_device_config(self.device_info)
+            config["device"] = build_entity_mqtt_device_config(self)
 
         if self.min_temp:
             config["min_temp"] = self.min_temp
