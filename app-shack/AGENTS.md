@@ -123,6 +123,13 @@ When adding support for new Home Assistant modules:
 - Include all constants and enums that integrations might import
 - Use `FrozenOrThawed` metaclass for EntityDescription classes
 - Reference `shim/stubs/util.py` for percentage functions as an example of exact HA compatibility
+- **Import third-party packages lazily, never at stub-creation time.** Stubs are built
+  during import patching, before `IntegrationManager.install_requirements()` installs
+  an integration's manifest requirements into `/data/.venv`, so a package can legitimately
+  be missing on the first boot after a venv rebuild. Follow the pattern in
+  `stubs/components.py` (`_load_zeroconf_classes`) — resolve on first use, cache only
+  successful resolutions, and expose classes to integrations through a module-level
+  `__getattr__` so they appear without a restart.
 
 ## Working Directory
 

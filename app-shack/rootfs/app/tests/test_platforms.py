@@ -2014,6 +2014,52 @@ class TestZeroconfStub:
         result = await mod.async_get_instance(_FakeHass())
         assert result is not None
 
+    @pytest.mark.asyncio
+    async def test_stub_recovers_when_zeroconf_installed_later(self, monkeypatch):
+        """First boot after a /data/.venv rebuild: the package lands after
+        import patching (IntegrationManager.install_requirements) and the stub
+        must pick it up without a restart instead of staying disabled."""
+        from shim.stubs import components as components_stub
+
+        mod = self._get_zeroconf_module()
+        real_zeroconf = sys.modules.get("zeroconf") or __import__("zeroconf")
+
+        # Fresh resolution cache + a zeroconf that is not importable yet.
+        monkeypatch.setattr(components_stub, "_ZEROCONF_CLASSES", {})
+        monkeypatch.setitem(sys.modules, "zeroconf", None)
+
+        hass = _FakeHass()
+        assert mod.HaZeroconf is None
+        assert await mod.async_get_instance(hass) is None
+        # Degraded mode must not poison the per-hass cache.
+        assert "zeroconf" not in hass.data
+
+        # An integration's requirements finished installing zeroconf.
+        sys.modules["zeroconf"] = real_zeroconf
+        monkeypatch.setattr(components_stub, "_ZEROCONF_CLASSES", {})
+
+        instance = await mod.async_get_instance(hass)
+        assert isinstance(instance, mod.HaZeroconf)
+        assert hass.data.get("zeroconf") is instance
+
+    def test_failed_zeroconf_import_is_not_cached(self, monkeypatch):
+        """A failed import must be retried, not memoised as "disabled"."""
+        from shim.stubs import components as components_stub
+
+        real_zeroconf = sys.modules.get("zeroconf") or __import__("zeroconf")
+        monkeypatch.setattr(components_stub, "_ZEROCONF_CLASSES", {})
+        monkeypatch.setitem(sys.modules, "zeroconf", None)
+
+        assert components_stub._load_zeroconf_classes() is None
+        assert components_stub._ZEROCONF_CLASSES.get("classes") is None
+
+        sys.modules["zeroconf"] = real_zeroconf
+        classes = components_stub._load_zeroconf_classes()
+        assert classes is not None
+        assert issubclass(classes["HaZeroconf"], classes["Zeroconf"])
+        # Successful resolution is cached (no per-call class churn).
+        assert components_stub._load_zeroconf_classes() is classes
+
 
 class TestSelectorUpdates:
     """Tests for selector compatibility updates after d5e7323."""

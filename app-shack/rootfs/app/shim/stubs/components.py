@@ -7,6 +7,7 @@ zeroconf, cloud, webhook, mqtt, image, number, scene, and various const modules.
 import sys
 import types
 from enum import Enum
+from typing import Any, Dict, Optional
 
 import voluptuous as vol
 
@@ -292,6 +293,84 @@ def create_components_stubs(hass, homeassistant, platforms):
     return homeassistant
 
 
+# Zeroconf classes resolved on first use rather than at stub-creation time.
+#
+# ``zeroconf`` is a declared dependency, but a fresh ``/data/.venv`` (e.g. after a
+# base-image Python bump) does not necessarily have it yet when the import patch
+# runs: the ``run`` script syncs base packages first, while the requirements an
+# integration declares in its manifest are installed by
+# ``IntegrationManager.install_requirements()`` *after* patching. Caching the
+# failed import would leave ``async_get_instance()`` permanently returning None
+# until a restart (the old "zeroconf stub disabled" first-boot warning), so the
+# import is retried and only successful resolutions are cached.
+_ZEROCONF_CLASSES: Dict[str, Any] = {}
+
+_ZEROCONF_EXPORTED = ("Zeroconf", "AsyncZeroconf", "HaZeroconf", "HaAsyncZeroconf")
+
+
+def _load_zeroconf_classes() -> Optional[Dict[str, Any]]:
+    """Import zeroconf and derive HA's un-closable subclasses (cached).
+
+    Returns None while the package is not importable; a failure is not cached,
+    so a later install is picked up by the next call.
+    """
+    classes = _ZEROCONF_CLASSES.get("classes")
+    if classes is not None:
+        return classes
+
+    try:
+        from zeroconf import Zeroconf as _Zeroconf
+        from zeroconf.asyncio import AsyncZeroconf as _AsyncZeroconf
+    except ImportError:
+        if not _ZEROCONF_CLASSES.get("warned"):
+            _ZEROCONF_CLASSES["warned"] = True
+            _LOGGER.warning(
+                "zeroconf package not available; zeroconf stub disabled until "
+                "it is installed (will retry on next use)"
+            )
+        return None
+
+    class _HaZeroconf(_Zeroconf):
+        """Zeroconf that cannot be closed (mirrors HA's HaZeroconf)."""
+
+        def close(self) -> None:
+            """No-op: integrations must not close the shared instance."""
+
+        ha_close = _Zeroconf.close
+
+    class _HaAsyncZeroconf(_AsyncZeroconf):
+        """Home Assistant version of AsyncZeroconf (async_close is no-op)."""
+
+        async def async_close(self) -> None:
+            """No-op: integrations must not close the shared instance."""
+
+        ha_async_close = _AsyncZeroconf.async_close
+
+    classes = {
+        "Zeroconf": _Zeroconf,
+        "AsyncZeroconf": _AsyncZeroconf,
+        "HaZeroconf": _HaZeroconf,
+        "HaAsyncZeroconf": _HaAsyncZeroconf,
+    }
+    _ZEROCONF_CLASSES["classes"] = classes
+    return classes
+
+
+def _zeroconf_stub_getattr(name: str):
+    """Resolve the Zeroconf classes lazily (stub module ``__getattr__``).
+
+    Keeps the pre-lazy behaviour of exposing None while the package is missing.
+    """
+    if name in _ZEROCONF_EXPORTED:
+        classes = _load_zeroconf_classes()
+        if classes is None:
+            return None
+        return classes[name]
+    raise AttributeError(
+        f"module 'homeassistant.components.zeroconf' has no attribute {name!r}"
+    )
+
+
 def create_additional_stubs(hass, homeassistant):
     """Create additional stub modules for HA dependencies."""
 
@@ -299,64 +378,35 @@ def create_additional_stubs(hass, homeassistant):
     # Mirror HA's homeassistant.components.zeroconf package: async_get_instance
     # returns a shared HaZeroconf (a Zeroconf subclass whose close() is a no-op
     # so integrations cannot kill the singleton). Cached at hass.data[DOMAIN].
-    try:
-        from zeroconf import Zeroconf as _Zeroconf
-        from zeroconf.asyncio import AsyncZeroconf as _AsyncZeroconf
-    except ImportError:  # pragma: no cover - zeroconf is a hard dep
-        _LOGGER.warning("zeroconf package not available; zeroconf stub disabled")
-        _Zeroconf = None
-        _AsyncZeroconf = None
+    async def _async_get_zeroconf_instance(hass=None):
+        """Get or create the shared HaZeroconf instance.
 
-    if _Zeroconf is not None:
-
-        class _HaZeroconf(_Zeroconf):
-            """Zeroconf that cannot be closed (mirrors HA's HaZeroconf)."""
-
-            def close(self) -> None:
-                """No-op: integrations must not close the shared instance."""
-
-            ha_close = _Zeroconf.close
-
-        class _HaAsyncZeroconf(_AsyncZeroconf):
-            """Home Assistant version of AsyncZeroconf (async_close is no-op)."""
-
-            async def async_close(self) -> None:
-                """No-op: integrations must not close the shared instance."""
-
-            ha_async_close = _AsyncZeroconf.async_close
-
-        async def _async_get_zeroconf_instance(hass=None):
-            """Get or create the shared HaZeroconf instance.
-
-            Cached at hass.data["zeroconf"] when a hass object is supplied,
-            mirroring HA's _async_get_instance caching behavior. Returns a
-            fresh instance per call when called without hass.
-            """
-            if hass is not None:
-                data = getattr(hass, "data", None)
-                if data is not None:
-                    cached = data.get("zeroconf")
-                    if cached is not None:
-                        return cached
-                    instance = _HaZeroconf()
-                    data["zeroconf"] = instance
-                    return instance
-            return _HaZeroconf()
-
-    else:  # pragma: no cover - zeroconf package is expected present
-
-        async def _async_get_zeroconf_instance(hass=None):
+        Cached at hass.data["zeroconf"] when a hass object is supplied,
+        mirroring HA's _async_get_instance caching behavior. Returns a fresh
+        instance per call when called without hass, and None while the zeroconf
+        package is not importable.
+        """
+        classes = _load_zeroconf_classes()
+        if classes is None:
             return None
-
-        _HaZeroconf = None
-        _HaAsyncZeroconf = None
+        ha_zeroconf = classes["HaZeroconf"]
+        if hass is not None:
+            data = getattr(hass, "data", None)
+            if data is not None:
+                cached = data.get("zeroconf")
+                if cached is not None:
+                    return cached
+                instance = ha_zeroconf()
+                data["zeroconf"] = instance
+                return instance
+        return ha_zeroconf()
 
     zeroconf_stub = types.ModuleType("homeassistant.components.zeroconf")
     zeroconf_stub.DOMAIN = "zeroconf"
-    zeroconf_stub.Zeroconf = _Zeroconf
-    zeroconf_stub.HaZeroconf = _HaZeroconf
-    zeroconf_stub.HaAsyncZeroconf = _HaAsyncZeroconf
     zeroconf_stub.async_get_instance = _async_get_zeroconf_instance
+    # Zeroconf/HaZeroconf/HaAsyncZeroconf come from __getattr__ so they appear as
+    # soon as the package becomes importable, without another restart.
+    zeroconf_stub.__getattr__ = _zeroconf_stub_getattr
     homeassistant.components.zeroconf = zeroconf_stub
     sys.modules["homeassistant.components.zeroconf"] = zeroconf_stub
 
