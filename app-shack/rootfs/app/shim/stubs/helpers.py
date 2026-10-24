@@ -19,6 +19,7 @@ from typing import Any, ClassVar, Never, Optional
 import aiohttp
 import voluptuous as vol
 
+from ..http import github_session
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
@@ -760,20 +761,29 @@ _client_session_cache = {}
 _created_sessions = []
 
 
-def _async_get_clientsession(hass, verify_ssl=True):
-    """Get aiohttp ClientSession with caching."""
+def _async_get_clientsession(hass, verify_ssl=True, **kwargs):
+    """Get aiohttp ClientSession with caching.
+
+    Extra ``kwargs`` are forwarded to :class:`aiohttp.ClientSession`, so an
+    integration may raise the HTTP parser limits itself (HACS does this for
+    GitHub downloads via a per-request ``max_field_size``).
+    """
     key = (id(hass), verify_ssl)
+    if kwargs:
+        # Extra kwargs change the session's behaviour, so don't hand back a
+        # cached session built with different settings.
+        key += (repr(sorted(kwargs.items(), key=lambda kv: kv[0])),)
     if key not in _client_session_cache:
         connector = aiohttp.TCPConnector(ssl=verify_ssl)
-        session = aiohttp.ClientSession(connector=connector)
+        session = github_session(connector=connector, **kwargs)
         _client_session_cache[key] = session
     return _client_session_cache[key]
 
 
-def _async_create_clientsession(hass, verify_ssl=True):
+def _async_create_clientsession(hass, verify_ssl=True, **kwargs):
     """Create a new aiohttp ClientSession."""
     connector = aiohttp.TCPConnector(ssl=verify_ssl)
-    session = aiohttp.ClientSession(connector=connector)
+    session = github_session(connector=connector, **kwargs)
     _created_sessions.append(session)
     return session
 

@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 
 import aiohttp
 
+from ..http import github_session
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
@@ -156,18 +157,23 @@ class GitHubAuth:
         """
         # Cancel any in-flight flow first
         self.cancel_activation()
-        if self._device_api is not None:
-            try:
-                await self._device_api.close_session()
-            except Exception as e:
-                _LOGGER.debug(f"Error closing previous device session: {e}")
-            self._device_api = None
+        await self._close_device_api()
 
         # Lazy import so the shim can run without aiogithubapi at import time
         from aiogithubapi import GitHubDeviceAPI
 
-        self._device_api = GitHubDeviceAPI(client_id=self._client_id)
-        response = await self._device_api.register()
+        # github.com/login/device/code answers with GitHub's ~9.2 KiB CSP
+        # header, which aiohttp's default 8190-byte field limit rejects. Pass
+        # an explicitly-limit-raised session: aiogithubapi builds a bare
+        # `aiohttp.ClientSession()` when none is supplied.
+        api = GitHubDeviceAPI(client_id=self._client_id, session=github_session())
+        self._device_api = api
+        try:
+            response = await api.register()
+        except Exception:
+            # Don't leak the session when registration fails (e.g. offline).
+            await self._close_device_api(api)
+            raise
         data = response.data
         self._registration = {
             "device_code": data.device_code,
@@ -178,17 +184,17 @@ class GitHubAuth:
         }
         self._activation_result = None
         self._activation_task = asyncio.create_task(
-            self._wait_for_activation(data.device_code)
+            self._wait_for_activation(data.device_code, api)
         )
         _LOGGER.info(
             "Started GitHub device flow (user_code=%s)", data.user_code
         )
         return self._registration
 
-    async def _wait_for_activation(self, device_code: str) -> None:
+    async def _wait_for_activation(self, device_code: str, api: Any) -> None:
         """Poll GitHub until the user confirms the device code."""
         try:
-            response = await self._device_api.activation(device_code=device_code)
+            response = await api.activation(device_code=device_code)
             token = response.data.access_token
             # Wrap sync file I/O in to_thread to avoid blocking the event loop
             await asyncio.to_thread(self._save_token, token)
@@ -200,13 +206,32 @@ class GitHubAuth:
             self._activation_result = {"status": "error", "error": str(e)}
             _LOGGER.warning(f"GitHub device activation failed: {e}")
         finally:
-            # Close the device session; the token is all we need.
-            if self._device_api is not None:
-                try:
-                    await self._device_api.close_session()
-                except Exception as e:
-                    _LOGGER.debug(f"Error closing device session: {e}")
+            # Close the device session; the token is all we need. `api` (not
+            # self._device_api) so a re-registration isn't closed underneath us.
+            await self._close_device_api(api)
+
+    async def _close_device_api(self, api: Optional[Any] = None) -> None:
+        """Close a device-flow API object and the session we injected into it.
+
+        ``aiogithubapi`` only closes sessions it created itself, so the
+        explicitly-passed session is closed here.
+        """
+        if api is None:
+            api = self._device_api
+        if api is None:
+            return
+        if self._device_api is api:
             self._device_api = None
+        try:
+            await api.close_session()
+        except Exception as e:
+            _LOGGER.debug(f"Error closing device API: {e}")
+        session = getattr(api, "_session", None)
+        if session is not None and not getattr(session, "closed", True):
+            try:
+                await session.close()
+            except Exception as e:
+                _LOGGER.debug(f"Error closing device session: {e}")
 
     def get_activation_status(self) -> Dict[str, Any]:
         """Return the status of the current (or last) device flow.
@@ -260,7 +285,7 @@ class GitHubAuth:
         }
         url = GITHUB_RATE_LIMIT_URL
         try:
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 async with session.get(
                     url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:

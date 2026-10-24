@@ -22,6 +22,7 @@ from awesomeversion import AwesomeVersion, AwesomeVersionStrategy
 from awesomeversion.exceptions import AwesomeVersionException
 from packaging.requirements import InvalidRequirement, Requirement
 
+from ..http import github_session
 from ..logging import get_logger
 from ..storage import Storage
 
@@ -596,7 +597,7 @@ class IntegrationManager:
 
         try:
             # Fetch repository info to validate it
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 repo_info = await self._fetch_repo_info(session, repo_url)
 
             if not repo_info:
@@ -708,7 +709,7 @@ class IntegrationManager:
             if self._hacs_etag and not force:
                 headers["If-None-Match"] = self._hacs_etag
 
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 async with session.get(
                     HACS_CDN_URL,
                     headers=headers,
@@ -1298,7 +1299,7 @@ class IntegrationManager:
         api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 status, data = await self._github_api_get(session, api_url, timeout=10)
                 if status == 200 and isinstance(data, dict):
                     return data.get("tag_name", "").lstrip("v")
@@ -1340,7 +1341,7 @@ class IntegrationManager:
         api_url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=30"
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 status, data = await self._github_api_get(session, api_url, timeout=10)
                 if status == 200 and isinstance(data, list):
                     newer_releases = []
@@ -1402,7 +1403,7 @@ class IntegrationManager:
         api_url = f"https://api.github.com/repos/{owner}/{repo}/tags?per_page=100"
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 status, data = await self._github_api_get(session, api_url, timeout=10)
                 if status == 200 and isinstance(data, list):
                     tags = []
@@ -1462,7 +1463,7 @@ class IntegrationManager:
 
         default_branch = None
         try:
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 status, data = await self._github_api_get(session, api_url, timeout=10)
                 if status == 200 and isinstance(data, dict):
                     default_branch = data.get("default_branch")
@@ -1742,7 +1743,7 @@ class IntegrationManager:
 
     async def _fetch_repo_info_custom(self, repo_url: str) -> Optional[dict]:
         """Fetch repo info for custom URL."""
-        async with aiohttp.ClientSession() as session:
+        async with github_session() as session:
             return await self._fetch_repo_info(session, repo_url)
 
     def _build_download_urls(
@@ -1812,7 +1813,7 @@ class IntegrationManager:
 
         last_error = None
         try:
-            async with aiohttp.ClientSession() as session:
+            async with github_session() as session:
                 for download_url in urls_to_try:
                     _LOGGER.debug(f"Trying download URL: {download_url}")
                     async with session.get(

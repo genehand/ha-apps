@@ -325,6 +325,22 @@ async def _async_save(self, data: dict) -> None:
 
 See [`docs/blocking-calls.md`](docs/blocking-calls.md#fixing-blocking-call-warnings) for the full pattern and examples.
 
+### aiohttp sessions that touch `github.com`
+
+GitHub sends a single ~9.2 KiB `Content-Security-Policy` header on every
+`github.com` response (archive downloads, `/login/device/code`, HTML pages).
+aiohttp's parser defaults cap a header field at **8190 bytes**, so the response
+fails with `ClientResponseError: 400, message='Got more than 8190 bytes when
+reading: b"default-src 'none'; ..."'` *before* the redirect to
+`codeload.github.com` is followed. That is what broke integration installs and
+the GitHub device flow (upstream: hacs/integration#5644).
+
+Always build such sessions with `shim.http.github_session()` instead of
+`aiohttp.ClientSession()`; it raises `max_line_size`/`max_field_size` to bounded
+values (16 KiB / 64 KiB) and forwards any kwargs. `homeassistant.helpers
+aiohttp_client` stubs use it too, so integrations that download from GitHub get
+the same limits. Keep the limits bounded — never disable the check.
+
 ## MQTT Topic Naming
 
 MQTT topics used for Home Assistant discovery must follow specific naming conventions:
