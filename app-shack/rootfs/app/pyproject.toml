@@ -1,9 +1,16 @@
 [project]
 name = "app-shack"
-version = "0.16.0"
+version = "0.16.1"
 description = "Home Assistant compatibility layer for running integrations outside of HA"
-requires-python = ">=3.14"
+requires-python = ">=3.14.2"
 dependencies = [
+    # Upstream Home Assistant, used as a library. The modules HA keeps free of
+    # its model layer (const, exceptions, util.*, helpers.typing,
+    # helpers.deprecation, generated.*) are imported verbatim instead of being
+    # reimplemented under shim/. Pin exactly: that surface is internal API and
+    # moves every release, so the version *is* the contract. Bump deliberately
+    # (edit the pin, uv lock, run the suite), never float it.
+    "homeassistant==2026.10.4",
     # HA Shim core dependencies
     "paho-mqtt>=2.1.0",
     "pyyaml>=6.0",
@@ -39,6 +46,10 @@ dev = [
     "FlightRadarAPI==1.4.0",
     "pycountry==24.6.1",
     "httpx>=0.28.1",
+    # tests/test_nest_protect_platform_attr.py imports the integration's
+    # generated protobuf modules, which import google.protobuf at module scope.
+    "protobuf>=5.0",
+    "googleapis-common-protos>=1.76",
 ]
 
 [tool.pytest.ini_options]

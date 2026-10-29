@@ -60,26 +60,26 @@ class TestProbatioIsAvailable:
         assert vol.UNDEFINED is probatio.UNDEFINED
 
 
-class TestVoluptuousIsNotInstalled:
-    """Upstream voluptuous must not be shipped; probatio replaces it.
+class TestVoluptuousShadowing:
+    """Upstream voluptuous now ships transitively; it must stay shadowed.
 
-    Regression: ``voluptuous>=0.14.0`` was a direct dependency until it was
-    dropped. It is dead weight at best (``install_as_voluptuous()`` shadows it
-    in ``sys.modules``) and a mixed-namespace bug at worst, if anything manages
-    to import it before ``shim/__init__.py`` aliases probatio over it.
+    It arrives through Home Assistant's own dependency tree (``annotatedyaml``
+    depends on it), so "no voluptuous wheel in the image" is no longer an
+    achievable invariant. What still matters is that ``import voluptuous``
+    resolves to probatio: probatio's markers and ``UNDEFINED`` sentinel are
+    distinct objects from voluptuous's, so a mixed namespace silently renders
+    every config-flow field as optional.
     """
 
-    def test_voluptuous_distribution_is_not_installed(self):
-        """No distribution should provide the real ``voluptuous`` package."""
-        with pytest.raises(importlib.metadata.PackageNotFoundError):
-            importlib.metadata.version("voluptuous")
-
-    def test_voluptuous_module_comes_from_probatio(self):
-        """The ``voluptuous`` module on disk is probatio's shim, not a wheel."""
+    def test_installed_distribution_is_shadowed(self):
+        """The wheel is present, but importing voluptuous never reaches it."""
         import probatio
         import shim  # noqa: F401  # installs the alias
         import voluptuous
 
+        # The distribution exists (pulled in by Home Assistant's deps) ...
+        assert importlib.metadata.version("voluptuous")
+        # ... and is shadowed in sys.modules by probatio's compat shim.
         probatio_root = Path(probatio.__file__).parent
         assert Path(voluptuous.__file__).is_relative_to(probatio_root)
 

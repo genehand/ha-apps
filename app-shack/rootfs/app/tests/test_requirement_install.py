@@ -18,6 +18,7 @@ string that was installed, and everything outstanding is installed in one
 """
 
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -76,6 +77,64 @@ def _add_info(manager, requirements, domain="test_integration"):
 
 def _install_calls(call_log):
     return [call for call in call_log if "install" in call]
+
+
+@pytest.fixture
+def foreign_venv(monkeypatch, temp_data_dir):
+    """A manager that believes it is running from a venv other than the
+    project ``.venv`` — the addon's ``/data/.venv``, or ``run.sh``'s throwaway
+    venv via ``UV_PROJECT_ENVIRONMENT``."""
+    prefix = Path("/fake-venv")
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(
+        sysconfig,
+        "get_path",
+        lambda name: str(prefix / "lib" / "python3.14" / "site-packages"),
+    )
+    storage = MagicMock()
+    storage.load_integrations.return_value = {}
+    return IntegrationManager(storage, temp_data_dir / "shim"), prefix
+
+
+def test_venv_follows_the_running_interpreter(foreign_venv):
+    """The venv comes from ``sys.prefix``, not from a path guessed from the tree.
+
+    It was hardcoded to ``<app>/.venv``, so ``uv pip install --python`` could
+    target a different environment than the interpreter that then imports the
+    package: the install succeeded and the import still failed.
+    """
+    manager, prefix = foreign_venv
+    assert manager._venv_dir == prefix
+    assert manager._persistent_packages_dir == (
+        prefix / "lib" / "python3.14" / "site-packages"
+    )
+    assert str(manager._persistent_packages_dir) in sys.path
+
+
+@pytest.mark.asyncio
+async def test_install_command_uses_the_running_interpreter(foreign_venv):
+    """``uv pip install --python`` points at ``sys.prefix``'s python."""
+    manager, prefix = foreign_venv
+    _add_info(manager, ["missing==2.0"])
+    call_log = []
+
+    async def fake_exec(*args, **kwargs):
+        call_log.append(args)
+        return _FakeProc()
+
+    with patch.object(
+        IntegrationManager, "_installed_version", return_value=None
+    ), patch.object(manager, "_save_integrations"), patch(
+        "shim.integrations.manager.asyncio.create_subprocess_exec",
+        side_effect=fake_exec,
+    ), patch(
+        "shim.integrations.manager.importlib.invalidate_caches"
+    ):
+        assert await manager.install_requirements("test_integration") is True
+
+    command = _install_calls(call_log)[0]
+    assert Path(command[command.index("--python") + 1]) == prefix / "bin" / "python"
 
 
 @pytest.mark.asyncio

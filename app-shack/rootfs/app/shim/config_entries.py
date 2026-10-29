@@ -8,8 +8,11 @@ from typing import Any, Optional, Dict, Callable
 from dataclasses import dataclass
 from contextvars import ContextVar
 
-from shim.ha_fetched.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError
+from .logging import get_logger
 from .models import ConfigEntry, callback
+
+_LOGGER = get_logger(__name__)
 
 # Context variable to track the current config entry being set up
 current_entry: ContextVar[Optional[ConfigEntry]] = ContextVar(
@@ -41,6 +44,43 @@ CONN_CLASS_CLOUD_PUSH = "cloud_push"
 CONN_CLASS_LOCAL_POLL = "local_poll"
 CONN_CLASS_LOCAL_PUSH = "local_push"
 CONN_CLASS_ASSUMED = "assumed"
+
+# Result types where Home Assistant's flow manager fills in a missing ``step_id``
+# with the step it called. Mirrors ``data_entry_flow.STEP_ID_OPTIONAL_STEPS``.
+STEP_ID_OPTIONAL_RESULT_TYPES = frozenset({"form", "menu", "external", "progress"})
+
+
+def apply_step_id_fallback(flow, called_step_id: str, result):
+    """Backfill the ``step_id`` Home Assistant's flow manager would supply.
+
+    Omitting ``step_id`` from ``async_show_form``, ``async_show_menu``,
+    ``async_show_progress`` and ``async_external_step`` is deprecated in Home
+    Assistant and becomes an error in 2027.5.0. Until then HA's flow manager
+    fills in the step it called rather than the step that built the result, so
+    we mirror that here (and warn) instead of failing the flow outright.
+
+    Must be called by whoever invoked the ``async_step_*`` method; the flow
+    class alone cannot know which step the manager called.
+    """
+    if not isinstance(result, dict):
+        return result
+    if result.get("type") not in STEP_ID_OPTIONAL_RESULT_TYPES:
+        return result
+    if result.get("step_id"):
+        return result
+
+    result["step_id"] = called_step_id
+    _LOGGER.warning(
+        "Config flow step 'async_step_%s' of %s returned a '%s' result without a "
+        "step_id; assuming the step that was called. Omitting step_id is "
+        "deprecated in Home Assistant and stops working in 2027.5.0 - pass "
+        "step_id='%s' explicitly",
+        called_step_id,
+        f"{type(flow).__module__}.{type(flow).__qualname__}",
+        result["type"],
+        called_step_id,
+    )
+    return result
 
 
 class ConfigEntryState(Enum):
@@ -163,38 +203,47 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
 
     def async_show_form(
         self,
-        step_id: str,
+        step_id: Optional[str] = None,
         data_schema=None,
         errors: Optional[Dict[str, str]] = None,
         description_placeholders: Optional[Dict[str, str]] = None,
         last_step: bool = False,
     ):
-        """Return the form definition."""
-        # Track current step for multi-step flows
-        self.cur_step_id = step_id
-        return {
+        """Return the form definition.
+
+        ``step_id`` is deprecated as optional upstream and required from Home
+        Assistant 2027.5.0; the flow manager backfills it via
+        ``apply_step_id_fallback``.
+        """
+        result: Dict[str, Any] = {
             "type": "form",
-            "step_id": step_id,
             "data_schema": data_schema,
             "errors": errors or {},
             "description_placeholders": description_placeholders or {},
             "last_step": last_step,
         }
+        if step_id is not None:
+            # Track current step for multi-step flows
+            self.cur_step_id = step_id
+            result["step_id"] = step_id
+        return result
 
     def async_show_menu(
         self,
-        step_id: str,
-        menu_options: list,
+        step_id: Optional[str] = None,
+        menu_options: Optional[list] = None,
         description_placeholders: Optional[Dict[str, str]] = None,
     ):
         """Return a menu selection step definition."""
-        self.cur_step_id = step_id
-        return {
+        result: Dict[str, Any] = {
             "type": "menu",
-            "step_id": step_id,
-            "menu_options": menu_options,
+            "menu_options": menu_options or [],
             "description_placeholders": description_placeholders or {},
         }
+        if step_id is not None:
+            self.cur_step_id = step_id
+            result["step_id"] = step_id
+        return result
 
     def async_create_entry(
         self,
@@ -240,13 +289,13 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         # In a full implementation, this would wrap validators with defaults
         return data_schema
 
-    def async_external_step(self, step_id: str, url: str):
+    def async_external_step(self, step_id: Optional[str] = None, url: str = ""):
         """Return external step definition."""
-        return {
-            "type": "external",
-            "step_id": step_id,
-            "url": url,
-        }
+        result: Dict[str, Any] = {"type": "external", "url": url}
+        if step_id is not None:
+            self.cur_step_id = step_id
+            result["step_id"] = step_id
+        return result
 
     def async_external_step_done(self, next_step_id: str):
         """Return external step done."""
@@ -328,21 +377,23 @@ class OptionsFlow:
 
     def async_show_form(
         self,
-        step_id: str,
+        step_id: Optional[str] = None,
         data_schema=None,
         errors: Optional[Dict[str, str]] = None,
         description_placeholders: Optional[Dict[str, str]] = None,
         last_step: bool = False,
     ):
         """Return the form definition."""
-        return {
+        result: Dict[str, Any] = {
             "type": "form",
-            "step_id": step_id,
             "data_schema": data_schema,
             "errors": errors or {},
             "description_placeholders": description_placeholders or {},
             "last_step": last_step,
         }
+        if step_id is not None:
+            result["step_id"] = step_id
+        return result
 
     def async_create_entry(
         self, title: str, data: Dict[str, Any], options: Optional[Dict[str, Any]] = None
@@ -359,17 +410,19 @@ class OptionsFlow:
 
     def async_show_menu(
         self,
-        step_id: str,
-        menu_options: list,
+        step_id: Optional[str] = None,
+        menu_options: Optional[list] = None,
         description_placeholders: Optional[Dict[str, str]] = None,
     ):
         """Return a menu selection step definition."""
-        return {
+        result: Dict[str, Any] = {
             "type": "menu",
-            "step_id": step_id,
-            "menu_options": menu_options,
+            "menu_options": menu_options or [],
             "description_placeholders": description_placeholders or {},
         }
+        if step_id is not None:
+            result["step_id"] = step_id
+        return result
 
 
 class OptionsFlowWithConfigEntry(OptionsFlow):

@@ -1,12 +1,13 @@
 """Import patching for Home Assistant compatibility.
 
-Patches sys.modules to redirect homeassistant imports to the shim.
+Patches sys.modules so integrations get the shim's model layer (core,
+config_entries, entity, registries) while everything HA keeps free of that model
+layer is imported verbatim from the pinned ``homeassistant`` package.
 """
 
-import asyncio
+import importlib
 import sys
 import types
-from pathlib import Path
 
 from . import block_async_io
 from . import config_entries
@@ -16,14 +17,124 @@ from . import selectors
 from .logging import get_logger
 from .stubs import (
     create_coordinator_stubs,
-    create_util_stubs,
     create_helpers_stubs,
     create_components_stubs,
     create_additional_stubs,
-    create_network_stubs,
 )
 
 _LOGGER = get_logger(__name__)
+
+# Upstream modules taken verbatim, by name. The admission ticket is that a
+# module does not import homeassistant.core, homeassistant.config_entries,
+# homeassistant.loader, homeassistant.setup, homeassistant.data_entry_flow or
+# any entity/device registry: those are the shim's job, and a module that needs
+# them cannot run against the synthetic hass. Verify per module in a *fresh
+# process* (existing imports hide the dependency) before adding a name here.
+#
+# Deliberately not here, and not free to add:
+#   helpers.config_validation  +84 modules, pulls entity_registry and loader
+#   helpers.selector           +86 modules, same
+#   helpers.event              pulls helpers.template plus the real
+#                              device/entity registries and loader (model layer)
+#   helpers.translation, .frame, .script_variables   need homeassistant.loader
+#   helpers.update_coordinator, .restore_state   full model layer
+#   helpers.service_info.*     pull data_entry_flow
+#   components.<anything>      pull the full model layer (and entity_platform)
+UPSTREAM_UTIL_MODULES = (
+    "async_",
+    "color",
+    "dt",
+    "event_type",
+    "hass_dict",
+    "json",
+    "network",
+    "percentage",
+    "scaling",
+    "signal_type",
+    "unit_conversion",
+    "unit_system",
+    "uuid",
+    "yaml",
+)
+# Upstream helpers: pure modules that import homeassistant.core for types and the
+# callback machinery only. They are imported *after* the synthetic package is
+# installed (see ImportPatcher.patch), so `from homeassistant.core import X`
+# binds shim.core. Sibling imports (`from . import json`) therefore resolve to
+# whatever the shim already registered -- which is why the stubs must be
+# created first and why this list must stay a flat, explicit set of names.
+UPSTREAM_HELPER_MODULES = (
+    "deprecation",
+    "typing",
+    "json",
+    "storage",
+    "dispatcher",
+    "start",
+    "instance_id",
+    "issue_registry",
+    "floor_registry",
+    "label_registry",
+    "category_registry",
+    # area_registry against the shim's own device_registry stub: the module-level
+    # API it needs (async_get + async_clear_area_id on delete) is small, and the
+    # alternative is a 400-line reimplementation of area storage.
+    "area_registry",
+    # helpers.network: real internal/external URL resolution. Its `http` and
+    # `hassio` siblings come along as transitive imports (see the closure test).
+    "network",
+    # Pure leaves that never needed the model layer -- they were never stubbed,
+    # only accidentally importable through helpers.__path__.
+    "debounce",
+    "ratelimit",
+    "location",
+    "sun",
+    "trace",
+)
+
+
+def _import_upstream_modules() -> dict[str, types.ModuleType]:
+    """Import the upstream modules the shim reuses, keyed by module name.
+
+    Must run before the synthetic ``homeassistant`` package is registered:
+    afterwards these names have no ``__path__`` to load from.
+    """
+    modules = {
+        "homeassistant.const": importlib.import_module("homeassistant.const"),
+        "homeassistant.exceptions": importlib.import_module("homeassistant.exceptions"),
+        "homeassistant.generated": importlib.import_module("homeassistant.generated"),
+        "homeassistant.generated.entity_platforms": importlib.import_module(
+            "homeassistant.generated.entity_platforms"
+        ),
+        "homeassistant.util": importlib.import_module("homeassistant.util"),
+    }
+    for name in UPSTREAM_UTIL_MODULES:
+        modules[f"homeassistant.util.{name}"] = importlib.import_module(
+            f"homeassistant.util.{name}"
+        )
+    return modules
+
+
+def _upstream_helpers_path() -> list[str]:
+    """Return the wheel's ``helpers/`` directory, for the synthetic package.
+
+    Called before the synthetic package is installed (and, on a repeat patch,
+    after it already has the path) so either answer is the right one.
+    """
+    return list(importlib.import_module("homeassistant.helpers").__path__)
+
+
+def _import_upstream_helpers() -> dict[str, types.ModuleType]:
+    """Import the upstream helper modules the shim adopts verbatim.
+
+    Must run *after* ``sys.modules`` points ``homeassistant.core`` at the shim:
+    these modules do ``from homeassistant.core import HassJob, callback, ...``
+    and would otherwise bind a second, unshared copy of those classes.
+    """
+    return {
+        f"homeassistant.helpers.{name}": importlib.import_module(
+            f"homeassistant.helpers.{name}"
+        )
+        for name in UPSTREAM_HELPER_MODULES
+    }
 
 
 def _find_empty_response_exception():
@@ -79,102 +190,29 @@ class ImportPatcher:
 
         _LOGGER.info("Patching imports for Home Assistant compatibility")
 
-        import importlib.util
+        # STEP 1: Import the upstream modules we reuse, before the synthetic
+        # package exists below. In this order Python loads the real files from
+        # the installed wheel; afterwards these names have no __path__.
+        upstream = _import_upstream_modules()
+        helpers_path = _upstream_helpers_path()
 
-        # STEP 1: Inject stub modules FIRST
-        # This prevents ImportError for HA-internal dependencies
-        stubs = {
-            "homeassistant.helpers.deprecation": ("_stub_helpers_deprecation", "ha_fetched"),
-            "homeassistant.util.hass_dict": ("_stub_util_hass_dict", "ha_fetched"),
-            "homeassistant.util.signal_type": ("_stub_util_signal_type", "ha_fetched"),
-        }
-
-        for module_name, (stub_filename, stub_dir) in stubs.items():
-            stub_module = types.ModuleType(module_name)
-            stub_path = Path(__file__).parent / stub_dir / f"{stub_filename}.py"
-            if stub_path.exists():
-                stub_code = stub_path.read_text()
-                exec(stub_code, stub_module.__dict__)
-                sys.modules[module_name] = stub_module
-                _LOGGER.debug(f"Injected stub: {module_name}")
-
-        # STEP 2: Load ha_fetched modules directly
-        ha_fetched_path = Path(__file__).parent / "ha_fetched"
-
-        # Load generated.entity_platforms
-        spec_ep = importlib.util.spec_from_file_location(
-            "ha_fetched.generated.entity_platforms",
-            ha_fetched_path / "generated" / "entity_platforms.py",
-        )
-        ha_entity_platforms = importlib.util.module_from_spec(spec_ep)
-        sys.modules["ha_fetched.generated.entity_platforms"] = ha_entity_platforms
-        spec_ep.loader.exec_module(ha_entity_platforms)
-
-        # Load generated package
-        spec_gen = importlib.util.spec_from_file_location(
-            "ha_fetched.generated", ha_fetched_path / "generated" / "__init__.py"
-        )
-        ha_generated = importlib.util.module_from_spec(spec_gen)
-        ha_generated.entity_platforms = ha_entity_platforms
-        sys.modules["ha_fetched.generated"] = ha_generated
-        spec_gen.loader.exec_module(ha_generated)
-
-        # Load util.event_type
-        spec_et = importlib.util.spec_from_file_location(
-            "ha_fetched.util.event_type",
-            ha_fetched_path / "util" / "event_type.py",
-        )
-        ha_event_type = importlib.util.module_from_spec(spec_et)
-        sys.modules["ha_fetched.util.event_type"] = ha_event_type
-        spec_et.loader.exec_module(ha_event_type)
-
-        # STEP 3: Set up homeassistant namespace
+        # STEP 2: Build the synthetic homeassistant package around them.
+        # homeassistant.util *is* the real package object, so a util submodule
+        # nobody thought about still resolves upstream (util is pure by design).
+        # components stays synthetic: an unstubbed name there must fail loudly
+        # rather than half-load the real model layer. helpers is synthetic too,
+        # but gets the wheel's directory as a __path__ (below) so adopted helper
+        # files can load behind the modules the shim still owns.
         homeassistant = types.ModuleType("homeassistant")
-
-        homeassistant_generated = types.ModuleType("homeassistant.generated")
-        homeassistant_generated.entity_platforms = ha_entity_platforms
-        sys.modules["homeassistant.generated"] = homeassistant_generated
-        sys.modules["homeassistant.generated.entity_platforms"] = ha_entity_platforms
-
-        homeassistant_util = types.ModuleType("homeassistant.util")
-        homeassistant_util.event_type = ha_event_type
-        homeassistant_util.hass_dict = sys.modules["homeassistant.util.hass_dict"]
-        homeassistant_util.signal_type = sys.modules["homeassistant.util.signal_type"]
-        sys.modules["homeassistant.util"] = homeassistant_util
-        sys.modules["homeassistant.util.event_type"] = ha_event_type
-
-        homeassistant.generated = homeassistant_generated
-        homeassistant.util = homeassistant_util
-
-        # STEP 4: Load const and exceptions
-        spec_const = importlib.util.spec_from_file_location(
-            "ha_fetched.const", ha_fetched_path / "const.py"
-        )
-        ha_const = importlib.util.module_from_spec(spec_const)
-        sys.modules["ha_fetched.const"] = ha_const
-        spec_const.loader.exec_module(ha_const)
-
-        spec_exc = importlib.util.spec_from_file_location(
-            "ha_fetched.exceptions", ha_fetched_path / "exceptions.py"
-        )
-        ha_exceptions = importlib.util.module_from_spec(spec_exc)
-        sys.modules["ha_fetched.exceptions"] = ha_exceptions
-        spec_exc.loader.exec_module(ha_exceptions)
-
-        # STEP 5: Create full homeassistant package
         homeassistant.core = core
-        homeassistant.const = ha_const
-        homeassistant.exceptions = ha_exceptions
+        homeassistant.const = upstream["homeassistant.const"]
+        homeassistant.exceptions = upstream["homeassistant.exceptions"]
         homeassistant.config_entries = config_entries
-        homeassistant.generated = homeassistant_generated
-        homeassistant.util = homeassistant_util
+        homeassistant.generated = upstream["homeassistant.generated"]
+        homeassistant.util = upstream["homeassistant.util"]
 
-        # Register all submodules
-        sys.modules["homeassistant"] = homeassistant
-        sys.modules["homeassistant.core"] = core
-        sys.modules["homeassistant.const"] = ha_const
-        sys.modules["homeassistant.exceptions"] = ha_exceptions
-        sys.modules["homeassistant.config_entries"] = config_entries
+        homeassistant.helpers = types.ModuleType("homeassistant.helpers")
+        homeassistant.components = types.ModuleType("homeassistant.components")
 
         # Create data_entry_flow stub
         data_entry_flow = types.ModuleType("homeassistant.data_entry_flow")
@@ -183,22 +221,20 @@ class ImportPatcher:
         data_entry_flow.FlowResultType = config_entries.FlowResultType
         data_entry_flow.AbortFlow = type("AbortFlow", (Exception,), {})
         homeassistant.data_entry_flow = data_entry_flow
-        sys.modules["homeassistant.data_entry_flow"] = data_entry_flow
 
-        homeassistant.helpers = types.ModuleType("homeassistant.helpers")
-        homeassistant.components = types.ModuleType("homeassistant.components")
-        homeassistant.helpers.selector = selectors
-
-        # Skip loading dt.py and color.py - they require HA-specific dependencies
-        _LOGGER.debug("Skipping dt.py and color.py - HA-specific dependencies not needed")
-
-        # STEP 6: Create all stub modules
-        create_network_stubs(self._hass, homeassistant)
-        create_util_stubs(self._hass, homeassistant)
+        # STEP 3: Create the remaining stub modules
         create_helpers_stubs(self._hass, homeassistant, config_entries, entity, selectors)
         create_coordinator_stubs(self._hass, homeassistant, entity)
         create_components_stubs(self._hass, homeassistant, self._get_platforms())
         create_additional_stubs(self._hass, homeassistant)
+
+        # create_helpers_stubs() rebuilds homeassistant.helpers from scratch, so
+        # the upstream helpers path is attached after it runs. With a __path__
+        # the real files load behind the modules the shim still owns; every
+        # helper the shim does not stub therefore half-loads (and fails inside
+        # upstream) instead of raising ModuleNotFoundError. That is the same
+        # trade made for `components` on purpose -- a truer error.
+        homeassistant.helpers.__path__ = helpers_path
 
         # Store reference to our hass instance
         homeassistant.core._shim_instance = self._hass
@@ -206,18 +242,32 @@ class ImportPatcher:
         # Save original modules
         self._original_modules["homeassistant"] = sys.modules.get("homeassistant")
 
-        # Install patched modules
-        sys.modules["homeassistant"] = homeassistant
-        sys.modules["homeassistant.core"] = core
-        sys.modules["homeassistant.const"] = ha_const
-        sys.modules["homeassistant.exceptions"] = ha_exceptions
-        sys.modules["homeassistant.config_entries"] = config_entries
-        sys.modules["homeassistant.data_entry_flow"] = data_entry_flow
-        sys.modules["homeassistant.helpers"] = homeassistant.helpers
-        sys.modules["homeassistant.helpers.selector"] = selectors
-        sys.modules["homeassistant.helpers.entity"] = entity
-        sys.modules["homeassistant.util"] = homeassistant.util
-        sys.modules["homeassistant.components"] = homeassistant.components
+        # STEP 4: Install the patched modules. sys.modules wins over the parent
+        # package, so every name must be listed: anything the shim does not
+        # provide still fails loudly, exactly as before.
+        sys.modules.update(
+            {
+                "homeassistant": homeassistant,
+                "homeassistant.core": core,
+                "homeassistant.config_entries": config_entries,
+                "homeassistant.data_entry_flow": data_entry_flow,
+                "homeassistant.helpers": homeassistant.helpers,
+                "homeassistant.helpers.selector": selectors,
+                "homeassistant.helpers.entity": entity,
+                "homeassistant.components": homeassistant.components,
+                **upstream,
+            }
+        )
+
+        # STEP 5: Now that homeassistant.core is the shim's module, load the
+        # upstream helper modules that were waiting for it. Doing this earlier
+        # would bind a second copy of HassJob/callback/CoreState, and the two
+        # copies do not interoperate (``_async_add_hass_job`` compares
+        # ``job_type`` by identity).
+        upstream_helpers = _import_upstream_helpers()
+        for full_name, module in upstream_helpers.items():
+            setattr(homeassistant.helpers, full_name.rpartition(".")[2], module)
+        sys.modules.update(upstream_helpers)
 
         # Patch aiohttp response json for lenient parsing of error responses
         self._patch_aiohttp_response_json()

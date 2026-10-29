@@ -1830,8 +1830,11 @@ class TestHomeAssistantUtilPercentage:
         assert ranged_value_to_percentage(speed_range, 1) == 25  # 1/4 of range
         assert ranged_value_to_percentage(speed_range, 4) == 100  # Full range
 
-        # Test None handling
-        assert ranged_value_to_percentage(speed_range, None) is None
+        # Upstream does not accept None here: homeassistant.util.percentage
+        # does arithmetic on the value and raises. The shim used to return None,
+        # which hid integrations passing an unknown value. Match upstream.
+        with pytest.raises(TypeError):
+            ranged_value_to_percentage(speed_range, None)
 
 
 class TestComponentDomains:

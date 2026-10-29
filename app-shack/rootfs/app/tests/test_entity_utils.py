@@ -996,7 +996,7 @@ class TestPublishMqttAttributes:
         return state
 
     def test_publish_attributes_when_present(self):
-        """Test that attributes are published when state has attributes."""
+        """Test that extra attributes are published, capability keys are not."""
         from unittest.mock import MagicMock
         import json
         from shim.entity import Entity
@@ -1021,8 +1021,75 @@ class TestPublishMqttAttributes:
         mock_mqtt.publish.assert_called_once()
         args, kwargs = mock_mqtt.publish.call_args
         assert args[0] == "homeassistant/sensor/test-entity/attributes"
-        assert json.loads(args[1]) == {"key1": "value1", "key2": 42, "device_class": "temperature"}
+        # device_class is a discovery key; republishing it as an attribute would
+        # duplicate the ``device_class`` field of the discovery config.
+        assert json.loads(args[1]) == {"key1": "value1", "key2": 42}
         assert kwargs == {"qos": 0, "retain": True}
+
+    def test_capability_attributes_are_not_published(self):
+        """Only capability metadata in the state must not publish anything.
+
+        ``async_write_ha_state`` always injects device_class/icon/unit/…; an
+        entity without extra attributes used to publish that set as its JSON
+        attributes, which the user's HA showed as bogus extra attributes.
+        """
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {
+                "friendly_name": "Test Entity",
+                "device_class": "temperature",
+                "unit_of_measurement": "°C",
+                "state_class": "measurement",
+                "icon": "mdi:thermometer",
+            },
+        )
+        entity.hass = mock_hass
+
+        entity._publish_mqtt_attributes()
+
+        mock_mqtt.publish.assert_not_called()
+
+    def test_capability_keys_normalized_to_strings(self):
+        """A real State keys attributes with EntityStateAttribute."""
+        from enum import StrEnum
+        from unittest.mock import MagicMock
+        import json
+        from shim.entity import Entity
+
+        class Attr(StrEnum):
+            FRIENDLY_NAME = "friendly_name"
+            DEVICE_CLASS = "device_class"
+            CUSTOM = "custom"
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+
+        mock_mqtt = MagicMock()
+        mock_mqtt.is_connected.return_value = True
+        mock_hass = MagicMock()
+        mock_hass._mqtt_client = mock_mqtt
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {Attr.DEVICE_CLASS: "temperature", Attr.CUSTOM: "kept"},
+        )
+        entity.hass = mock_hass
+
+        entity._publish_mqtt_attributes()
+
+        args, _ = mock_mqtt.publish.call_args
+        payload = json.loads(args[1])
+        assert payload == {"custom": "kept"}
+        assert all(type(key) is str for key in payload)
 
     def test_no_publish_when_no_attributes(self):
         """Test that nothing is published when state has no attributes."""
@@ -1160,6 +1227,30 @@ class TestAddMqttAttributesToConfig:
         mock_hass.states.get.return_value = self._make_mock_state(
             "sensor.test_entity",
             {},
+        )
+        entity.hass = mock_hass
+
+        config = {}
+        entity._add_mqtt_attributes_to_config(config)
+
+        assert "json_attributes_topic" not in config
+
+    def test_no_add_when_only_capability_attributes(self):
+        """json_attributes_topic must not be advertised with nothing to publish."""
+        from unittest.mock import MagicMock
+        from shim.entity import Entity
+
+        entity = Entity()
+        entity.entity_id = "sensor.test_entity"
+
+        mock_hass = MagicMock()
+        mock_hass.states.get.return_value = self._make_mock_state(
+            "sensor.test_entity",
+            {
+                "friendly_name": "Test Entity",
+                "unit_of_measurement": "°C",
+                "device_class": "temperature",
+            },
         )
         entity.hass = mock_hass
 

@@ -2,9 +2,36 @@
 
 Home Assistant compatibility layer for running integrations outside of HA.
 
-## Overview
+This file holds what you need *before* you touch anything: the layout, the
+invariants, and the commands. Deep dives live in [`docs/`](docs/) — read the one for
+the area you are changing.
 
-HACS Shack provides a compatibility layer that allows Home Assistant custom integrations to run outside of the HA core environment, enabling standalone MQTT discovery and control.
+## Documentation map
+
+| Doc | Read it when you are… |
+|-----|----------------------|
+| [`upstream-tier.md`](docs/upstream-tier.md) | importing/stubbing `homeassistant.*`, bumping the pin, wondering why a module is not lifted from the wheel |
+| [`image-size.md`](docs/image-size.md) | changing `KEEP_TOP_LEVEL`/`KEEP_IN_HELPERS`, pruning, or booting the app end-to-end |
+| [`stub-modules.md`](docs/stub-modules.md) | adding or editing a stub in `shim/stubs/` |
+| [`probatio.md`](docs/probatio.md) | touching config validation or `vol.Required`/`vol.UNDEFINED` checks — and before adding `voluptuous` to `pyproject.toml`, which is forbidden |
+| [`oauth.md`](docs/oauth.md) | OAuth2 flows, PKCE, JWT |
+| [`integration-requirements.md`](docs/integration-requirements.md) | runtime `pip install` of integration requirements |
+| [`integration-reloads.md`](docs/integration-reloads.md) | the per-integration reload button |
+| [`device-registry.md`](docs/device-registry.md) | entities → `DeviceEntry` rows, `device_info`, `via_device_id` |
+| [`state-restore.md`](docs/state-restore.md) | `RestoreEntity` |
+| [`entity-enable-disable.md`](docs/entity-enable-disable.md) | entity enable/disable and polling control |
+| [`entity-lifecycle.md`](docs/entity-lifecycle.md) | `async_prepare_to_add_to_hass`, `async_entity_id_changed` |
+| [`entity-descriptions.md`](docs/entity-descriptions.md) | `EntityDescription` subclasses, `FrozenOrThawed` |
+| [`config-entry-returns.md`](docs/config-entry-returns.md) | setup/unload/migration return values (`None` vs bool, `ConfigEntry*` exceptions) |
+| [`config-flows.md`](docs/config-flows.md) | config flow step results (`step_id` fallback, progress-step gap) |
+| [`blocking-calls.md`](docs/blocking-calls.md) | the blocking-call detector warns |
+| [`async-patterns.md`](docs/async-patterns.md) | async I/O, `asyncio.to_thread`, aiohttp sessions against `github.com` |
+| [`mqtt-topics.md`](docs/mqtt-topics.md) | publishing or parsing MQTT discovery topics |
+| [`web-layer.md`](docs/web-layer.md) | adding a route or template to the FastAPI UI |
+| [`web-ingress.md`](docs/web-ingress.md) | `HX-Redirect` and HA ingress paths |
+| [`build.md`](docs/build.md) | building, `sync-versions.py`, `run.sh`, Docker, s6 layout |
+| [`testing.md`](docs/testing.md) | writing tests, running the suite, integration-compat patterns |
+| [`code-style.md`](docs/code-style.md) | style, naming, error handling, logging |
 
 ## Shim Architecture
 
@@ -12,15 +39,13 @@ The compatibility layer is organized into modular components:
 
 ```
 shim/
-├── import_patch.py      # Orchestrates import patching (~240 lines)
+├── import_patch.py      # Orchestrates import patching; defines the upstream tier
 ├── block_async_io.py    # Warn-only blocking call detection on the event loop
-├── stubs/               # Home Assistant stub modules
+├── stubs/               # Stubs for HA modules that need the model layer
 │   ├── base.py          # Shared utilities (make_module, simple_method)
 │   ├── coordinator.py   # DataUpdateCoordinator, UpdateFailed
-│   ├── util.py          # dt, yaml, color, unit_conversion, percentage
-│   ├── helpers.py       # device_registry, config_validation, storage, etc.
+│   ├── helpers.py       # device_registry, config_validation, selector, etc.
 │   ├── components.py    # alarm_control_panel, cover, mqtt, image, etc.
-│   ├── network.py       # Network utilities
 │   ├── oauth2.py        # OAuth2 flow with PKCE, token refresh, JWT
 │   └── application_credentials.py  # HA Application Credentials component
 ├── entity.py            # Entity base classes and EntityDescription
@@ -34,18 +59,11 @@ shim/
 │   ├── sensor.py
 │   ├── switch.py
 │   └── ...
-├── ha_fetched/          # Upstream HA code (const.py, exceptions.py)
-└── hacs_fetched/        # Upstream HACS utilities
+└── web/                 # FastAPI UI + config flow wizards
 ```
 
-> OAuth2 and Application Credentials details → [`oauth.md`](docs/oauth.md)
-> Integration Reload Buttons → [`integration-reloads.md`](docs/integration-reloads.md)
-> Integration Requirements (runtime `pip install`) → [`integration-requirements.md`](docs/integration-requirements.md)
-> Device Registry (entities → `DeviceEntry`) → [`device-registry.md`](docs/device-registry.md)
-> State Restoration (RestoreEntity) → [`state-restore.md`](docs/state-restore.md)
-> Blocking Call Detection (warn-only) → [`blocking-calls.md`](docs/blocking-calls.md)
-> Entity Enable/Disable & Polling Control → [`entity-enable-disable.md`](docs/entity-enable-disable.md)
-> Entity Lifecycle Hooks (`async_prepare_to_add_to_hass`, `async_entity_id_changed`) → [`entity-lifecycle.md`](docs/entity-lifecycle.md)
+Everything else comes from the installed `homeassistant` wheel — see
+[`docs/upstream-tier.md`](docs/upstream-tier.md).
 
 ### Import patterns
 
@@ -61,77 +79,6 @@ For integrations (they import from `homeassistant.core` which is patched to `shi
 
 **We dogfood `shim.core`** - all internal code (tests, scripts) imports from `shim.core` rather than the split modules directly. This ensures the re-export layer is always tested and working for integrations.
 
-### Schema Library: probatio (voluptuous)
-
-HA 2026.9 moved config validation to [`probatio`](https://probatio.frenck.dev/), a
-maintained drop-in reimplementation of voluptuous. Integrations now
-`import probatio` directly, but `probatio` is provided by HA core and is therefore
-*not* listed in integration manifests.
-
-**`probatio` is the only schema library the shim ships — upstream `voluptuous` must
-never be a dependency** (it was removed in 0.15.x). `voluptuous` still shows up in
-shim code and in older integrations, but every `import voluptuous` resolves to
-probatio through the alias below; installing the real package adds nothing and
-only risks a mixed namespace if it is imported before the shim aliases it.
-
-The shim depends on `probatio` and calls `probatio.compat.install_as_voluptuous()`
-at the top of `shim/__init__.py`, before any shim module imports voluptuous. This
-registers probatio under the `voluptuous` name (including the
-`voluptuous.schema_builder` / `validators` / `error` / `util` / `humanize`
-submodules that dependencies like `annotatedyaml` reach into) so that:
-
-- `import probatio` (new integrations) and `import voluptuous as vol` (shim
-  internals, older integrations) resolve to the same classes.
-- `isinstance(key, vol.Required)` and `key.default is vol.UNDEFINED` checks in
-  `shim/web/schema.py` and `shim/web/routes/config_flows.py` keep working.
-  Probatio's markers and `UNDEFINED` sentinel are distinct objects from
-  voluptuous's, so a mixed namespace silently renders every field as optional.
-
-Bootstrap order matters: `install_as_voluptuous()` must run before anything
-imports voluptuous. With real voluptuous absent, a pre-shim `import voluptuous`
-now fails outright with `ModuleNotFoundError` instead of silently binding the real
-module and emitting a `RuntimeWarning`. That makes `main.py`'s `from shim import ...`
-ordering (and test modules importing `shim` first) load-bearing — keep
-`import voluptuous as vol` out of module scope in anything that can run before
-`shim/__init__.py`.
-
-One lingering hole: an integration whose manifest lists `voluptuous` in
-`requirements` will get it `uv pip install`ed back into the venv by
-`IntegrationManager.install_requirements()` (`shim/integrations/manager.py`). It is
-harmless while the alias is in `sys.modules`, but it re-adds the wheel to the image;
-filter core-provided packages there if that becomes a problem. See
-[`integration-requirements.md`](docs/integration-requirements.md) for how the
-satisfaction check works (and why it must stay exact — it runs for every
-integration on every start).
-
-Known gaps in probatio's voluptuous surface: `voluptuous.Msgs` is not exported
-(`Required`, `Optional`, `UNDEFINED`, `_compile_scalar`, etc. are).
-
-### Adding New Stub Modules
-
-When adding support for new Home Assistant modules:
-
-1. **Determine the namespace**: `homeassistant.util.X` → `stubs/util.py`, `homeassistant.helpers.X` → `stubs/helpers.py`
-2. **Create the stub function**: Add a `create_X_stubs()` function that builds and registers the module
-3. **Call from import_patch.py**: Add the function call in `ImportPatcher.patch()`
-4. **Export from `stubs/__init__.py`**: Add the function to `__all__`
-5. **Write tests**: Verify the stub works with real integration patterns
-
-### Stub Module Guidelines
-
-- Keep implementations minimal but compatible with HA's API
-- Match function signatures exactly (including return types)
-- Include all constants and enums that integrations might import
-- Use `FrozenOrThawed` metaclass for EntityDescription classes
-- Reference `shim/stubs/util.py` for percentage functions as an example of exact HA compatibility
-- **Import third-party packages lazily, never at stub-creation time.** Stubs are built
-  during import patching, before `IntegrationManager.install_requirements()` installs
-  an integration's manifest requirements into `/data/.venv`, so a package can legitimately
-  be missing on the first boot after a venv rebuild. Follow the pattern in
-  `stubs/components.py` (`_load_zeroconf_classes`) — resolve on first use, cache only
-  successful resolutions, and expose classes to integrations through a module-level
-  `__getattr__` so they appear without a restart.
-
 ## Working Directory
 
 **CRITICAL: Always run commands from `app-shack/rootfs/app/`.** The tool calls include `cd app-shack/rootfs/app &&` for a reason - many Python imports and relative paths break if you run from the repo root.
@@ -142,18 +89,26 @@ cd app-shack/rootfs/app/
 
 **When using the Bash tool:** Either use the `workdir` parameter or include the `cd` in the command. The examples throughout this file include the proper `cd` prefix.
 
-**Exception:** the fetch scripts (`scripts/fetch_ha_files.py`, `scripts/fetch_hacs_files.py`) live in `app-shack/scripts/` and are run from there — see [How to Use](#how-to-use). They are standalone stdlib scripts that compute paths relative to their own location.
+**Exception:** `scripts/prune_homeassistant.py` is called with an explicit path (it
+operates on a site-packages directory), so it works from anywhere.
 
-## Upstream Code Reference
+## Upstream Home Assistant code (imported, not vendored)
 
-We maintain scripts to fetch code from upstream Home Assistant and HACS repositories for reference and reuse:
+Home Assistant is a dependency: `homeassistant==<pin>` in `rootfs/app/pyproject.toml`.
+The shim imports the modules HA keeps free of its model layer **verbatim** and
+re-implements only the rest. The wheel is the source of truth, `uv.lock` is the pin.
 
-### Fetch Scripts
+Two rules follow, and they are the ones people get wrong:
 
-- `scripts/fetch_ha_files.py`: Downloads HA core files (const.py, exceptions.py, utils)
-- `scripts/fetch_hacs_files.py`: Downloads HACS utility modules (version, validation, queue management)
+- **Do not copy upstream code into the shim.** Check the tier before writing a stub.
+- **Do not grow the stub layer when the wheel module already works here.** A stub
+  that quietly diverges from upstream is the bug class this repo is deleting.
 
-### Integration Code Policy
+→ [`docs/upstream-tier.md`](docs/upstream-tier.md) for the tier table, how to adopt a
+module (`scripts/scan_upstream.py`), known blockers, the 2026.11 status, and pin bump
+policy.
+
+## Integration Code Policy
 
 **IMPORTANT: Never edit integration code directly.**
 
@@ -165,345 +120,58 @@ The files in `data/shim/custom_components/` are external integrations (Leviton, 
 
 The shim layer (in `shim/`) is where we add compatibility code, bridges, and workarounds. That's the appropriate place to fix integration issues.
 
-### When to Use
-
-**Check upstream first when:**
-
-- Implementing version comparison logic → use HACS's `utils/version.py`
-- Need validation schemas → use HACS's `utils/validate.py`
-- Building download/management systems → use HACS's `utils/queue_manager.py`
-- Working with HA constants → reference HA's `const.py`
-- Handling HA exceptions → reuse HA's `exception.py` classes
-
-### How to Use
-
-The fetch scripts live in `app-shack/scripts/` (not `rootfs/app/scripts/`) and compute their destination relative to their own location, so run them from that directory:
-
-```bash
-# Fetch latest HA release files
-cd app-shack/scripts && python3 fetch_ha_files.py
-
-# Fetch latest HACS release files
-cd app-shack/scripts && python3 fetch_hacs_files.py
-
-# Pin a specific HA version (e.g. when latest isn't desired)
-cd app-shack/scripts && python3 fetch_ha_files.py --version 2026.7.0
-
-# Preview without downloading
-cd app-shack/scripts && python3 fetch_ha_files.py --dry-run
-cd app-shack/scripts && python3 fetch_hacs_files.py --dry-run
-```
-
-Files are written to `shim/ha_fetched/` and `shim/hacs_fetched/` with necessary import path adjustments.
-
-### Maintaining `clean_const_py()`
-
-`ha_fetched/const.py` is loaded by `import_patch.py` as a standalone module (`ha_fetched.const`), so HA's relative imports (`.generated.entity_platforms`, `.helpers.deprecation`, `.util.*`) would resolve against the non-existent `ha_fetched.helpers` / `ha_fetched.util` packages and fail at load time. `clean_const_py()` must convert **every** relative import in `const.py` to absolute `homeassistant.*` form — `import_patch.py` injects those stub modules into `sys.modules` *before* loading const. There is no try/except fallback; the runtime patch is the contract.
-
-When HA adds a new relative import to `const.py` (the 2026.7.0 breakage was `.helpers.deprecation`), add the corresponding regex to `clean_const_py()` or the fetch will silently produce a broken file that only fails at test collection with `ModuleNotFoundError: No module named 'ha_fetched'`.
-
-The same contract applies to the dependency stubs in `ha_fetched/_stub_*.py`: `const.py` now invokes the deprecation machinery at module bottom (`__getattr__` / `__dir__` / `__all__`), so `_stub_helpers_deprecation.py` must implement PEP 562 semantics correctly — raise `AttributeError` for missing names, return the real keys for `dir()` / `__all__`, and resolve `_DEPRECATED_*` entries to their values.
-
-## Build Commands
+## Build & Run
 
 ```bash
 # Sync dependencies (install from lock file)
 cd app-shack/rootfs/app && uv sync
 
-# Run the application
+# Release: bumps config.yaml -> pyproject.toml -> integration versions, then syncs
+cd app-shack && ./sync-versions.py
+
+# Run it the way it deploys: throwaway venv, pruned, then main.py
+cd app-shack && ./run.sh
+
+# Run the application against the project venv as-is
 cd app-shack/rootfs/app && uv run python3 main.py
 ```
 
-**Important**: Always use `uv sync` and `uv run` to ensure consistent dependencies. The `.venv` is managed by uv.
+**Always use `uv sync` and `uv run`** so dependencies match the lock. `uv sync`
+silently prunes packages not declared in the project, so declare anything a test
+needs (the dev group owns those) instead of installing it ad hoc.
+
+→ [`docs/build.md`](docs/build.md) for `run.sh`/Docker/s6 details and
+[`docs/image-size.md`](docs/image-size.md) for pruning and the keep-list.
 
 ## Testing
 
-### Requirements
-
-- **New code**: All new functionality must include unit tests
-- **Modified code**: Add or update tests to cover changes
-- **Bug fixes**: Include a test that would have caught the bug
-- **Integration compatibility**: Test with real integration patterns (flightradar24, dreo, leviton, etc.)
-
-### Running Tests
-
 ```bash
-# Unit tests only (fast)
+# Unit tests only (fast, this is the default loop)
 cd app-shack/rootfs/app && uv run pytest tests/ -v -m "not integration"
 
-# All tests including integration tests
+# Everything, including integration tests
 cd app-shack/rootfs/app && uv run pytest tests/ -v
-
-# Integration tests only (requires integrations to be installed)
-cd app-shack/rootfs/app && uv run pytest tests/ -v -m integration
-
-# With coverage
-cd app-shack/rootfs/app && uv run pytest tests/ -v --cov=. --cov-report=term-missing
-
-# Specific test file or pattern
-cd app-shack/rootfs/app && uv run pytest tests/test_mqtt_bridge.py -v
-cd app-shack/rootfs/app && uv run pytest tests/test_entity_utils.py::TestGetMqttEntityId -v
 ```
 
-### Key Integration Patterns to Test
+**New code must come with tests; bug fixes must come with a test that would have
+caught the bug.** Changes to the upstream tier or the keep-list also need the
+pruned-image check.
 
-When modifying `EntityDescription` or related classes, verify these patterns work:
-
-1. `@dataclass` (non-frozen) - Flightradar24/Dreo style
-2. `@dataclass(frozen=True)` - Leviton style
-3. Custom methods in descriptions (like Dreo's `__repr__`)
-4. Multiple inheritance with mixins
-5. Import patch stub behavior when `homeassistant.components.X` is used
-
-### Testing Stub Modules
-
-When adding or modifying stub modules (especially `stubs/coordinator.py`, `stubs/helpers.py`):
-
-- Test with real integrations that use the module (e.g., Moonraker for `DataUpdateCoordinator`)
-- Verify all exported functions and classes are accessible
-- Check that constants and enums match HA's values exactly
-- Run the full test suite: `uv run pytest tests/ -v -m "not integration"`
-
-## Code Style Guidelines
-
-### Style
-
-- **Indentation**: 4 spaces (no tabs)
-- **Line length**: 100 characters maximum
-- **Quotes**: Use single quotes for strings unless double quotes are needed
-- **Docstrings**: Use triple quotes for function/class documentation
-- **Type hints**: Encouraged for new code
-
-### Naming Conventions
-
-- **Variables**: `snake_case` (e.g., `client_entities`, `ha_host`)
-- **Constants**: `UPPER_SNAKE_CASE` (e.g., `HA_HOST`, `PROXY_PORT`)
-- **Functions**: `snake_case` (e.g., `proxy_handler`, `get_client_ip`)
-- **Classes**: `PascalCase`
-- **Private functions**: `_leading_underscore` (e.g., `_check_attribute_match`)
-
-## Error Handling
-
-Use try-except blocks for I/O operations:
-
-```python
-try:
-    with open(CONFIG_FILE_PATH, 'r') as f:
-        config = json.load(f)
-except FileNotFoundError:
-    logger.error("Configuration file not found: /data/options.json")
-```
-
-## Logging
-
-Use the pre-configured colorlog logger:
-
-```python
-logger.debug("Detailed debugging info")
-logger.info("General information")
-logger.warning("Warning messages")
-logger.error("Error messages with exception info")
-```
-
-## Async Patterns
-
-```python
-async def proxy_handler(request):
-    # Use await for async operations
-    return await proxy_websocket_filtered(request, client_ip)
-```
-
-### Blocking I/O on the event loop
-
-Never call `open()`, `time.sleep()`, `Path.read_text()`, etc. directly
-from `async def` code — the blocking-call detector will warn. Keep sync
-I/O methods sync (so they work from `__init__` and tests), then wrap
-them with `asyncio.to_thread()` at the async call site:
-
-```python
-def _save_data(self, data: dict) -> None:
-    """Sync I/O primitive — safe from __init__ and tests."""
-    with open(self._path, "w") as f:
-        json.dump(data, f)
-
-async def _async_save(self, data: dict) -> None:
-    """Async-safe wrapper for route handlers and tasks."""
-    await asyncio.to_thread(self._save_data, data)
-```
-
-See [`docs/blocking-calls.md`](docs/blocking-calls.md#fixing-blocking-call-warnings) for the full pattern and examples.
-
-### aiohttp sessions that touch `github.com`
-
-GitHub sends a single ~9.2 KiB `Content-Security-Policy` header on every
-`github.com` response (archive downloads, `/login/device/code`, HTML pages).
-aiohttp's parser defaults cap a header field at **8190 bytes**, so the response
-fails with `ClientResponseError: 400, message='Got more than 8190 bytes when
-reading: b"default-src 'none'; ..."'` *before* the redirect to
-`codeload.github.com` is followed. That is what broke integration installs and
-the GitHub device flow (upstream: hacs/integration#5644).
-
-Always build such sessions with `shim.http.github_session()` instead of
-`aiohttp.ClientSession()`; it raises `max_line_size`/`max_field_size` to bounded
-values (16 KiB / 64 KiB) and forwards any kwargs. `homeassistant.helpers
-aiohttp_client` stubs use it too, so integrations that download from GitHub get
-the same limits. Keep the limits bounded — never disable the check.
-
-## MQTT Topic Naming
-
-MQTT topics used for Home Assistant discovery must follow specific naming conventions:
-
-### Topic Structure
-
-Topics follow the pattern: `homeassistant/<platform>/<entity_id>/<suffix>`
-
-Examples:
-- Discovery config: `homeassistant/sensor/living-room-temperature/config`
-- State topic: `homeassistant/sensor/living-room-temperature/state`
-- Command topic: `homeassistant/switch/living-room/set`
-
-### Naming Rules
-
-1. **Use dashes (`-`) not underscores (`_`) or colons (`:`)** in MQTT topic names
-   - Entity ID: `sensor.living_room` (Home Assistant format)
-   - MQTT topic: `living-room` (MQTT format)
-   - Colons from some integrations (e.g., `device:001:section`) also convert to dashes: `device-001-section`
-   - *Why?* Home Assistant doesn't handle colons well in MQTT discovery. Dashes are safe while colons can cause issues. The Entity class has an `mqtt_object_id` property that handles this automatically.
-
-2. **Conversion function**: Use `get_mqtt_entity_id()` from `shim/entity.py`:
-
-   ```python
-   from shim.entity import get_mqtt_entity_id
-   
-   entity_id = "fan.living_room"
-   mqtt_id = get_mqtt_entity_id(entity_id)  # Returns: "living-room"
-   topic = f"homeassistant/fan/{mqtt_id}/state"
-
-   # Also handles colons from integrations like Dreo
-   entity_id = "fan.device:001:section"
-   mqtt_id = get_mqtt_entity_id(entity_id)  # Returns: "device-001-section"
-   ```
-
-3. **Reverse conversion**: When receiving commands from HA, convert dashes back to underscores:
-
-   ```python
-   # MQTT topic: homeassistant/fan/living-room/set
-   parts = topic.split("/")
-   object_id = parts[2].replace("-", "_")  # "living-room" -> "living_room"
-   entity_id = f"{parts[1]}.{object_id}"   # "fan.living_room"
-   ```
-
-**Why dashes?** MQTT topic naming conventions recommend avoiding underscores in topic names. Dashes are more readable and standard in MQTT ecosystems. Home Assistant's MQTT discovery format expects this convention.
-
-## Entity Descriptions and FrozenOrThawed
-
-When creating `EntityDescription` subclasses for platform entities, use the `FrozenOrThawed` metaclass with `frozen_or_thawed=True`:
-
-```python
-from ..entity import EntityDescription
-from ..frozen_dataclass_compat import FrozenOrThawed
-
-class MyEntityDescription(EntityDescription, metaclass=FrozenOrThawed, frozen_or_thawed=True):
-    """Description for my entity type."""
-
-    custom_field: Optional[str] = None
-```
-
-**Why use FrozenOrThawed?**
-
-- `EntityDescription` uses `FrozenOrThawed` metaclass to create frozen dataclasses internally
-- This allows child classes to be either frozen or non-frozen via standard `@dataclass` decorator
-- All platform EntityDescriptions should use `frozen_or_thawed=True` for consistency with Home Assistant
-- External integrations can use either `@dataclass(frozen=True)` or `@dataclass` (non-frozen)
-
-**For external integrations:**
-
-Use standard `@dataclass` decorator with either frozen or non-frozen:
-
-```python
-from dataclasses import dataclass
-from homeassistant.backports.entity import EntityDescription
-
-# Non-frozen (default) - for maximum compatibility
-@dataclass
-class CustomEntityDescription(EntityDescription):
-    """Custom entity description."""
-    custom_field: str = "default"
-
-# Or frozen
-@dataclass(frozen=True)
-class FrozenEntityDescription(EntityDescription):
-    """Frozen entity description."""
-    custom_field: str = "default"
-```
-
-**Note:** The `FrozenOrThawed` metaclass works around Python dataclass inheritance rules by creating frozen dataclasses internally while allowing subclasses to choose their frozen status via `@dataclass` decorator.
+→ [`docs/testing.md`](docs/testing.md) for coverage runs, integration-compat
+patterns, and stub-module testing.
 
 ## Entity Registry and Config Entry Tracking
 
-The `EntityRegistry` now tracks entities by config entry ID:
+The `EntityRegistry` tracks entities by config entry ID:
 
 - Each entity registered during `async_setup_entry` gets `_attr_config_entry_id` set to the current entry's ID
 - `EntityRegistry` maintains `_entries_by_config_entry: Dict[str, List[RegistryEntry]]` for lookups
 - `RegistryEntry` entity registry entries (compatible with HA's entity registry format) track `entity_id`, `unique_id`, `config_entry_id`, and `disabled` status
 - Cleanup on unregister: when an entity is unregistered, it's removed from both the flat `_entities` dict and the config-entry-bucketed `_entries_by_config_entry` dict
 
-## Web Layer Architecture
+## Code conventions
 
-The web UI (`shim/web/`) is built with FastAPI and Jinja2 templates using a modular route structure:
+4-space indent, 100 columns, single quotes, `snake_case`/`PascalCase`,
+`UPPER_SNAKE_CASE` for constants, try-except around I/O, colorlog `logger`.
 
-```
-shim/web/
-├── app.py              # WebUI class, FastAPI setup, route registration
-├── const.py            # Web-specific constants
-├── schema.py           # Pydantic models for API request/response validation
-├── renderers.py        # Template rendering helpers
-├── supervisor.py       # Supervisor API client wrapper
-├── translations.py     # Translation string utilities
-└── routes/             # Route handlers by domain
-    ├── __init__.py
-    ├── api.py          # REST API endpoints (states, services, events)
-    ├── auth.py         # Authentication routes
-    ├── config_flows.py # Config flow UI (wizard steps, forms)
-    ├── credentials.py  # Application credentials management
-    ├── fragments.py    # HTMX fragment endpoints
-    └── integrations.py # Integration list, detail, enable/disable/remove
-```
-
-### Adding New Routes
-
-When adding new web endpoints:
-
-1. **Pick the right module**: Add to an existing route file by domain, or create a new one under `routes/`
-2. **Use `register_routes(app, shim_manager, template_dir)`**: Each module exposes this function signature
-3. **Register in `WebUI._register_routes()`**: Import and call the module's `register_routes` in `app.py`
-4. **Keep `app.py` thin**: Only FastAPI setup and route registration belong in `app.py`
-
-## Web UI and HA Ingress
-
-The Web UI uses **relative paths** for all HTMX redirects to support both direct access and Home Assistant ingress:
-
-### Path Rules
-
-- **Always use relative paths** in `HX-Redirect` headers
-- **Never use absolute paths** starting with `/`
-- **Use the `_get_detail_redirect()` helper** for redirects to integration detail pages - it detects the source page from the Referer header and returns the appropriate path:
-  - From index page: returns `./integrations/{domain}`
-  - From detail page: returns `.` (current page)
-
-### Examples
-
-| Endpoint | Source Page | Redirect Path | Result |
-|----------|-------------|---------------|--------|
-| `/integrations/{domain}/enable` | Index | `./integrations/{domain}` | `/integrations/dreo` |
-| `/integrations/{domain}/enable` | Detail | `.` | `/integrations/dreo` (stays) |
-| `/integrations/{domain}/remove` | Detail | `..` | `/` (index) |
-
-### Why Context-Aware Redirects?
-
-HTMX resolves `HX-Redirect` relative to the **page URL where the request originated**, not the request URL. This means:
-
-- From index `/`: `./integrations/{domain}` → `/integrations/{domain}` ✓
-- From detail `/integrations/{domain}`: `./integrations/{domain}` → `/integrations/integrations/{domain}` ✗
-
-The `_get_detail_redirect()` helper uses the `Referer` header to detect which page the request came from and returns the appropriate relative path.
+→ [`docs/code-style.md`](docs/code-style.md) for the full list and examples.

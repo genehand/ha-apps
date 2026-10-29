@@ -28,7 +28,7 @@ from shim.stubs.application_credentials import (
     AuthImplementation,
     setup_application_credentials,
 )
-from shim.ha_fetched.exceptions import (
+from homeassistant.exceptions import (
     OAuth2TokenRequestError,
     OAuth2TokenRequestReauthError,
     OAuth2TokenRequestTransientError,

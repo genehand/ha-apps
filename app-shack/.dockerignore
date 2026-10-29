@@ -1,19 +1,27 @@
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info/
+# Patterns are matched from the build-context root and `*` does not cross `/`,
+# so anything that can appear below `rootfs/` needs a `**` prefix.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.Python
+**/*.so
+**/*.egg
+**/*.egg-info/
+**/dist/
+**/build/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.coverage
+**/*.log
+**/.DS_Store
+
+# Local runtime state and credentials
 rootfs/app/.venv/
 rootfs/app/data/
-dist/
-build/
-.pytest_cache/
-.coverage
-*.log
-.DS_Store
+**/shack-config.yaml
+
+# Local config at the context root; the app manifest is not.
 *.yaml
 !config.yaml
 !build.yaml

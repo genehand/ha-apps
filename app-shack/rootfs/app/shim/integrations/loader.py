@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Callable
 from ..logging import get_logger, set_current_integration
 from ..hass import HomeAssistant
 from ..models import ConfigEntry, _slugify_name
+from ..config_entries import apply_step_id_fallback
 from ..entity import (
     EntityRegistry,
     async_get_entity_platform,
@@ -24,6 +25,9 @@ from ..options_map import patch_select_descriptions
 from .manager import IntegrationManager, IntegrationInfo
 
 _LOGGER = get_logger(__name__)
+
+# HA's cap for the SETUP_RETRY backoff (homeassistant/config_entries.py).
+SETUP_RETRY_MAX_WAIT = 600
 
 
 class IntegrationLoader:
@@ -153,6 +157,12 @@ class IntegrationLoader:
 
     async def setup_integration(self, entry: ConfigEntry) -> bool:
         """Setup an integration with a config entry."""
+        from homeassistant.exceptions import (
+            ConfigEntryAuthFailed,
+            ConfigEntryError,
+            ConfigEntryNotReady,
+        )
+
         domain = entry.domain
 
         # Load the integration first
@@ -192,15 +202,18 @@ class IntegrationLoader:
                             if hasattr(config_flow_module, attr_name):
                                 target_version = getattr(config_flow_module, attr_name)
                                 break
-                        # Also check for class-level VERSION in ConfigFlow class
-                        if target_version is None and hasattr(
-                            config_flow_module, "ConfigFlow"
-                        ):
-                            config_flow_class = getattr(
-                                config_flow_module, "ConfigFlow"
+                        # Otherwise the flow handler's own VERSION (HA reads the
+                        # registered handler, not the ConfigFlow base class —
+                        # reading the base would always yield 1 and skip every
+                        # migration).
+                        if target_version is None:
+                            config_flow_class = await self._get_config_flow_class(
+                                domain
                             )
-                            if hasattr(config_flow_class, "VERSION"):
-                                target_version = getattr(config_flow_class, "VERSION")
+                            if config_flow_class is not None:
+                                target_version = getattr(
+                                    config_flow_class, "VERSION", None
+                                )
                     except ImportError:
                         pass
 
@@ -216,13 +229,36 @@ class IntegrationLoader:
                         _LOGGER.debug(
                             f"Migration result for {domain}: {migrate_result}"
                         )
-                        # Persist the updated entry version after successful migration
-                        if migrate_result:
-                            await self._save_updated_config_entry(entry)
-                            _LOGGER.debug(
-                                f"Saved migrated config entry {entry.entry_id} with version {entry.version}"
+                        # HA 2026.11: migrations return None, they no longer
+                        # return a boolean. False still means failure for custom
+                        # integrations (which core turns into a ConfigEntryError).
+                        # Treating None as failure would re-run the migration on
+                        # every start and never persist the new version.
+                        if migrate_result is False:
+                            _LOGGER.error(
+                                f"Migration of {domain} config entry "
+                                f"{entry.entry_id} failed"
                             )
+                            entry.state = "migration_error"
+                            await entry._run_unload_callbacks(self._hass)
+                            return False
+                        await self._save_updated_config_entry(entry)
+                        _LOGGER.debug(
+                            f"Saved migrated config entry {entry.entry_id} with version {entry.version}"
+                        )
                 except Exception as e:
+                    from homeassistant.exceptions import ConfigEntryError
+
+                    if isinstance(e, ConfigEntryError):
+                        # HA 2026.11: a migration raises instead of returning
+                        # False; the entry must not be set up half-migrated.
+                        _LOGGER.error(
+                            f"Migration of {domain} entry {entry.entry_id} "
+                            f"failed: {e}"
+                        )
+                        entry.state = "migration_error"
+                        await entry._run_unload_callbacks(self._hass)
+                        return False
                     _LOGGER.warning(f"Migration check for {domain} raised: {e}")
 
             # Call setup with config entry context variable set
@@ -236,6 +272,30 @@ class IntegrationLoader:
                 )
                 result = await module.async_setup_entry(self._hass, entry)
                 _LOGGER.debug(f"async_setup_entry for {domain} returned: {result}")
+            except ConfigEntryAuthFailed as e:
+                # The credentials are dead: only the user can fix this. Start a
+                # reauth flow so the failure is actionable instead of a silent
+                # setup_error (HA error handling parity).
+                _LOGGER.warning(
+                    f"Config entry '{entry.title}' for {domain} integration "
+                    f"could not authenticate: {e or 'no reason given'}"
+                )
+                entry.state = "setup_error"
+                await entry._run_unload_callbacks(self._hass)
+                entry.async_start_reauth(self._hass)
+                return False
+            except ConfigEntryNotReady as e:
+                # Transient: HA sets SETUP_RETRY and retries with capped
+                # exponential backoff, it does not fail the entry.
+                self._async_schedule_setup_retry(entry, e)
+                return False
+            except ConfigEntryError as e:
+                _LOGGER.exception(
+                    f"Error setting up entry {entry.title} for {domain}: {e}"
+                )
+                entry.state = "setup_error"
+                await entry._run_unload_callbacks(self._hass)
+                return False
             except Exception as e:
                 import traceback
 
@@ -255,23 +315,36 @@ class IntegrationLoader:
             finally:
                 current_entry.reset(token)
 
-            if result:
-                _LOGGER.debug(f"Successfully setup {domain}")
-                entry.state = "loaded"
-
-                # Create a reload button entity for this entry so users
-                # can trigger a reload from Home Assistant (MQTT button press)
-                await self._create_reload_button(entry)
-
-                return True
-            else:
-                _LOGGER.error(f"Integration {domain} setup returned False")
+            # HA 2026.11: async_setup_entry returns None on success (it raises a
+            # ConfigEntry* exception on failure). Custom integrations may still
+            # return a boolean, so only an explicit False is a failure — reading
+            # the value for truthiness would reject every migrated integration.
+            if result is False:
+                _LOGGER.error(
+                    f"Integration {domain} async_setup_entry returned False; "
+                    "raise ConfigEntryNotReady or ConfigEntryError instead"
+                )
                 entry.state = "setup_error"
-                # HA runs the on-unload callbacks when setup fails, so a
-                # partially started integration (sockets opened, tasks created
-                # before the failing step) does not keep running unsupervised.
                 await entry._run_unload_callbacks(self._hass)
                 return False
+
+            if result is None:
+                _LOGGER.debug(f"Successfully setup {domain} (returned None)")
+            else:
+                _LOGGER.debug(f"Successfully setup {domain} (returned {result!r})")
+
+            entry.state = "loaded"
+            entry._retry_count = 0
+            cancel_retry = getattr(entry, "_cancel_retry_setup", None)
+            if cancel_retry is not None:
+                cancel_retry()
+                entry._cancel_retry_setup = None
+
+            # Create a reload button entity for this entry so users
+            # can trigger a reload from Home Assistant (MQTT button press)
+            await self._create_reload_button(entry)
+
+            return True
 
         except Exception as e:
             import traceback
@@ -283,6 +356,47 @@ class IntegrationLoader:
             return False
         finally:
             set_current_integration(None)
+
+    def _async_schedule_setup_retry(
+        self, entry: ConfigEntry, err: Exception
+    ) -> None:
+        """Set SETUP_RETRY and retry setup with capped exponential backoff.
+
+        Mirrors HA: ``ConfigEntryNotReady`` is transient, so the entry is not
+        failed; it is retried after ``min(2**tries * 5, 600)`` seconds. Without
+        this, an integration that raises the documented exception (the pattern
+        that replaced ``return False``) would sit in setup_error until the user
+        reloads it by hand.
+        """
+        from homeassistant.helpers.event import async_call_later
+
+        tries = getattr(entry, "_retry_count", 0) + 1
+        wait_time = min(2 ** (tries - 1) * 5, SETUP_RETRY_MAX_WAIT)
+        entry._retry_count = tries
+        entry.state = "setup_retry"
+        _LOGGER.info(
+            f"Config entry '{entry.title}' for {entry.domain} integration not "
+            f"ready yet: {err or 'no reason given'}; retrying in {wait_time} seconds"
+        )
+
+        cancel_retry = getattr(entry, "_cancel_retry_setup", None)
+        if cancel_retry is not None:
+            cancel_retry()
+
+        async def _retry() -> None:
+            entry._cancel_retry_setup = None
+            # A manual reload/unload or a successful setup in the meantime wins
+            # over the retry. The module stays in _loaded_integrations after a
+            # failed setup, so that mapping cannot be used as a guard here.
+            if entry.state != "setup_retry":
+                return
+            if self._hass.config_entries.async_get_entry(entry.entry_id) is None:
+                return
+            await self.setup_integration(entry)
+
+        entry._cancel_retry_setup = async_call_later(
+            self._hass, wait_time, _retry
+        )
 
     async def unload_integration(
         self, entry: ConfigEntry, cleanup_mqtt: bool = True
@@ -302,6 +416,13 @@ class IntegrationLoader:
         try:
             set_current_integration(domain)
             _LOGGER.debug(f"Unloading {domain} (cleanup_mqtt={cleanup_mqtt})")
+
+            # A pending setup retry must not resurrect the integration after
+            # a manual unload/reload.
+            cancel_retry = getattr(entry, "_cancel_retry_setup", None)
+            if cancel_retry is not None:
+                cancel_retry()
+                entry._cancel_retry_setup = None
 
             # Abort any in-progress reauth flows for this entry so stale
             # flows (and their persistent notifications) are cleaned up
@@ -330,8 +451,14 @@ class IntegrationLoader:
                         f"async_unload_entry traceback:\n{traceback.format_exc()}"
                     )
                 else:
-                    if not result:
-                        _LOGGER.warning(f"Integration {domain} unload returned False")
+                    # HA 2026.11: unload returns None; only an explicit False
+                    # is a failed unload (custom integrations may still return
+                    # a boolean).
+                    if result is False:
+                        _LOGGER.warning(
+                            f"Integration {domain} async_unload_entry returned "
+                            "False; raise ConfigEntryError instead"
+                        )
 
             # Clear shutdown flag
             if hasattr(self._hass, "_shim_shutdown_in_progress"):
@@ -996,7 +1123,8 @@ class IntegrationLoader:
                         _LOGGER.debug(
                             f"async_setup_entry for {domain} returned: {result}"
                         )
-                        if result:
+                        # None (HA 2026.11) and True both mean success.
+                        if result is not False:
                             entry.state = "loaded"
                     except Exception as e:
                         _LOGGER.warning(
@@ -1056,8 +1184,9 @@ class IntegrationLoader:
             # Store the flow object
             self._hass.config_entries._flow_progress[flow_id] = options_flow
 
-            # Start the flow at init step
+            # Start the config flow at init step
             result = await options_flow.async_step_init(None)
+            result = apply_step_id_fallback(options_flow, "init", result)
             result["flow_id"] = flow_id
 
             _LOGGER.info(f"Started options flow for {domain} entry {entry.entry_id}")
@@ -1150,6 +1279,7 @@ class IntegrationLoader:
                 else:
                     result = await step_method(user_input)
 
+            result = apply_step_id_fallback(flow, step_id, result)
             result["flow_id"] = flow_id
 
             # Update cur_step_id based on result type
@@ -1306,6 +1436,7 @@ class IntegrationLoader:
 
             # Start the flow
             result = await flow.async_step_user(None)
+            result = apply_step_id_fallback(flow, "user", result)
             result["flow_id"] = flow_id
 
             return result
@@ -1366,6 +1497,7 @@ class IntegrationLoader:
                 else:
                     result = await step_method(user_input)
 
+            result = apply_step_id_fallback(flow, step_id, result)
             result["flow_id"] = flow_id
 
             # Update cur_step_id based on result type

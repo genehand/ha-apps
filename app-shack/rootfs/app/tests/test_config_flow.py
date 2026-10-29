@@ -674,5 +674,256 @@ async def test_start_options_flow_returns_none_without_options_flow():
         cleanup_test_modules(domain)
 
 
+def create_integration_with_config_flow_source(shim_dir, domain, config_flow_source):
+    """Create a mock integration whose config_flow.py is written verbatim.
+
+    Lets a test exercise flow code that the default mock cannot express, such
+    as omitting ``step_id`` from ``async_show_form`` / ``async_show_menu``.
+    """
+    custom_components_dir = shim_dir / "custom_components"
+    custom_components_dir.mkdir(parents=True, exist_ok=True)
+    (custom_components_dir / "__init__.py").write_text("# custom_components package\n")
+
+    integration_dir = custom_components_dir / domain
+    integration_dir.mkdir(exist_ok=True)
+
+    (integration_dir / "__init__.py").write_text(f'''
+async def async_setup(hass, config):
+    """Set up the integration."""
+    hass.data["{domain}"] = {{}}
+    return True
+
+async def async_setup_entry(hass, entry):
+    """Set up a config entry."""
+    hass.data["{domain}"][entry.entry_id] = {{"data": "test"}}
+    return True
+''')
+
+    (integration_dir / "manifest.json").write_text(f'''
+{{
+    "domain": "{domain}",
+    "name": "Test Integration",
+    "version": "1.0.0",
+    "config_flow": true
+}}
+''')
+
+    (integration_dir / "config_flow.py").write_text(config_flow_source)
+    return integration_dir
+
+
+@pytest.mark.asyncio
+async def test_start_config_flow_backfills_missing_step_id(caplog):
+    """A flow that omits step_id still works, as in HA until 2027.5.0.
+
+    HA's flow manager fills in the step it called and logs a deprecation
+    warning; the shim used to raise TypeError from async_show_form instead.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_data_dir = Path(tmpdir)
+        hass, loader, shim_dir, integration_manager = setup_test_env(temp_data_dir)
+
+        domain = generate_unique_domain("nostepid")
+        create_integration_with_config_flow_source(
+            shim_dir,
+            domain,
+            f'''
+from homeassistant.config_entries import ConfigFlow
+
+class NoStepIdFlow(ConfigFlow, domain="{domain}"):
+    """Config flow that never passes step_id (pre-2027.5.0 style)."""
+
+    VERSION = 1
+
+    async def async_step_user(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="NoStepId", data=user_input)
+        return self.async_show_form(data_schema={{"host": "str"}})
+''',
+        )
+        _register_mock_integration(shim_dir, integration_manager, domain, "No StepId")
+
+        result = await loader.start_config_flow(domain)
+
+        assert result is not None
+        assert result.get("type") == "form"
+        assert result.get("step_id") == "user"
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("without a step_id" in message for message in messages), messages
+        assert any("async_step_user" in message for message in messages), messages
+
+        # The backfilled step_id keeps the flow navigable
+        result = await loader.continue_config_flow(
+            domain, result["flow_id"], {"host": "192.168.1.5"}
+        )
+        assert result is not None
+        assert result.get("type") == "create_entry"
+        assert result.get("data") == {"host": "192.168.1.5"}
+
+        cleanup_test_modules(domain)
+
+
+@pytest.mark.asyncio
+async def test_continue_config_flow_backfills_missing_step_id_for_menu(caplog):
+    """Menu and follow-up steps without step_id resolve to the called step."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_data_dir = Path(tmpdir)
+        hass, loader, shim_dir, integration_manager = setup_test_env(temp_data_dir)
+
+        domain = generate_unique_domain("nostepidmenu")
+        create_integration_with_config_flow_source(
+            shim_dir,
+            domain,
+            f'''
+from homeassistant.config_entries import ConfigFlow
+
+class NoStepIdMenuFlow(ConfigFlow, domain="{domain}"):
+    """Two-step flow that relies on the manager backfilling step_id."""
+
+    VERSION = 1
+
+    async def async_step_user(self, user_input=None):
+        return self.async_show_menu(menu_options=["network"])
+
+    async def async_step_network(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="Network", data=user_input)
+        return self.async_show_form(data_schema={{"host": "str"}})
+''',
+        )
+        _register_mock_integration(shim_dir, integration_manager, domain, "No StepId Menu")
+
+        result = await loader.start_config_flow(domain)
+        assert result is not None
+        assert result.get("type") == "menu"
+        assert result.get("step_id") == "user"
+        assert result.get("menu_options") == ["network"]
+
+        # Selecting the menu entry moves to async_step_network, whose form also
+        # omits step_id and must resolve to "network", not "user".
+        result = await loader.continue_config_flow(
+            domain, result["flow_id"], {"next_step": "network"}
+        )
+        assert result is not None
+        assert result.get("type") == "form"
+        assert result.get("step_id") == "network"
+
+        cleanup_test_modules(domain)
+
+
+@pytest.mark.asyncio
+async def test_start_options_flow_backfills_missing_step_id(caplog):
+    """Options flows get the same step_id fallback as config flows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_data_dir = Path(tmpdir)
+        hass, loader, shim_dir, integration_manager = setup_test_env(temp_data_dir)
+
+        domain = generate_unique_domain("nostepidopts")
+        create_integration_with_config_flow_source(
+            shim_dir,
+            domain,
+            f'''
+from homeassistant.config_entries import ConfigFlow, OptionsFlow
+
+class NoStepIdOptionsFlow(OptionsFlow):
+    """Options flow that omits step_id."""
+
+    async def async_step_init(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+        return self.async_show_form(data_schema={{"option": "str"}})
+
+
+class NoStepIdConfigFlow(ConfigFlow, domain="{domain}"):
+    """Config flow with an options flow."""
+
+    VERSION = 1
+
+    async def async_step_user(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="NoStepId", data=user_input)
+        return self.async_show_form(step_id="user", data_schema={{"host": "str"}})
+
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        return NoStepIdOptionsFlow(config_entry)
+''',
+        )
+        _register_mock_integration(
+            shim_dir, integration_manager, domain, "No StepId Options"
+        )
+
+        entry = ConfigEntry(
+            entry_id=f"{domain}_entry_1",
+            version=1,
+            domain=domain,
+            title="Test Entry",
+            data={"host": "192.168.1.1"},
+            options={},
+        )
+        await hass.config_entries.async_add(entry)
+        await loader.setup_integration(entry)
+
+        result = await loader.start_options_flow(entry)
+
+        assert result is not None
+        assert result.get("type") == "form"
+        assert result.get("step_id") == "init"
+
+        cleanup_test_modules(domain)
+
+
+class TestApplyStepIdFallback:
+    """Unit tests for the step_id backfill that mirrors HA's flow manager."""
+
+    def test_backfills_form(self, caplog):
+        from shim.config_entries import apply_step_id_fallback
+
+        flow = ConfigFlow()
+        result = apply_step_id_fallback(flow, "user", flow.async_show_form(data_schema=None))
+
+        assert result["step_id"] == "user"
+        assert any("without a step_id" in r.getMessage() for r in caplog.records)
+
+    def test_explicit_step_id_is_untouched(self, caplog):
+        from shim.config_entries import apply_step_id_fallback
+
+        flow = ConfigFlow()
+        result = apply_step_id_fallback(
+            flow, "user", flow.async_show_form(step_id="pair")
+        )
+
+        assert result["step_id"] == "pair"
+        assert not caplog.records
+
+    def test_create_entry_is_not_touched(self, caplog):
+        from shim.config_entries import apply_step_id_fallback
+
+        flow = ConfigFlow()
+        result = apply_step_id_fallback(
+            flow, "user", flow.async_create_entry(title="T", data={"host": "h"})
+        )
+
+        assert "step_id" not in result
+        assert not caplog.records
+
+    def test_external_step_is_backfilled(self, caplog):
+        from shim.config_entries import apply_step_id_fallback
+
+        flow = ConfigFlow()
+        result = apply_step_id_fallback(
+            flow, "auth", flow.async_external_step(url="https://example.com")
+        )
+
+        assert result["step_id"] == "auth"
+        assert result["url"] == "https://example.com"
+
+    def test_non_dict_result_is_passed_through(self):
+        from shim.config_entries import apply_step_id_fallback
+
+        assert apply_step_id_fallback(ConfigFlow(), "user", None) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

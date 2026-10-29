@@ -17,6 +17,34 @@ STATE_UNAVAILABLE = "unavailable"
 
 _LOGGER = get_logger(__name__)
 
+# Config entry id the shim stamps on a device row when the entity carries none
+# (``register_entity_device``). Mirrors HA's "the platform owns the device";
+# kept in one place because registry lookups must use the same id.
+DEFAULT_CONFIG_ENTRY_ID = "shack"
+
+# State attributes the *shim* injects into the state machine (see
+# ``Entity.async_write_ha_state``) and that MQTT discovery already transports as
+# first-class config keys. Publishing them again on ``json_attributes_topic``
+# only duplicates - or contradicts - the discovery config in the user's Home
+# Assistant, so they are filtered out of the JSON attributes payload.
+# ``attribution`` is deliberately absent: MQTT discovery has no equivalent key,
+# so dropping it would lose information instead of de-duplicating it.
+# ``friendly_name`` is here for the other half of the same problem: the shim's
+# own state machine does not add it, but a real ``State`` always does,
+# and the user's HA derives its own name for the MQTT entity.
+MQTT_METADATA_ATTRIBUTES = frozenset(
+    {
+        "device_class",
+        "entity_category",
+        "entity_picture",
+        "friendly_name",
+        "icon",
+        "state_class",
+        "supported_features",
+        "unit_of_measurement",
+    }
+)
+
 
 class EntityDescription(metaclass=FrozenOrThawed, frozen_or_thawed=True):
     """A class that describes Home Assistant entities."""
@@ -148,7 +176,81 @@ def get_device_info_attr(device_info: Any, attr: str, default: Any = None) -> An
         return getattr(device_info, attr, default)
 
 
-def build_mqtt_device_config(device_info: Any, hass: Any = None) -> Dict[str, Any]:
+def _iter_device_identifier_pairs(identifiers: Any):
+    """Yield ``(domain, id)`` pairs from a ``DeviceInfo.identifiers`` value.
+
+    Integrations ship identifiers as tuples, lists or bare strings (the shim's
+    ``format_device_identifiers`` tolerates all three for the payload). Only
+    proper 2-tuples can be looked up in a device registry, so everything else is
+    skipped here rather than raising inside the lookup.
+    """
+    for identifier in identifiers or ():
+        if isinstance(identifier, (tuple, list)) and len(identifier) == 2:
+            yield (str(identifier[0]), str(identifier[1]))
+
+
+def _async_lookup_registry_device(
+    registry: Any, identifiers: Any, config_entry_id: Optional[str] = None
+) -> Any:
+    """Find the registry row for a ``device_info``, using supported APIs only.
+
+    Two-step, mirroring what HA sanctions at 2026.10:
+
+    1. ``async_get_device_by_identifier(identifier, config_entry_id)`` - the
+       documented lookup, scoped to the owning config entry (identifiers are
+       unique within one).
+    2. ``registry.devices`` (a public ``Collection``) as the fallback for when
+       the caller does not know the entry id, or the row is owned by another
+       entry.
+
+    Deliberately *not* ``registry._devices`` (the shim's private dict, absent
+    from the real registry) and *not* ``registry.async_get_device()``
+    (deprecated upstream - ``helpers.frame`` raises for embedder code).
+    """
+    if registry is None:
+        return None
+
+    pairs = list(_iter_device_identifier_pairs(identifiers))
+    if not pairs:
+        return None
+
+    lookup = getattr(registry, "async_get_device_by_identifier", None)
+    if lookup is not None and config_entry_id:
+        for identifier in pairs:
+            try:
+                device = lookup(identifier, config_entry_id)
+            except Exception:  # pragma: no cover - defensive, see docstring
+                device = None
+            if device is not None:
+                return device
+
+    try:
+        devices = list(registry.devices)
+    except Exception:  # pragma: no cover - a registry without a public view
+        return None
+
+    wanted = set(pairs)
+    for device in devices:
+        if wanted & set(getattr(device, "identifiers", ())):
+            return device
+
+    return None
+
+
+def _device_string_attr(device: Any, attr: str) -> Optional[str]:
+    """Read a device-row field that the discovery payload can transport.
+
+    The MQTT device block is JSON-encoded, so only plain strings survive; a
+    missing row, a ``None`` field and (in tests) a mock all collapse to ``None``
+    instead of leaking into the payload and blowing up ``json.dumps``.
+    """
+    value = getattr(device, attr, None)
+    return value if isinstance(value, str) else None
+
+
+def build_mqtt_device_config(
+    device_info: Any, hass: Any = None, config_entry_id: Optional[str] = None
+) -> Dict[str, Any]:
     """Build MQTT device configuration dict from device_info.
 
     Only includes non-None values for manufacturer, model, and sw_version
@@ -159,6 +261,9 @@ def build_mqtt_device_config(device_info: Any, hass: Any = None) -> Dict[str, An
         hass: Optional HomeAssistant instance. When given, the registry lookup
             uses that instance's device registry; without it the shim falls back
             to the process-global registry (fine for a single instance).
+        config_entry_id: Owning config entry, used for the scoped registry
+            lookup. Falls back to :data:`DEFAULT_CONFIG_ENTRY_ID`, the id
+            ``register_entity_device`` stamps when the platform had none.
 
     Returns:
         Device configuration dict for MQTT discovery.
@@ -179,45 +284,38 @@ def build_mqtt_device_config(device_info: Any, hass: Any = None) -> Dict[str, An
         try:
             from homeassistant.helpers import device_registry as dr
 
-            # Get the registry - works with or without hass
             registry = dr.async_get(hass)
-            if registry and hasattr(registry, "_devices"):
-                # Look for matching device in registry
-                for device_id, device in registry._devices.items():
-                    # Check if any identifier matches
-                    if hasattr(device, "identifiers"):
-                        # Check for identifier overlap
-                        if identifiers & device.identifiers:
-                            registry_device = device
-                            break
+            registry_device = _async_lookup_registry_device(
+                registry, identifiers, config_entry_id or DEFAULT_CONFIG_ENTRY_ID
+            )
         except Exception:
             pass
 
     # Try to get name from device_info first, then fall back to registry
     name = get_device_info_attr(device_info, "name")
     if not name and registry_device is not None:
-        name = registry_device.name
+        name = _device_string_attr(registry_device, "name")
     if name:
         config["name"] = name
 
     # Try to get manufacturer from device_info first, then fall back to registry
     manufacturer = get_device_info_attr(device_info, "manufacturer")
     if not manufacturer and registry_device is not None:
-        manufacturer = registry_device.manufacturer
+        manufacturer = _device_string_attr(registry_device, "manufacturer")
     if manufacturer:
         config["manufacturer"] = manufacturer
 
     # Try to get model from device_info first, then fall back to registry
     model = get_device_info_attr(device_info, "model")
     if not model and registry_device is not None:
-        model = registry_device.model
+        model = _device_string_attr(registry_device, "model")
     if model:
         config["model"] = model
 
     # Try to get sw_version from device_info first, then fall back to registry
     sw_version = get_device_info_attr(device_info, "sw_version")
     if not sw_version and registry_device is not None:
-        sw_version = registry_device.sw_version
+        sw_version = _device_string_attr(registry_device, "sw_version")
     if sw_version:
         config["sw_version"] = sw_version
 
@@ -229,10 +327,13 @@ def build_entity_mqtt_device_config(entity: Any) -> Dict[str, Any]:
 
     Convenience wrapper around :func:`build_mqtt_device_config` that reads the
     entity's ``device_info`` and passes its ``hass`` (so the registry fallback
-    uses the right device registry instead of the process-global one).
+    uses the right device registry instead of the process-global one) and its
+    config entry (so the lookup is scoped the same way the row was created).
     """
     return build_mqtt_device_config(
-        getattr(entity, "device_info", None), getattr(entity, "hass", None)
+        getattr(entity, "device_info", None),
+        getattr(entity, "hass", None),
+        getattr(entity, "_attr_config_entry_id", None),
     )
 
 
@@ -263,7 +364,7 @@ def register_entity_device(
     """
     if config_entry_id is None:
         config_entry_id = getattr(entity, "_attr_config_entry_id", None)
-    config_entry_id = config_entry_id or "shack"
+    config_entry_id = config_entry_id or DEFAULT_CONFIG_ENTRY_ID
 
     # ``device_info`` is a property on integration entities and may raise (that
     # is the failure mode this helper exists to prevent going forward). One bad
@@ -412,6 +513,7 @@ class RegistryEntry:
         disabled: bool = False,
         disabled_by: Optional[str] = None,
         device_id: Optional[str] = None,
+        area_id: Optional[str] = None,
     ):
         self.entity_id = entity_id
         self.unique_id = unique_id
@@ -424,6 +526,10 @@ class RegistryEntry:
         # Device registry entry id this entity belongs to (HA ``RegistryEntry``
         # attribute). Set once the entity's device row exists.
         self.device_id = device_id
+        # Assigned area (HA ``RegistryEntry.area_id``). Nothing in the shim sets
+        # it today; it exists so ``area_registry``'s delete cascade has a field
+        # to clear instead of raising AttributeError.
+        self.area_id = area_id
 
 
 class ShimEntityPlatform:
@@ -631,6 +737,17 @@ class EntityRegistry:
             if entry.device_id == device_id
             and (include_disabled_entities or not entry.disabled)
         ]
+
+    def async_clear_area_id(self, area_id: str) -> None:
+        """Clear an area from every entity that has it.
+
+        Called by ``helpers.area_registry`` when an area is deleted, right after
+        the same call on the device registry.
+        """
+        for entries in self._entries_by_config_entry.values():
+            for entry in entries:
+                if entry.area_id == area_id:
+                    entry.area_id = None
 
     def get_registry_entry(self, entity_id: str) -> Optional[RegistryEntry]:
         """Return the registry entry for ``entity_id``, or None."""
@@ -1074,6 +1191,31 @@ class Entity:
         platform = self.entity_id.split(".")[0] if "." in self.entity_id else "sensor"
         return f"homeassistant/{platform}/{entity_id_clean}"
 
+    def _mqtt_extra_attributes(self) -> Dict[str, Any]:
+        """Return the state attributes that belong on the JSON attributes topic.
+
+        ``State.attributes`` mixes three kinds of key: integration-authored
+        ``extra_state_attributes``, the capability metadata the shim injects
+        itself in :meth:`async_write_ha_state` (``device_class``, ``icon``,
+        ``unit_of_measurement``, ``supported_features``, ...), and the
+        ``friendly_name`` a state machine adds. The first kind is what the
+        attributes topic is for; the rest is already carried by the discovery
+        config, so publishing it again shows up in the user's Home Assistant as
+        bogus extra attributes. See :data:`MQTT_METADATA_ATTRIBUTES`.
+
+        Keys are normalised to plain strings because a real ``State``
+        uses ``EntityStateAttribute`` (a ``StrEnum``) members as keys.
+        """
+        state = self.hass.states.get(self.entity_id)
+        if state is None or not state.attributes:
+            return {}
+
+        return {
+            str(key): value
+            for key, value in state.attributes.items()
+            if str(key) not in MQTT_METADATA_ATTRIBUTES
+        }
+
     def _publish_mqtt_attributes(self) -> None:
         """Publish extra_state_attributes to MQTT if present.
 
@@ -1081,8 +1223,8 @@ class Entity:
         to handle attribute publishing consistently across all entity types.
         """
 
-        state = self.hass.states.get(self.entity_id)
-        if state is None or not state.attributes:
+        attributes = self._mqtt_extra_attributes()
+        if not attributes:
             return
 
         if not hasattr(self.hass, "_mqtt_client"):
@@ -1099,9 +1241,7 @@ class Entity:
         import json
 
         attr_topic = f"{base_topic}/attributes"
-        mqtt.publish(
-            attr_topic, json.dumps(state.attributes), qos=0, retain=True
-        )
+        mqtt.publish(attr_topic, json.dumps(attributes), qos=0, retain=True)
 
         # Republish discovery config to ensure json_attributes_topic is registered
         # This handles the case where discovery was published before attributes existed
@@ -1114,11 +1254,13 @@ class Entity:
     def _add_mqtt_attributes_to_config(self, config: Dict[str, Any]) -> None:
         """Add json_attributes_topic to discovery config if entity has attributes.
 
+        Uses the same filtered payload as :meth:`_publish_mqtt_attributes`, so we
+        never advertise a topic that carries nothing but capability metadata.
+
         Args:
             config: The MQTT discovery config dict to modify.
         """
-        state = self.hass.states.get(self.entity_id)
-        if state is None or not state.attributes:
+        if not self._mqtt_extra_attributes():
             return
 
         base_topic = self._get_mqtt_base_topic()

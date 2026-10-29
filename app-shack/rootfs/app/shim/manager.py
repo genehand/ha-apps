@@ -121,6 +121,13 @@ class ShimManager:
         )
         _LOGGER.debug("Application credentials storage initialized")
 
+        # Registries come from the wheel now, and upstream loads them
+        # during bootstrap, which the shim does not run. Without this an
+        # integration asking for the floor/label/category/issue registry gets an
+        # empty one -- silently, since those APIs never fail, they just report
+        # that nothing exists.
+        await self._async_load_registries()
+
         # Setup MQTT subscriptions
         self._setup_mqtt_subscriptions()
 
@@ -136,6 +143,32 @@ class ShimManager:
         await self._integration_manager.start_background_tasks()
 
         _LOGGER.debug("Shim Manager phase 1 complete (ready for web server)")
+
+    async def _async_load_registries(self) -> None:
+        """Load the upstream registries (upstream does this in bootstrap)."""
+        from homeassistant.helpers import (
+            area_registry,
+            category_registry,
+            floor_registry,
+            issue_registry,
+            label_registry,
+        )
+
+        for module in (
+            area_registry,
+            floor_registry,
+            label_registry,
+            category_registry,
+            issue_registry,
+        ):
+            # Already-created registries were created *unloaded*; async_load()
+            # asserts on that, so skip rather than trip the assert.
+            if module.DATA_REGISTRY in self._hass.data:
+                continue
+            try:
+                await module.async_load(self._hass)
+            except Exception:
+                _LOGGER.exception("Could not load %s", module.__name__)
 
     async def start_integration_loading(self) -> None:
         """Start loading integrations in the background (phase 2).

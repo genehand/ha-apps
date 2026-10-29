@@ -756,6 +756,25 @@ class ConfigEntries:
         _LOGGER.debug(f"Unloading platforms {platforms} for {entry.domain}")
         return True
 
+    async def async_unload_platforms_or_raise(
+        self, entry: ConfigEntry, platforms: List[str]
+    ) -> None:
+        """Unload platforms for an entry, raising on failure.
+
+        HA 2026.11 replacement for ``async_unload_platforms`` used by migrated
+        integrations: ``async_unload_entry`` returns ``None`` and raises a
+        ``ConfigEntryError`` instead of returning ``False``. The shim's platform
+        teardown is entity-driven and does not fail per platform, so this only
+        raises if a future implementation of ``async_unload_platforms`` reports
+        a failure.
+        """
+        from homeassistant.exceptions import ConfigEntryError
+
+        if not await self.async_unload_platforms(entry, platforms):
+            raise ConfigEntryError(
+                f"Failed to unload one or more platforms for {entry.title}"
+            )
+
     @property
     def flow(self):
         """Return the flow manager."""
@@ -776,6 +795,7 @@ class FlowManager:
         data: Optional[dict] = None,
     ) -> dict:
         """Initialize a new config flow."""
+        from .config_entries import apply_step_id_fallback
         from .integrations.loader import IntegrationLoader
 
         # Get the integration loader from hass data
@@ -807,6 +827,7 @@ class FlowManager:
             if flow and hasattr(flow, step_method):
                 step_func = getattr(flow, step_method)
                 result = await step_func(data)
+                result = apply_step_id_fallback(flow, source, result)
                 result["flow_id"] = flow_id
 
                 # Auto-complete if the step returned a form/menu with no required fields
@@ -840,6 +861,9 @@ class FlowManager:
                                 if hasattr(flow, step_method):
                                     step_func = getattr(flow, step_method)
                                     result = await step_func({})  # Empty user input
+                                    result = apply_step_id_fallback(
+                                        flow, step_id, result
+                                    )
                                     result["flow_id"] = flow_id
                         except Exception as e:
                             _LOGGER.warning(f"Error auto-submitting form: {e}")

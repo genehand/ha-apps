@@ -170,7 +170,16 @@
                 <div style="flex: 1; min-width: 0;">
                     <h4 style="margin: 0;">{{ entry.title }}</h4>
                 </div>
-                <span class="badge" style="font-size: 0.8rem; padding: 0.25rem 0.5rem; border-radius: 9999px; flex-shrink: 0; {% if entry.state == 'loaded' %}background: var(--pico-primary-background); color: var(--pico-primary-inverse);{% else %}background: var(--pico-muted-border-color); color: var(--pico-muted-color);{% endif %}">{{ 'Loaded' if entry.state == 'loaded' else 'Not loaded' }}</span>
+                {% set state_labels = {
+                    'loaded': 'Loaded',
+                    'not_loaded': 'Not loaded',
+                    'setup_in_progress': 'Setting up',
+                    'setup_retry': 'Setup retry',
+                    'setup_error': 'Setup error',
+                    'migration_error': 'Migration error',
+                    'failed_unload': 'Failed unload',
+                } %}
+                <span class="badge" title="Config entry state: {{ entry.state }}" style="font-size: 0.8rem; padding: 0.25rem 0.5rem; border-radius: 9999px; flex-shrink: 0; {% if entry.state == 'loaded' %}background: var(--pico-primary-background); color: var(--pico-primary-inverse);{% elif entry.state in ('setup_error', 'migration_error', 'failed_unload') %}background: var(--pico-del-color, #b3261e); color: #fff;{% else %}background: var(--pico-muted-border-color); color: var(--pico-muted-color);{% endif %}">{{ state_labels.get(entry.state, entry.state) }}</span>
             </div>
             <div style="font-size: 0.9rem; color: var(--pico-muted-color); margin-bottom: 1rem;">
                 ID: {{ entry.entry_id }}

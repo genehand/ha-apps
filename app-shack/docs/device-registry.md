@@ -64,6 +64,19 @@ Faithful to HA where it matters:
   (HA's `ConfigEntries._async_clean_up`).
 - **`async_entries_for_config_entry(registry, entry_id)`** is implemented (it used
   to be a stub returning `[]`).
+- **`area_id` is a real attribute**, settable through
+  `async_update_device(area_id=...)` (it used to be accepted and silently
+  ignored), and **`async_clear_area_id(area_id)`** exists because upstream's
+  `helpers.area_registry.async_delete()` calls it here *and* on the entity
+  registry when an area is deleted.
+- **`suggested_area` becomes an `area_id`, once.** Upstream applies the hint
+  inside `DeviceRegistry.async_get_or_create` and only when it creates the row:
+  it resolves the name through `area_registry.async_get_or_create(name)`, i.e. an
+  unknown room name *creates* the area. An existing device keeps the area it has,
+  so an integration that keeps sending its hint cannot undo a user's move — and
+  an unmapped hint must not litter the registry with areas. The hint itself stays
+  on the entry (`DeviceEntry.suggested_area`, deprecated upstream and
+  runtime-only there) because that is what integrations read back.
 
 Deliberate deviations:
 
@@ -75,6 +88,15 @@ Deliberate deviations:
 - A new device is **not** named after its config entry title (HA does this). MQTT
   discovery falls back to the registry for name/manufacturer/model/`sw_version`,
   so inventing a name would silently rename every device in Home Assistant.
+- Applying `suggested_area` is **best effort**: if the area registry throws, the
+  hint is dropped and logged at warning level. Losing a device row is worse —
+  integrations resolve `via_device_id` through this registry, and a failed row
+  breaks their platform setup (the regression this registry exists for). Upstream
+  lets the error escape instead.
+- The area is resolved through the **loaded** registry. `ShimManager` loads
+  `helpers.area_registry` at startup, so this holds; a standalone registry (tests)
+  that never called `area_registry.async_load(hass)` creates the area in a
+  registry that has nothing on disk to merge with.
 
 ## MQTT Discovery Interaction
 
@@ -89,6 +111,9 @@ identifiers-only (see `tests/test_device_registration.py`).
 
 - `tests/test_device_registry.py` — matching/merging, `via_device` resolution,
   `config_entry_id`, lookups, unload/removal hooks.
+- `tests/test_upstream_helpers.py` — the area cascade (create/assign/delete through
+  the upstream `helpers.area_registry`) and `suggested_area` → `area_id` (reuse an
+  existing area, create a new one, never move an existing device).
 - `tests/test_device_registration.py` — the entity-add paths end to end with a fake
   gateway/sub-device integration, reload idempotency (no duplicate rows), reload
   button placement, and the discovery device-block shape.

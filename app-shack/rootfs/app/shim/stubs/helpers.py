@@ -1,19 +1,23 @@
 """Home Assistant helpers stub modules.
 
 Provides device_registry, config_validation, entity_platform, aiohttp_client,
-issue_registry, entity_registry, entity_component, config_entry_oauth2_flow,
-event, restore_state, dispatcher, service_info, network, storage, and instance_id.
+entity_registry, entity_component, config_entry_oauth2_flow, event,
+restore_state, service_info and selector.
+
+Everything else in ``homeassistant.helpers`` comes from the wheel -- see
+``UPSTREAM_HELPER_MODULES`` in import_patch.py (storage, dispatcher, start,
+instance_id, json, network, area/floor/label/category/issue registries,
+debounce, ratelimit, location, sun, trace). A name must never be in both places:
+``sys.modules`` wins, so the stub would silently shadow the real module.
 """
 
 import asyncio
 import inspect
 import sys
 import types
-import uuid
 from collections.abc import Mapping
 from dataclasses import MISSING, dataclass, field, fields
 from enum import Enum
-from pathlib import Path
 from typing import Any, ClassVar, Never, Optional
 
 import aiohttp
@@ -159,6 +163,10 @@ class DeviceEntry:
     via_device_id: Optional[str] = None
     configuration_url: Optional[str] = None
     suggested_area: Optional[str] = None
+    # The assigned area (upstream ``DeviceEntry.area_id``), as set through
+    # ``async_update_device(area_id=...)``, by ``area_registry`` cascades, or -
+    # on creation only - from the ``suggested_area`` name hint above.
+    area_id: Optional[str] = None
     config_subentry_id: Optional[str] = None
     disabled_by: Optional[str] = None
 
@@ -243,6 +251,17 @@ class DeviceRegistry:
     def async_get(self, device_id):
         """Get a device by id."""
         return self._devices.get(device_id)
+
+    @property
+    def devices(self):
+        """All device rows, as a public collection (upstream: ``devices``).
+
+        Upstream exposes ``Collection[DeviceEntry]`` and *raises* if an embedder
+        treats it as a mapping, so callers must iterate it. Provided here so code
+        can be written once against the same API for the wrapper and a real
+        registry (see ``docs/tier-c-spike.md`` §6.1).
+        """
+        return self._devices.values()
 
     def _get_entry(self, identifiers=None, connections=None, *, config_entry_id=None):
         """Return the first device matching an identifier or connection.
@@ -406,9 +425,49 @@ class DeviceRegistry:
                 device, tuple(via_device), config_entry_id=config_entry_id
             )
 
+        if created and suggested_area:
+            # HA applies the hint once, where the row is created: the name is
+            # looked up in the area registry and the area is created when it is
+            # new. An existing device keeps the area it has (so an integration
+            # that keeps sending the hint cannot undo a user's move), and the
+            # hint itself stays on the entry - upstream deprecated it, which is
+            # why nothing else reads it.
+            device.area_id = self._area_id_for_name(suggested_area)
+
         if config_entry_id:
             self._live_device_ids.setdefault(config_entry_id, set()).add(device.id)
         return device
+
+    def _area_id_for_name(self, suggested_area: str) -> Optional[str]:
+        """Resolve a ``suggested_area`` name to an area id, creating the area.
+
+        HA parses the hint in ``DeviceRegistry.async_get_or_create`` (device
+        creation only) through ``area_registry.async_get(hass)
+        .async_get_or_create(name)``, so an integration that only knows a room
+        name still ends up with ``device_entry.area_id`` set - which is what
+        integrations read back.
+
+        A failure here must never cost the device row: integrations resolve
+        ``via_device_id`` through this registry, so losing the row breaks their
+        platform setup. Log it and drop the hint instead.
+        """
+        if self.hass is None:
+            # The process-global registry (no hass at all) has no area registry
+            # to resolve against; there is nothing to warn about.
+            return None
+        try:
+            # Local import: the area registry imports this module back (HA does
+            # the same at the one call site, for the same reason).
+            from homeassistant.helpers import area_registry as ar
+
+            return ar.async_get(self.hass).async_get_or_create(suggested_area).id
+        except Exception as err:
+            _LOGGER.warning(
+                "Could not map suggested_area %r to an area: %s",
+                suggested_area,
+                err,
+            )
+            return None
 
     def _resolve_via_device(self, device, via_device, *, config_entry_id=None):
         """Resolve a deprecated ``via_device`` identifier tuple to a device id.
@@ -487,6 +546,8 @@ class DeviceRegistry:
             device.sw_version = sw_version
         if hw_version is not None:
             device.hw_version = hw_version
+        if area_id is not None:
+            device.area_id = area_id
         if suggested_area is not None:
             device.suggested_area = suggested_area
         if via_device_id is not None:
@@ -505,6 +566,16 @@ class DeviceRegistry:
                 pass
 
         return device
+
+    def async_clear_area_id(self, area_id: str) -> None:
+        """Clear an area from every device that has it.
+
+        Called by ``helpers.area_registry`` when an area is deleted, so the two
+        registries cannot drift apart.
+        """
+        for device in self._devices.values():
+            if device.area_id == area_id:
+                device.area_id = None
 
     def async_config_entry_unloaded(self, config_entry_id: str) -> None:
         """Forget the live devices of a config entry that unloaded.
@@ -565,14 +636,6 @@ class DeviceEntryType(Enum):
     """Device entry type."""
 
     SERVICE = "service"
-
-
-class IssueSeverity(Enum):
-    """Issue severity levels."""
-
-    CRITICAL = "critical"
-    ERROR = "error"
-    WARNING = "warning"
 
 
 class OAuth2Session:
@@ -661,100 +724,7 @@ class RestoreEntity(_SharedRestoreEntity):
     pass
 
 
-# Store for signal callbacks: {signal: [callbacks]}
-_dispatcher_signals = {}
 
-
-def _async_dispatcher_connect(hass, signal, target):
-    """Connect a receiver to a signal."""
-    _LOGGER.debug(f"Dispatcher connect: {signal}")
-    if signal not in _dispatcher_signals:
-        _dispatcher_signals[signal] = []
-    _dispatcher_signals[signal].append(target)
-
-    def remove():
-        if signal in _dispatcher_signals and target in _dispatcher_signals[signal]:
-            _dispatcher_signals[signal].remove(target)
-
-    return remove
-
-
-def _async_dispatcher_send(hass, signal, *args):
-    """Send a signal to all receivers (async version)."""
-    _LOGGER.debug(f"Dispatcher send: {signal} with args: {args}")
-    if signal in _dispatcher_signals:
-        for callback in _dispatcher_signals[signal]:
-            try:
-                result = callback(*args)
-                if asyncio.iscoroutine(result):
-                    asyncio.create_task(result)
-            except Exception as e:
-                _LOGGER.error(f"Error in dispatcher callback for {signal}: {e}")
-
-
-def _dispatcher_send(hass, signal, *args):
-    """Send a signal to all receivers (sync version)."""
-    _LOGGER.debug(f"Dispatcher send: {signal}")
-    _async_dispatcher_send(hass, signal, *args)
-
-
-# Store state in mutable containers so functions see updates
-_instance_state = {"path": None, "cached_uuid": None}
-
-
-def _get_data_dir():
-    data_path = Path("/data")
-    if data_path.exists() and data_path.is_dir():
-        return data_path
-    return Path("./data")
-
-
-def _load_or_create_uuid():
-    if _instance_state["cached_uuid"] is not None:
-        return _instance_state["cached_uuid"]
-
-    uuid_path = _instance_state["path"]
-
-    try:
-        if uuid_path.exists():
-            uuid_str = uuid_path.read_text().strip()
-            if uuid_str:
-                _instance_state["cached_uuid"] = uuid_str
-                return uuid_str
-    except Exception:
-        pass
-
-    new_uuid = uuid.uuid4().hex
-    try:
-        uuid_path.parent.mkdir(parents=True, exist_ok=True)
-        uuid_path.write_text(new_uuid)
-    except Exception:
-        pass
-
-    _instance_state["cached_uuid"] = new_uuid
-    return new_uuid
-
-
-def _save_uuid(uuid_str):
-    uuid_path = _instance_state["path"]
-    try:
-        uuid_path.parent.mkdir(parents=True, exist_ok=True)
-        uuid_path.write_text(uuid_str)
-        _instance_state["cached_uuid"] = uuid_str
-    except Exception:
-        _instance_state["cached_uuid"] = uuid_str
-
-
-async def _async_get_instance_id(hass) -> str:
-    """Get unique ID for the hass instance."""
-    return await asyncio.to_thread(_load_or_create_uuid)
-
-
-async def _async_recreate_instance_id(hass) -> str:
-    """Recreate a new unique ID for the hass instance."""
-    new_uuid = uuid.uuid4().hex
-    await asyncio.to_thread(_save_uuid, new_uuid)
-    return new_uuid
 
 
 _client_session_cache = {}
@@ -806,28 +776,8 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
 
     homeassistant.helpers = types.ModuleType("homeassistant.helpers")
 
-    # typing - mirrors upstream homeassistant/helpers/typing.py
-    helpers_typing = types.ModuleType("homeassistant.helpers.typing")
-
-    class UndefinedType(Enum):
-        """Singleton type for use with not set sentinel values."""
-
-        _singleton = 0
-
-    helpers_typing.UndefinedType = UndefinedType
-    helpers_typing.UNDEFINED = UndefinedType._singleton
-    helpers_typing.GPSType = tuple[float, float]
-    helpers_typing.ConfigType = dict[str, Any]
-    helpers_typing.DiscoveryInfoType = dict[str, Any]
-    helpers_typing.ServiceDataType = dict[str, Any]
-    helpers_typing.StateType = str | int | float | None
-    helpers_typing.TemplateVarsType = Mapping[str, Any] | None
-    helpers_typing.NoEventData = Mapping[str, Never]
-    helpers_typing.VolSchemaType = vol.Schema | vol.All | vol.Any
-    helpers_typing.VolDictType = dict[str | vol.Marker, Any]
-    helpers_typing.QueryType = Any
-    homeassistant.helpers.typing = helpers_typing
-    sys.modules["homeassistant.helpers.typing"] = helpers_typing
+    # homeassistant.helpers.typing comes from upstream (import_patch attaches it
+    # after this function runs, since we just replaced the helpers package).
 
     # device_registry
     device_registry = types.ModuleType("homeassistant.helpers.device_registry")
@@ -981,14 +931,6 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     homeassistant.helpers.aiohttp_client = aiohttp_client
     sys.modules["homeassistant.helpers.aiohttp_client"] = aiohttp_client
 
-    # issue_registry
-    issue_registry = types.ModuleType("homeassistant.helpers.issue_registry")
-    issue_registry.async_create_issue = lambda *args, **kwargs: None
-    issue_registry.async_delete_issue = lambda *args, **kwargs: None
-    issue_registry.IssueSeverity = IssueSeverity
-    homeassistant.helpers.issue_registry = issue_registry
-    sys.modules["homeassistant.helpers.issue_registry"] = issue_registry
-
     # entity_registry
     entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
     from ..entity import EntityRegistry
@@ -1123,13 +1065,6 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     homeassistant.helpers.restore_state = restore_state
     sys.modules["homeassistant.helpers.restore_state"] = restore_state
 
-    # dispatcher
-    dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
-    dispatcher.async_dispatcher_connect = _async_dispatcher_connect
-    dispatcher.async_dispatcher_send = _async_dispatcher_send
-    dispatcher.dispatcher_send = _dispatcher_send
-    homeassistant.helpers.dispatcher = dispatcher
-    sys.modules["homeassistant.helpers.dispatcher"] = dispatcher
 
     # service_info
     service_info = types.ModuleType("homeassistant.helpers.service_info")
@@ -1143,245 +1078,6 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     sys.modules["homeassistant.helpers.service_info"] = service_info
     sys.modules["homeassistant.helpers.service_info.dhcp"] = dhcp
     sys.modules["homeassistant.helpers.service_info.mqtt"] = mqtt
-
-    # network
-    network = types.ModuleType("homeassistant.helpers.network")
-    network.get_url = lambda hass, *, prefer_external=False, allow_cloud=True: "http://localhost:8123"
-    homeassistant.helpers.network = network
-    sys.modules["homeassistant.helpers.network"] = network
-
-    # storage
-    storage = types.ModuleType("homeassistant.helpers.storage")
-
-    import json as _json
-    import os as _os
-
-    class Store:
-        """Persistent key-value store (stub matching homeassistant.helpers.storage.Store).
-
-        Data is saved to ``{hass.config_dir}/.storage/{key}`` in the same format
-        as the real HA implementation:
-
-        .. code-block:: json
-
-            {
-              "version": <int>,
-              "minor_version": <int>,
-              "key": "<key>",
-              "data": <user_data>
-            }
-
-        Thread-safe I/O is performed via the hass executor to avoid blocking
-        the event loop.
-        """
-
-        def __init__(
-            self,
-            hass,
-            version,
-            key,
-            private=False,
-            *,
-            atomic_writes=False,
-            encoder=None,
-            max_readable_version=None,
-            minor_version=1,
-            read_only=False,
-            **kwargs,
-        ):
-            """Initialize the store.
-
-            Args:
-                hass: HomeAssistant instance (must have ``hass.config.path``).
-                version: Storage version (for future migrations).
-                key: Unique key for this store, used as the filename in .storage/.
-                private: Reserved for future use; file permissions.
-                atomic_writes: If True, use atomic write (temp file + rename).
-                encoder: Custom JSON encoder (optional).
-                max_readable_version: Maximum readable version (defaults to version).
-                minor_version: Minor storage version.
-                read_only: If True, skip writes.
-            """
-            self.hass = hass
-            self.version = version
-            self.minor_version = minor_version
-            self.key = key
-            self._private = private
-            self._atomic_writes = atomic_writes
-            self._encoder = encoder
-            self._read_only = read_only
-            self._max_readable_version = (
-                max_readable_version if max_readable_version is not None else version
-            )
-            self._data: dict | None = None
-            self._delay_handle: asyncio.TimerHandle | None = None
-            self._write_lock = asyncio.Lock()
-
-        @property
-        def path(self):
-            """Return the full filesystem path for this store."""
-            return Path(str(self.hass.config.path(".storage", self.key)))
-
-        def make_read_only(self) -> None:
-            """Irreversibly make the store read-only."""
-            self._read_only = True
-
-        def set_load_empty(self) -> None:
-            """Skip loading from disk and become read-only."""
-            self._read_only = True
-            self._data = {}
-
-        async def _async_load_json(self, filepath):
-            """Load JSON from file in executor thread. Returns None on failure."""
-            try:
-                return await self.hass.async_add_executor_job(
-                    self._load_json_sync, filepath
-                )
-            except Exception as exc:
-                _LOGGER.error("Error loading store %s: %s", self.key, exc)
-                return None
-
-        def _load_json_sync(self, filepath):
-            """Synchronous JSON load."""
-            if not filepath.exists():
-                return None
-            with open(filepath, "r") as f:
-                return _json.load(f)
-
-        async def _async_save_json(self, filepath, data):
-            """Save JSON to file atomically in executor thread."""
-            if self._read_only:
-                return
-            try:
-                await self.hass.async_add_executor_job(
-                    self._save_json_sync, filepath, data
-                )
-            except Exception as exc:
-                _LOGGER.error("Error saving store %s: %s", self.key, exc)
-
-        def _save_json_sync(self, filepath, data):
-            """Synchronous atomic JSON save."""
-            # Ensure directory exists
-            _os.makedirs(str(filepath.parent), exist_ok=True)
-            if self._atomic_writes:
-                # Atomic write: temp file + rename
-                tmp_path = filepath.with_suffix(".json.tmp")
-                with open(tmp_path, "w") as f:
-                    _json.dump(data, f, indent=2, default=str, cls=self._encoder)
-                tmp_path.rename(filepath)
-            else:
-                with open(filepath, "w") as f:
-                    _json.dump(data, f, indent=2, default=str, cls=self._encoder)
-
-        async def async_load(self):
-            """Load data from disk.
-
-            Returns the stored data dict, or None if the file doesn't exist
-            or can't be read.
-
-            This matches the real HA behaviour where a missing .storage file
-            returns None so the caller can fall back to defaults.
-            """
-            raw = await self._async_load_json(self.path)
-            if raw is None:
-                return None
-            stored = raw.get("data")
-            return stored
-
-        async def async_save(self, data):
-            """Persist data to disk immediately.
-
-            Wraps data in the standard HA storage envelope:
-            {version, minor_version, key, data}.
-            """
-            envelope = {
-                "version": self.version,
-                "minor_version": self.minor_version,
-                "key": self.key,
-                "data": data,
-            }
-            async with self._write_lock:
-                self._data = envelope
-                await self._async_save_json(self.path, envelope)
-
-        def async_delay_save(self, data_func, delay=0):
-            """Persist data to disk after a delay.
-
-            data_func is a callable that returns the data to save.
-            If called multiple times before the delay expires, only the
-            latest data_func is used.
-            """
-            if self._read_only:
-                return
-            self._data = {"data_func": data_func}
-            self._cancel_delayed_save()
-            loop = asyncio.get_running_loop()
-            self._delay_handle = loop.call_later(delay, self._async_delayed_save_cb)
-
-        def _cancel_delayed_save(self):
-            """Cancel a pending delayed save."""
-            if self._delay_handle is not None:
-                self._delay_handle.cancel()
-                self._delay_handle = None
-
-        def _async_delayed_save_cb(self):
-            """Callback triggered by the delayed save timer."""
-            self._delay_handle = None
-            # Schedule the actual save as a task so it can be awaited
-            asyncio.create_task(self._async_do_delayed_save())
-
-        async def _async_do_delayed_save(self):
-            """Execute the delayed save."""
-            async with self._write_lock:
-                if self._data is None:
-                    return
-                data_func = self._data.get("data_func")
-                if data_func is None:
-                    return
-                try:
-                    data = data_func()
-                except Exception as exc:
-                    _LOGGER.error(
-                        "Error in delayed save data_func for %s: %s", self.key, exc
-                    )
-                    return
-                self._data = None
-                envelope = {
-                    "version": self.version,
-                    "minor_version": self.minor_version,
-                    "key": self.key,
-                    "data": data,
-                }
-                await self._async_save_json(self.path, envelope)
-
-        async def async_remove(self):
-            """Delete the stored file from disk."""
-            self._cancel_delayed_save()
-            self._data = None
-            filepath = self.path
-            try:
-                await self.hass.async_add_executor_job(_os.unlink, str(filepath))
-            except FileNotFoundError:
-                pass
-            except Exception as exc:
-                _LOGGER.error("Error removing store %s: %s", self.key, exc)
-
-        def __class_getitem__(cls, item):
-            """Support generic type hint syntax (Store[MyType])."""
-            return cls
-
-    storage.Store = Store
-    homeassistant.helpers.storage = storage
-    sys.modules["homeassistant.helpers.storage"] = storage
-
-    # instance_id
-    _instance_state["path"] = _get_data_dir() / ".instance_uuid"
-    instance_id = types.ModuleType("homeassistant.helpers.instance_id")
-    instance_id.async_get = _async_get_instance_id
-    instance_id.async_recreate = _async_recreate_instance_id
-    instance_id._instance_state = _instance_state
-    homeassistant.helpers.instance_id = instance_id
-    sys.modules["homeassistant.helpers.instance_id"] = instance_id
 
     # selector
     homeassistant.helpers.selector = selectors_module

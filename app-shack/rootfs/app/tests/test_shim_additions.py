@@ -260,17 +260,17 @@ class TestOptionsFlowAdvancedOptions:
 
 
 class TestNewConstants:
-    """Tests for new constants added to shim.ha_fetched.const."""
+    """Tests for constants the shim relies on from homeassistant.const."""
 
     def test_conf_id_exists(self):
         """Test CONF_ID constant exists."""
-        from shim.ha_fetched.const import CONF_ID
+        from homeassistant.const import CONF_ID
 
         assert CONF_ID == "id"
 
     def test_platform_enum_values(self):
         """Test Platform enum has expected values."""
-        from shim.ha_fetched.const import Platform
+        from homeassistant.const import Platform
 
         assert Platform.SENSOR == "sensor"
         assert Platform.SWITCH == "switch"
@@ -281,15 +281,15 @@ class TestNewConstants:
 
     def test_unit_of_temperature_enum(self):
         """Test UnitOfTemperature enum values."""
-        from shim.ha_fetched.const import UnitOfTemperature
+        from homeassistant.const import UnitOfTemperature
 
         assert UnitOfTemperature.CELSIUS == "°C"
         assert UnitOfTemperature.FAHRENHEIT == "°F"
         assert UnitOfTemperature.KELVIN == "K"
 
     def test_entity_category_enum(self):
-        """Test EntityCategory enum from shim.ha_fetched.const."""
-        from shim.ha_fetched.const import EntityCategory
+        """Test EntityCategory enum from homeassistant.const."""
+        from homeassistant.const import EntityCategory
 
         assert EntityCategory.CONFIG == "config"
         assert EntityCategory.DIAGNOSTIC == "diagnostic"
@@ -327,14 +327,16 @@ class TestHelpersTyping:
             TemplateVarsType,
         )
 
-        assert StateType == str | int | float | None
-        assert GPSType == tuple[float, float]
-        assert ConfigType == dict[str, Any]
-        assert DiscoveryInfoType == dict[str, Any]
-        assert ServiceDataType == dict[str, Any]
-        assert NoEventData == Mapping[str, Never]
-        assert TemplateVarsType == Mapping[str, Any] | None
-        assert QueryType is Any
+        # Aliases are PEP 695 ``type`` statements upstream, so they are
+        # TypeAliasType objects rather than bare unions: compare __value__.
+        assert StateType.__value__ == str | int | float | None
+        assert GPSType.__value__ == tuple[float, float]
+        assert ConfigType.__value__ == dict[str, Any]
+        assert DiscoveryInfoType.__value__ == dict[str, Any]
+        assert ServiceDataType.__value__ == dict[str, Any]
+        assert NoEventData.__value__ == Mapping[str, Never]
+        assert TemplateVarsType.__value__ == Mapping[str, Any] | None
+        assert QueryType.__value__ is Any
 
     @pytest.mark.integration
     @pytest.mark.skipif(

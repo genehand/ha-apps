@@ -65,4 +65,21 @@ else
     bashio::log.info "Environment is up to date"
 fi
 
+# --check only compares the lockfile against the venv's metadata, so a venv we
+# pruned ourselves still looks 'up to date' after the keep-list grows: the
+# dist-info is intact, the files are gone. Probe the modules the shim imports
+# from the wheel and reinstall the package if any of them is missing, otherwise
+# the app dies on 'import shim' with a traceback nobody can act on.
+if ! /data/.venv/bin/python -c "import homeassistant.core, homeassistant.helpers.storage" 2>/dev/null; then
+    bashio::log.info "Home Assistant package is incomplete (prune keep-list changed); reinstalling..."
+    uv sync --frozen --no-dev --inexact --reinstall-package homeassistant || true
+fi
+
+# /data/.venv is the environment the app actually runs from, so the prune the
+# image does has to happen here too: Home Assistant ships ~350 MB of components
+# the shim cannot import, and /data is the user's data partition. Idempotent, and
+# never fatal -- a failed prune only costs disk.
+/app/.venv/bin/python /app/scripts/prune_homeassistant.py \
+    /data/.venv/lib/python*/site-packages || true
+
 exec uv run python main.py

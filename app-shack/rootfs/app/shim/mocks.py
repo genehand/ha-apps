@@ -12,6 +12,14 @@ if TYPE_CHECKING:
     from .hass import HomeAssistant
 
 
+# The shim's own web UI (main.py serves it on 0.0.0.0:8080). Upstream's
+# ``helpers.network.get_url()`` answers "what is this instance's URL", and the
+# shim has no HA API to advertise -- its UI is the only reachable address, so
+# that is what it reports. Overriding ``config.internal_url`` wins, which is how
+# an add-on with ingress or a reverse proxy should be configured.
+DEFAULT_INTERNAL_URL = "http://localhost:8080"
+
+
 class MockConfig:
     """Mock config object."""
 
@@ -25,7 +33,16 @@ class MockConfig:
         self.unit_system = "metric"
         self.time_zone = "UTC"
         self.external_url = None
-        self.internal_url = None
+        self.internal_url = DEFAULT_INTERNAL_URL
+        # Upstream ``hass.config.api`` is the HTTP server's own address; the
+        # shim serves no Home Assistant API, so it stays None (helpers.network
+        # treats that as "no server details to derive a URL from").
+        self.api = None
+        # Set of loaded components. Empty on purpose: some integrations branch
+        # on ``"hassio" in hass.config.components`` or similar, and the honest
+        # answer here is that none of them are loaded -- this is not Home
+        # Assistant. ``helpers.network`` also gates its cloud lookup on it.
+        self.components: set[str] = set()
         # Mock units object for temperature and other unit conversions
         self.units = MockUnitSystem()
 
@@ -88,6 +105,18 @@ class MockEventBus:
 
     def async_fire(self, event_type: str, event_data: Optional[dict] = None) -> None:
         """Fire an event."""
+        self._hass.async_fire(event_type, event_data)
+
+    def async_fire_internal(
+        self, event_type: str, event_data: Optional[dict] = None, *, context=None
+    ) -> None:
+        """Fire an event that is not exposed to the websocket API.
+
+        Upstream's registries announce their updates here. The shim has no
+        API/user distinction, so this is just ``async_fire`` -- but keeping the
+        name means the verbatim ``helpers.issue_registry`` / ``helpers.floor_registry``
+        (and friends) run unmodified.
+        """
         self._hass.async_fire(event_type, event_data)
 
     def fire(self, event_type: str, event_data: Optional[dict] = None) -> None:

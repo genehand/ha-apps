@@ -4,6 +4,8 @@
 import json
 import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -85,9 +87,24 @@ def update_integration_versions(repo_status: dict) -> dict:
 
 
 def run_uv_sync() -> None:
-    """Run uv sync to update dependencies."""
-    os.chdir(SCRIPT_DIR / "rootfs" / "app")
-    os.system("uv sync --inexact")
+    """Refresh uv.lock and the *throwaway* dev venv, the one run.sh primes.
+
+    A bare ``uv sync`` in the project dir creates/uses ``rootfs/app/.venv``:
+    the project venv that the tests, the debugger and the pruned-image check all
+    need whole, and a different environment from the one ``run.sh`` sets up.
+    """
+    project = SCRIPT_DIR / "rootfs" / "app"
+    env = os.environ.copy()
+    env.setdefault(
+        "UV_PROJECT_ENVIRONMENT", str(Path(tempfile.gettempdir()) / "shack-venv")
+    )
+
+    print(f"Syncing dependencies into {env['UV_PROJECT_ENVIRONMENT']}...")
+    subprocess.run(
+        ["uv", "sync", "--inexact", "--directory", str(project)],
+        env=env,
+        check=True,
+    )
 
 
 def main():

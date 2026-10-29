@@ -8,8 +8,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+from homeassistant.core import CoreState, HassJob, HassJobType
 
 from .storage import Storage
 from .logging import get_logger
@@ -56,6 +59,18 @@ class HomeAssistant:
         # Store the event loop at initialization time
         # This is needed for integrations that use run_coroutine_threadsafe from other threads
         self._loop = asyncio.get_event_loop()
+
+        # Bookkeeping upstream helpers expect from a real hass.
+        #
+        # ``state`` is CoreState.running rather than a startup sequence: the
+        # shim has no bootstrap, integrations are set up against an already
+        # running instance, and the upstream helpers key their behaviour off
+        # it (``helpers.start`` runs at_start callbacks immediately,
+        # ``helpers.storage`` writes without deferring to a final-write event).
+        self.state: CoreState = CoreState.running
+        self.loop_thread_id = threading.get_ident()
+        self._tasks: set[asyncio.Future] = set()
+        self._background_tasks: set[asyncio.Future] = set()
 
         _LOGGER.debug("HomeAssistant shim initialized")
 
@@ -108,6 +123,107 @@ class HomeAssistant:
         else:
             # Synchronous function - run in executor
             return self._loop.run_in_executor(None, functools.partial(target, *args))
+
+    @property
+    def is_running(self) -> bool:
+        """Return if the shim is running.
+
+        Upstream ``is_running`` covers ``starting`` too; the shim only ever has
+        one state, but keeping the upstream shape means ``helpers.start`` and
+        integration code behave the same either way.
+        """
+        return self.state in (CoreState.starting, CoreState.running)
+
+    @property
+    def is_stopping(self) -> bool:
+        """Return if the shim is stopping (it never is, but code asks)."""
+        return self.state in (CoreState.stopping, CoreState.final_write)
+
+    def verify_event_loop_thread(self, what: str) -> None:
+        """Report if we are not running in the event loop thread.
+
+        Upstream raises through ``helpers.frame``'s usage reporter. The shim
+        logs instead: a hard raise inside e.g. an MQTT callback thread would
+        take down a listener that upstream would only have complained about.
+        """
+        if self.loop_thread_id != threading.get_ident():
+            _LOGGER.warning("%s called from a thread other than the event loop", what)
+
+    def async_run_hass_job(
+        self,
+        hassjob: HassJob,
+        *args: Any,
+        background: bool = False,
+    ) -> Optional[asyncio.Future]:
+        """Run a HassJob from within the event loop.
+
+        Callback jobs run inline (that is the upstream contract); coroutine and
+        executor jobs are scheduled and a future is returned.
+        """
+        if hassjob.job_type is HassJobType.Callback:
+            hassjob.target(*args)
+            return None
+
+        return self._async_add_hass_job(hassjob, *args, background=background)
+
+    def async_add_hass_job(
+        self,
+        hassjob: HassJob,
+        *args: Any,
+        eager_start: bool = False,
+        background: bool = False,
+    ) -> Optional[asyncio.Future]:
+        """Add a HassJob from within the event loop.
+
+        Deprecated upstream (``eager_start`` is accepted and ignored: the shim
+        has no eager task factory), but integrations still call it.
+        """
+        return self._async_add_hass_job(hassjob, *args, background=background)
+
+    def _async_add_hass_job(
+        self,
+        hassjob: HassJob,
+        *args: Any,
+        background: bool = False,
+    ) -> Optional[asyncio.Future]:
+        """Schedule a HassJob, hopping onto the event loop if needed."""
+        job_type = hassjob.job_type
+
+        if job_type is HassJobType.Callback:
+            hassjob.target(*args)
+            return None
+
+        if job_type is HassJobType.Coroutinefunction:
+            coro = hassjob.target(*args)
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is self._loop:
+                task: Any = self._loop.create_task(coro, name=hassjob.name)
+            else:
+                # Called from another thread (an MQTT callback, a web worker).
+                task = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        else:
+            task = self._loop.run_in_executor(None, hassjob.target, *args)
+
+        bucket = self._background_tasks if background else self._tasks
+        bucket.add(task)
+        task.add_done_callback(bucket.discard)
+        return task
+
+    def async_create_task_internal(
+        self,
+        target: asyncio.coroutine,
+        name: Optional[str] = None,
+        eager_start: bool = True,
+    ) -> asyncio.Task:
+        """Create a task (upstream's internal flavour).
+
+        ``eager_start`` is accepted and ignored; the shim has no eager task
+        factory. Used by ``helpers.storage`` for delayed writes.
+        """
+        return self.async_create_task(target, name, eager_start=False)
 
     def async_create_task(
         self,

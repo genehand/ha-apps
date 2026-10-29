@@ -13,6 +13,7 @@ import inspect
 import aiohttp
 import zipfile
 import shutil
+import sysconfig
 from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -213,28 +214,11 @@ class IntegrationManager:
         self._integrations_dir = self._shim_dir / "custom_components"
         self._integrations_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if running in container (addon mode) or locally
-        self._is_addon = Path("/data").exists() and Path("/data").is_dir()
+        self._venv_dir = Path(sys.prefix)
+        self._persistent_packages_dir = Path(sysconfig.get_path("purelib"))
 
-        # Determine venv path: /data/.venv for addon mode, local .venv for dev mode
-        if self._is_addon:
-            self._venv_dir = Path("/data/.venv")
-            _LOGGER.debug("Running in addon mode - using /data/.venv")
-        else:
-            # In local dev, venv is at the app root (shim/integrations/manager.py -> ../../ -> app root)
-            self._venv_dir = Path(__file__).parent.parent.parent / ".venv"
-            _LOGGER.info(f"Running in local dev mode - using {self._venv_dir}")
-
-        # Construct site-packages path and add to sys.path for imports
-        # Use abiflags (e.g., 't' for free-threading) to get correct directory name
-        python_version = (
-            f"python{sys.version_info.major}.{sys.version_info.minor}{sys.abiflags}"
-        )
-        self._persistent_packages_dir = (
-            self._venv_dir / "lib" / python_version / "site-packages"
-        )
-        # Always add the persistent packages path to sys.path
-        # (even if it doesn't exist yet - it may be created later when requirements are installed)
+        # It is already on sys.path when the app runs from its own venv; the
+        # insert only matters if the packages dir is created later.
         persistent_path_str = str(self._persistent_packages_dir)
         if persistent_path_str not in sys.path:
             sys.path.insert(0, persistent_path_str)

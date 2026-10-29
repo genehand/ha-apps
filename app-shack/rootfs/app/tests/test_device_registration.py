@@ -19,6 +19,7 @@ construction) exactly like localtuya's.
 """
 
 import sys
+from types import SimpleNamespace
 import tempfile
 import textwrap
 from pathlib import Path
@@ -447,3 +448,131 @@ async def test_failing_device_info_does_not_abort_platform_setup(hass, temp_data
             raise ValueError("no device for you")
 
     assert register_entity_device(hass, Exploding(), "entry1") is None
+
+
+@pytest.mark.asyncio
+async def test_discovery_device_block_reads_registry_through_upstream_api(hass, loader):
+    """The discovery device block must resolve through the registry's real API.
+
+    ``build_mqtt_device_config`` used to find its fallback row by iterating
+    ``registry._devices`` - the shim's private dict, which a real
+    ``DeviceRegistry`` does not have (``docs/tier-c-spike.md`` §4/§6.5), so the
+    fallback silently became a no-op. It now goes through
+    ``async_get_device_by_identifier(identifier, config_entry_id)`` with
+    ``registry.devices`` as the entry-agnostic fallback.
+
+    The stand-in below implements *only* the upstream surface - ``devices`` as a
+    collection plus the entry-scoped lookup, no ``_devices`` - which is what the
+    old code needed and the real registry will not provide.
+    """
+    from shim.entity import _async_lookup_registry_device, build_mqtt_device_config
+
+    class UpstreamOnlyRegistry:
+        def __init__(self):
+            self.scoped_calls = []
+            self._rows = [
+                SimpleNamespace(
+                    identifiers={(DOMAIN, "local_gw1")},
+                    name="Gateway",
+                    manufacturer="Tuya",
+                    model="GW model",
+                    sw_version="1.2.3",
+                )
+            ]
+
+        @property
+        def devices(self):
+            return list(self._rows)
+
+        def async_get_device_by_identifier(self, identifier, config_entry_id):
+            self.scoped_calls.append((identifier, config_entry_id))
+            for row in self._rows:
+                if identifier in row.identifiers:
+                    return row
+            return None
+
+    registry = UpstreamOnlyRegistry()
+    row = _async_lookup_registry_device(
+        registry, {(DOMAIN, "local_gw1")}, "fake_devices_entry"
+    )
+    assert row is not None and row.name == "Gateway"
+    assert registry.scoped_calls == [((DOMAIN, "local_gw1"), "fake_devices_entry")]
+
+    # Without a config entry id the scoped lookup is not attempted at all; the
+    # entry-agnostic ``devices`` fallback still finds the row.
+    registry = UpstreamOnlyRegistry()
+    row = _async_lookup_registry_device(registry, {(DOMAIN, "local_gw1")})
+    assert row is not None and row.sw_version == "1.2.3"
+    assert registry.scoped_calls == []
+
+    # Non-tuple identifiers (bare strings are tolerated in the payload) cannot be
+    # looked up and must not raise.
+    assert _async_lookup_registry_device(registry, {"bare-string"}, "entry") is None
+
+    # End to end through the shim's own registry: an identifiers-only
+    # device_info gains the row's metadata once the device exists.
+    entry = await _add_entry(hass)
+    assert await loader.setup_integration(entry) is True
+    from homeassistant.helpers import device_registry as dr
+
+    assert (
+        dr.async_get(hass).async_get_device_by_identifier(
+            GATEWAY_IDENTIFIER, entry.entry_id
+        )
+        is not None
+    )
+
+    block = build_mqtt_device_config(
+        {"identifiers": {GATEWAY_IDENTIFIER}}, hass, entry.entry_id
+    )
+    assert block == {
+        "identifiers": [f"{DOMAIN}-local_gw1"],
+        "name": "Gateway",
+        "manufacturer": "Tuya",
+        "model": "GW model",
+    }
+
+
+@pytest.mark.asyncio
+async def test_entity_discovery_block_passes_its_config_entry(hass, loader):
+    """``build_entity_mqtt_device_config`` must scope the lookup to the entity's entry.
+
+    The row ``register_entity_device`` created is owned by the entity's config
+    entry, and the entry-scoped lookup is the documented one, so the wrapper has
+    to hand over ``_attr_config_entry_id`` instead of relying on the fallback.
+    """
+    from unittest.mock import patch
+
+    from shim.entity import build_entity_mqtt_device_config
+
+    entry = await _add_entry(hass)
+    assert await loader.setup_integration(entry) is True
+
+    entity = next(
+        entity
+        for entity in loader.get_entities()
+        if entity.entity_id == "sensor.gw_sensor"
+    )
+    # The platform stamps the entry id on every entity it adds.
+    assert entity._attr_config_entry_id == entry.entry_id
+
+    from homeassistant.helpers import device_registry as dr
+
+    registry = dr.async_get(hass)
+    real_lookup = registry.async_get_device_by_identifier
+    calls = []
+
+    def spy(identifier, config_entry_id):
+        calls.append((identifier, config_entry_id))
+        return real_lookup(identifier, config_entry_id)
+
+    with patch.object(registry, "async_get_device_by_identifier", side_effect=spy):
+        # An identifiers-only device_info (name/manufacturer dropped) must still
+        # get them back from the row the entity owns.
+        entity._attr_device_info = {"identifiers": {GATEWAY_IDENTIFIER}}
+        block = build_entity_mqtt_device_config(entity)
+
+    assert calls == [(GATEWAY_IDENTIFIER, entry.entry_id)]
+    assert block["name"] == "Gateway"
+    assert block["manufacturer"] == "Tuya"
+    assert block["model"] == "GW model"

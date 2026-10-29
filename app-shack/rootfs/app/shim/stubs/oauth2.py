@@ -25,7 +25,7 @@ import jwt
 from yarl import URL
 
 from ..config_entries import ConfigFlow
-from ..ha_fetched.exceptions import (
+from homeassistant.exceptions import (
     HomeAssistantError,
     OAuth2TokenRequestError,
     OAuth2TokenRequestReauthError,

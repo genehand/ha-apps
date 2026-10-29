@@ -1,8 +1,14 @@
 # Local development data directory
 data/
 
+# Local dev config — holds real MQTT credentials; committed version is
+# shack-config.yaml.example
+shack-config.yaml
+
 # Python cache
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 *.pyc
 *.pyo
 *.pyd
