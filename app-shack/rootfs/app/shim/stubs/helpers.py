@@ -1004,6 +1004,16 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
 
     entity_registry.RegistryEntry = RegistryEntry
     entity_registry.async_entries_for_config_entry = lambda hass, config_entry_id: EntityRegistry().async_entries_for_config_entry(config_entry_id)
+
+    def async_entries_for_device(registry, device_id, include_disabled_entities=False):
+        """Return the registry entries for a device (HA's registry signature)."""
+        if not isinstance(registry, EntityRegistry):
+            registry = EntityRegistry()
+        return registry.async_entries_for_device(
+            device_id, include_disabled_entities=include_disabled_entities
+        )
+
+    entity_registry.async_entries_for_device = async_entries_for_device
     homeassistant.helpers.entity_registry = entity_registry
     sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
 

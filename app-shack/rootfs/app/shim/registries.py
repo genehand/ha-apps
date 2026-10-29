@@ -23,6 +23,20 @@ if TYPE_CHECKING:
 _LOGGER = get_logger(__name__)
 
 
+def _entity_platform_for_entity(
+    hass: "HomeAssistant", platform_name: str, entry: ConfigEntry
+):
+    """Return the platform object an entity is added to (HA parity).
+
+    Entities reach ``self.platform`` before ``async_prepare_to_add_to_hass`` and
+    ``async_added_to_hass``; integrations read ``self.platform.config_entry``
+    from those hooks (nest_protect >= 0.5.0).
+    """
+    from .entity import async_get_entity_platform
+
+    return async_get_entity_platform(hass, platform_name, entry)
+
+
 class StateMachine:
     """Manages entity states."""
 
@@ -207,6 +221,22 @@ class ConfigEntries:
                     return entry
         return None
 
+    def async_entry_for_domain_unique_id(
+        self, domain: str, unique_id: str
+    ) -> Optional[ConfigEntry]:
+        """Return the entry of ``domain`` with ``unique_id``, if any.
+
+        Mirrors ``config_entries.async_entry_for_domain_unique_id``, which
+        config flows use to detect that an account is already configured
+        (nest_protect >= 0.5.0 does this while reauthenticating).
+        """
+        if not unique_id:
+            return None
+        for entry in self._entries.get(domain, []):
+            if entry.unique_id == unique_id:
+                return entry
+        return None
+
     async def async_add(self, entry: ConfigEntry) -> None:
         """Add a new entry."""
         if entry.domain not in self._entries:
@@ -297,6 +327,36 @@ class ConfigEntries:
             return
 
         await loader.reload_config_entry(entry)
+
+    def async_schedule_reload(self, entry_id: str) -> None:
+        """Schedule a reload of an entry in the background.
+
+        Mirrors ``config_entries.async_schedule_reload``. Integrations call it
+        from a push/listener callback where awaiting a reload is not allowed
+        (nest_protect >= 0.5.0 reloads when the account's device list changes).
+        Repeated requests for the same entry collapse onto one pending reload.
+        """
+        pending: Dict[str, asyncio.Task] = getattr(
+            self, "_pending_reloads", None
+        ) or {}
+        self._pending_reloads = pending
+
+        task = pending.get(entry_id)
+        if task is not None and not task.done():
+            _LOGGER.debug(f"Reload of entry {entry_id} already scheduled")
+            return
+
+        async def _reload() -> None:
+            try:
+                await self.async_reload(entry_id)
+            except Exception as e:  # noqa: BLE001 - background task
+                _LOGGER.error(f"Scheduled reload of entry {entry_id} failed: {e}")
+            finally:
+                pending.pop(entry_id, None)
+
+        pending[entry_id] = self._hass.async_create_task(
+            _reload(), name=f"reload_{entry_id}"
+        )
 
     async def async_forward_entry_unload(
         self, entry: ConfigEntry, platform: str
@@ -434,150 +494,204 @@ class ConfigEntries:
                         # Schedule async work in background
                         async def _do_add():
                             for entity in entities:
-                                # Generate entity_id if not set
-                                _LOGGER.debug(
-                                    f"Entity {type(entity).__name__}: entity_id={getattr(entity, 'entity_id', None)}, unique_id={getattr(entity, 'unique_id', None)}, name={getattr(entity, 'name', None)}"
-                                )
-                                if not entity.entity_id:
-                                    # Generate from platform and unique_id or name
-                                    unique_id = getattr(entity, "unique_id", None)
-                                    name = getattr(entity, "name", None) or getattr(
-                                        entity, "_attr_name", None
-                                    )
+                                try:
+                                    # Generate entity_id if not set
                                     _LOGGER.debug(
-                                        f"Generating entity_id for {type(entity).__name__}: unique_id={unique_id}, name={name}"
+                                        f"Entity {type(entity).__name__}: entity_id={getattr(entity, 'entity_id', None)}, unique_id={getattr(entity, 'unique_id', None)}, name={getattr(entity, 'name', None)}"
                                     )
-                                    if unique_id:
-                                        entity.entity_id = (
-                                            f"{platform_name}.{unique_id}"
+                                    if not entity.entity_id:
+                                        # Generate from platform and unique_id or name
+                                        unique_id = getattr(entity, "unique_id", None)
+                                        name = getattr(entity, "name", None) or getattr(
+                                            entity, "_attr_name", None
                                         )
                                         _LOGGER.debug(
-                                            f"Generated entity_id from unique_id: {entity.entity_id}"
+                                            f"Generating entity_id for {type(entity).__name__}: unique_id={unique_id}, name={name}"
                                         )
-                                    elif name:
-                                        # Clean up name for entity_id
-                                        clean_name = _slugify_name(name)
-                                        entity.entity_id = f"{platform}.{clean_name}"
-                                        _LOGGER.debug(
-                                            f"Generated entity_id from name: {entity.entity_id}"
+                                        if unique_id:
+                                            entity.entity_id = (
+                                                f"{platform_name}.{unique_id}"
+                                            )
+                                            _LOGGER.debug(
+                                                f"Generated entity_id from unique_id: {entity.entity_id}"
+                                            )
+                                        elif name:
+                                            # Clean up name for entity_id
+                                            clean_name = _slugify_name(name)
+                                            entity.entity_id = f"{platform}.{clean_name}"
+                                            _LOGGER.debug(
+                                                f"Generated entity_id from name: {entity.entity_id}"
+                                            )
+                                        else:
+                                            # Fallback
+                                            entity.entity_id = (
+                                                f"{platform}.unknown_{id(entity)}"
+                                            )
+
+                                    # HA's add lifecycle, in HA's order: the
+                                    # entity gets hass + its platform, then
+                                    # async_prepare_to_add_to_hass() runs, and
+                                    # only then does the platform process its
+                                    # registry entry (enabled/disabled, filters).
+                                    entity.hass = self._hass
+                                    entity_platform = _entity_platform_for_entity(
+                                        self._hass, platform_name, entry
+                                    )
+                                    if callable(
+                                        getattr(
+                                            entity, "add_to_platform_start", None
+                                        )
+                                    ):
+                                        entity.add_to_platform_start(
+                                            self._hass, entity_platform, None
                                         )
                                     else:
-                                        # Fallback
-                                        entity.entity_id = (
-                                            f"{platform}.unknown_{id(entity)}"
-                                        )
+                                        # Not a shim Entity subclass; set the same
+                                        # attributes HA's platform would.
+                                        entity.platform = entity_platform
 
-                                _LOGGER.debug(
-                                    f"Adding entity {entity.entity_id} to {platform} platform"
-                                )
-
-                                # Check if entity is disabled by default
-                                entity_enabled = getattr(
-                                    entity, "entity_registry_enabled_default", True
-                                )
-                                if (
-                                    hasattr(entity, "entity_description")
-                                    and entity.entity_description is not None
-                                ):
-                                    desc_enabled = getattr(
-                                        entity.entity_description,
-                                        "entity_registry_enabled_default",
+                                    # Runs on every add attempt, including ones
+                                    # that end up aborted (e.g. disabled
+                                    # entities); raising aborts only this entity.
+                                    # Integrations moved here from
+                                    # add_to_platform_start in HA 2026.10.
+                                    prepare = getattr(
+                                        entity,
+                                        "async_prepare_to_add_to_hass",
                                         None,
                                     )
-                                    if desc_enabled is not None:
-                                        entity_enabled = desc_enabled
+                                    if callable(prepare):
+                                        await prepare()
 
-                                # Note: We still publish disabled entities to MQTT
-                                # so users can enable them in HA if needed.
-                                # The platform's _publish_mqtt_discovery will set
-                                # enabled_by_default: false for disabled entities.
-                                if not entity_enabled:
                                     _LOGGER.debug(
-                                        f"Entity {entity.entity_id} is disabled by default, "
-                                        f"but still publishing to MQTT for optional enable"
+                                        f"Adding entity {entity.entity_id} to {platform} platform"
                                     )
 
-                                # Set integration domain and config entry for tracking
-                                entity._attr_integration_domain = entry.domain
-                                entity._attr_config_entry_id = entry.entry_id
-                                # Register entity with loader under platform domain
-                                entity_registered = True
-                                if (
-                                    hasattr(self._hass, "data")
-                                    and "integration_loader" in self._hass.data
-                                ):
-                                    loader = self._hass.data["integration_loader"]
-                                    entity_domain = (
-                                        entity.entity_id.split(".")[0]
-                                        if hasattr(entity, "entity_id")
-                                        else entry.domain
+                                    # Check if entity is disabled by default
+                                    entity_enabled = getattr(
+                                        entity, "entity_registry_enabled_default", True
                                     )
-                                    entity_registered = loader.register_entity(
-                                        entity_domain, entity
-                                    )
-
-                                # Skip rest of setup if entity was filtered out
-                                if not entity_registered:
-                                    _LOGGER.debug(
-                                        f"Entity {entity.entity_id} was filtered out, skipping MQTT discovery"
-                                    )
-                                    return
-
-                                # Add to entity registry
-                                from .entity import EntityRegistry, register_entity_device
-
-                                # Set up entity in hass
-                                entity.hass = self._hass
-                                # Register the entity's device *before*
-                                # async_added_to_hass (HA parity): integrations
-                                # read the device registry from there, and
-                                # localtuya >= 2026.10.0 raises if the gateway
-                                # device of a sub-device has no row yet.
-                                register_entity_device(
-                                    self._hass, entity, entry.entry_id
-                                )
-                                registry = EntityRegistry()
-                                registry.register(entity)
-                                # Persisted enable/disable overrides are
-                                # applied inside register() (reading the
-                                # storage-backed overrides cache), so the
-                                # entry's enabled state survives restarts.
-                                _LOGGER.debug(
-                                    f"Calling async_added_to_hass for {entity.entity_id} (type: {type(entity).__name__})"
-                                )
-                                await entity.async_added_to_hass()
-                                _LOGGER.debug(
-                                    f"async_added_to_hass completed for {entity.entity_id}"
-                                )
-                                # Trigger state write to publish initial state
-                                # This is needed for coordinator-based entities where data
-                                # was fetched before the entity was added
-                                entity.async_write_ha_state()
-                                _LOGGER.debug(
-                                    f"Initial state written for {entity.entity_id}"
-                                )
-                                # Publish MQTT discovery if entity supports it
-                                from .entity import Entity
-
-                                if hasattr(entity, "_publish_mqtt_discovery"):
-                                    # Check if this is a platform-specific implementation
-                                    is_platform_specific = (
-                                        type(entity)._publish_mqtt_discovery
-                                        is not Entity._publish_mqtt_discovery
-                                    )
-                                    if is_platform_specific:
-                                        _LOGGER.debug(
-                                            f"Publishing MQTT discovery for {entity.entity_id} (platform-specific)"
+                                    if (
+                                        hasattr(entity, "entity_description")
+                                        and entity.entity_description is not None
+                                    ):
+                                        desc_enabled = getattr(
+                                            entity.entity_description,
+                                            "entity_registry_enabled_default",
+                                            None,
                                         )
-                                        await entity._publish_mqtt_discovery()
-                                    else:
-                                        # Use generic discovery for base Entity classes
+                                        if desc_enabled is not None:
+                                            entity_enabled = desc_enabled
+
+                                    # Note: We still publish disabled entities to MQTT
+                                    # so users can enable them in HA if needed.
+                                    # The platform's _publish_mqtt_discovery will set
+                                    # enabled_by_default: false for disabled entities.
+                                    if not entity_enabled:
                                         _LOGGER.debug(
-                                            f"Publishing generic MQTT discovery for {entity.entity_id}"
+                                            f"Entity {entity.entity_id} is disabled by default, "
+                                            f"but still publishing to MQTT for optional enable"
                                         )
-                                        await entity._publish_generic_mqtt_discovery()
+
+                                    # Set integration domain and config entry for tracking
+                                    entity._attr_integration_domain = entry.domain
+                                    entity._attr_config_entry_id = entry.entry_id
+                                    # Register entity with loader under platform domain
+                                    entity_registered = True
+                                    if (
+                                        hasattr(self._hass, "data")
+                                        and "integration_loader" in self._hass.data
+                                    ):
+                                        loader = self._hass.data["integration_loader"]
+                                        entity_domain = (
+                                            entity.entity_id.split(".")[0]
+                                            if hasattr(entity, "entity_id")
+                                            else entry.domain
+                                        )
+                                        entity_registered = loader.register_entity(
+                                            entity_domain, entity
+                                        )
+
+                                    # Skip rest of setup if entity was filtered out
+                                    if not entity_registered:
+                                        _LOGGER.debug(
+                                            f"Entity {entity.entity_id} was filtered out, skipping MQTT discovery"
+                                        )
+                                        continue
+
+                                    # Add to entity registry
+                                    from .entity import (
+                                        EntityRegistry,
+                                        register_entity_device,
+                                    )
+
+                                    # Register the entity's device *before*
+                                    # async_added_to_hass (HA parity): integrations
+                                    # read the device registry from there, and
+                                    # localtuya >= 2026.10.0 raises if the gateway
+                                    # device of a sub-device has no row yet.
+                                    register_entity_device(
+                                        self._hass, entity, entry.entry_id
+                                    )
+                                    registry = EntityRegistry()
+                                    registry.register(entity)
+                                    # Persisted enable/disable overrides are
+                                    # applied inside register() (reading the
+                                    # storage-backed overrides cache), so the
+                                    # entry's enabled state survives restarts.
                                     _LOGGER.debug(
-                                        f"MQTT discovery published for {entity.entity_id}"
+                                        f"Calling async_added_to_hass for {entity.entity_id} (type: {type(entity).__name__})"
+                                    )
+                                    await entity.async_added_to_hass()
+                                    _LOGGER.debug(
+                                        f"async_added_to_hass completed for {entity.entity_id}"
+                                    )
+                                    # Trigger state write to publish initial state
+                                    # This is needed for coordinator-based entities where data
+                                    # was fetched before the entity was added
+                                    entity.async_write_ha_state()
+                                    _LOGGER.debug(
+                                        f"Initial state written for {entity.entity_id}"
+                                    )
+                                    # Publish MQTT discovery if entity supports it
+                                    from .entity import Entity
+
+                                    if hasattr(entity, "_publish_mqtt_discovery"):
+                                        # Check if this is a platform-specific implementation
+                                        is_platform_specific = (
+                                            type(entity)._publish_mqtt_discovery
+                                            is not Entity._publish_mqtt_discovery
+                                        )
+                                        if is_platform_specific:
+                                            _LOGGER.debug(
+                                                f"Publishing MQTT discovery for {entity.entity_id} (platform-specific)"
+                                            )
+                                            await entity._publish_mqtt_discovery()
+                                        else:
+                                            # Use generic discovery for base Entity classes
+                                            _LOGGER.debug(
+                                                f"Publishing generic MQTT discovery for {entity.entity_id}"
+                                            )
+                                            await entity._publish_generic_mqtt_discovery()
+                                        _LOGGER.debug(
+                                            f"MQTT discovery published for {entity.entity_id}"
+                                        )
+                                except BaseException as err:  # noqa: BLE001 - isolate per entity
+                                    # One broken entity must not take the rest of the platform with
+                                    # it. Cancellation still propagates so a timeout can stop the add.
+                                    abort = getattr(
+                                        entity, "add_to_platform_abort", None
+                                    )
+                                    if callable(abort):
+                                        abort()
+                                    if not isinstance(err, Exception):
+                                        # CancelledError / KeyboardInterrupt: stop
+                                        # the add, don't swallow it.
+                                        raise
+                                    _LOGGER.error(
+                                        f"Failed to add entity {getattr(entity, 'entity_id', None)} "
+                                        f"({type(entity).__name__}) on {platform_name} platform: {err!r}",
+                                        exc_info=err,
                                     )
 
                         # Create task to run async work and store it so it doesn't get garbage collected
@@ -603,7 +717,21 @@ class ConfigEntries:
 
                     # Wait for all entity registration tasks to complete before returning
                     if _platform_tasks:
-                        await asyncio.gather(*_platform_tasks, return_exceptions=True)
+                        results = await asyncio.gather(
+                            *_platform_tasks, return_exceptions=True
+                        )
+                        # return_exceptions keeps one broken entity from taking
+                        # the whole platform down, but it also swallows the
+                        # traceback: without this the entry looks set up while
+                        # entities are silently missing (nest_protect 0.5.0 did
+                        # exactly that via self.platform.config_entry).
+                        for result in results:
+                            if isinstance(result, BaseException):
+                                _LOGGER.error(
+                                    f"Failed to add entities on {platform_name} "
+                                    f"platform for {entry.domain}: {result!r}",
+                                    exc_info=result,
+                                )
 
                     _LOGGER.debug(
                         f"Platform {platform} setup complete for {entry.domain}"

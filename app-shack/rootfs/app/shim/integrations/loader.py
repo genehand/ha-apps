@@ -14,7 +14,11 @@ from typing import Any, Dict, List, Optional, Callable
 from ..logging import get_logger, set_current_integration
 from ..hass import HomeAssistant
 from ..models import ConfigEntry, _slugify_name
-from ..entity import EntityRegistry, register_entity_device
+from ..entity import (
+    EntityRegistry,
+    async_get_entity_platform,
+    register_entity_device,
+)
 from ..import_patch import setup_import_patching
 from ..options_map import patch_select_descriptions
 from .manager import IntegrationManager, IntegrationInfo
@@ -494,6 +498,26 @@ class IntegrationLoader:
 
         # Set up entity in hass
         entity.hass = self._hass
+
+        # Hand the entity its platform before async_added_to_hass (HA parity):
+        # integrations read self.platform.config_entry from instance methods.
+        config_entry_id = getattr(entity, "_attr_config_entry_id", None)
+        config_entry = (
+            self._hass.config_entries.async_get_entry(config_entry_id)
+            if config_entry_id
+            else None
+        )
+        entity.add_to_platform_start(
+            self._hass,
+            async_get_entity_platform(self._hass, platform, config_entry),
+            None,
+        )
+
+        # HA's lifecycle: the prepare hook runs on every add attempt, before
+        # the registry entry is processed. Raising aborts this add.
+        prepare = getattr(entity, "async_prepare_to_add_to_hass", None)
+        if callable(prepare):
+            await prepare()
 
         # Register the entity's device before async_added_to_hass (HA parity);
         # the reload button's device_info may be inherited from a platform

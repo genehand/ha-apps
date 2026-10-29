@@ -426,6 +426,82 @@ class RegistryEntry:
         self.device_id = device_id
 
 
+class ShimEntityPlatform:
+    """Minimal stand-in for Home Assistant's ``EntityPlatform``.
+
+    HA creates one ``EntityPlatform`` per (config entry, domain) while
+    forwarding an entry to its platforms, and hands it to every entity through
+    ``Entity.platform``. Integrations read it from instance methods — most
+    commonly ``self.platform.config_entry`` to reach the entry's
+    ``runtime_data`` (nest_protect >= 0.5.0 does exactly this in
+    ``async_added_to_hass``, which aborted the whole platform otherwise).
+
+    The shim has no real platform objects, so this carries just the handful of
+    attributes integrations reach for. It is created per (entry, platform) and
+    reused for every entity of that platform, like HA does.
+    """
+
+    def __init__(
+        self,
+        hass: Any,
+        platform_name: str,
+        config_entry: Any = None,
+    ) -> None:
+        self.hass = hass
+        self.platform_name = platform_name
+        self.domain = platform_name
+        self.config_entry = config_entry
+        self.config_entry_id = getattr(config_entry, "entry_id", None)
+        # HA's EntityPlatform keeps its entities in this dict.
+        self.entities: Dict[str, "Entity"] = {}
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"<ShimEntityPlatform {self.platform_name} "
+            f"entry={self.config_entry_id}>"
+        )
+
+    def async_register_entity_service(
+        self,
+        name: str,
+        schema: Any,
+        func: Any,
+        required_features: Any = None,
+    ) -> None:
+        """Ignore entity-service registration (no service registry wiring)."""
+
+    def async_extract_from_service(
+        self, service_call: Any, expand_group: bool = True
+    ) -> list:
+        """Return no entities; entity services are not dispatched here."""
+        return []
+
+
+def async_get_entity_platform(
+    hass: Any, platform_name: str, config_entry: Any = None
+) -> ShimEntityPlatform:
+    """Return the cached ``ShimEntityPlatform`` for a (entry, platform) pair."""
+    platforms: Dict[tuple, ShimEntityPlatform] = getattr(
+        hass, "_shim_entity_platforms", None
+    )
+    if platforms is None:
+        platforms = {}
+        try:
+            hass._shim_entity_platforms = platforms
+        except Exception:  # noqa: BLE001 - hass may forbid attribute writes
+            return ShimEntityPlatform(hass, platform_name, config_entry)
+
+    key = (getattr(config_entry, "entry_id", None), platform_name)
+    platform = platforms.get(key)
+    if platform is None:
+        platform = ShimEntityPlatform(hass, platform_name, config_entry)
+        platforms[key] = platform
+    elif config_entry is not None:
+        # A reloaded entry keeps its entry_id but is a new object.
+        platform.config_entry = config_entry
+    return platform
+
+
 class EntityRegistry:
     """Registry for tracking entities."""
 
@@ -539,6 +615,23 @@ class EntityRegistry:
         """Return registry entries for a config entry."""
         return list(self._entries_by_config_entry.get(config_entry_id, []))
 
+    def async_entries_for_device(
+        self, device_id: str, include_disabled_entities: bool = False
+    ) -> List[RegistryEntry]:
+        """Return registry entries for a device.
+
+        Mirrors ``entity_registry.async_entries_for_device``. nest_protect >= 0.5.0
+        calls it (with ``include_disabled_entities=True``) to map a device back
+        to the bucket keys its entities were created from.
+        """
+        return [
+            entry
+            for entries in self._entries_by_config_entry.values()
+            for entry in entries
+            if entry.device_id == device_id
+            and (include_disabled_entities or not entry.disabled)
+        ]
+
     def get_registry_entry(self, entity_id: str) -> Optional[RegistryEntry]:
         """Return the registry entry for ``entity_id``, or None."""
         for entries in self._entries_by_config_entry.values():
@@ -576,18 +669,36 @@ class EntityRegistry:
 
     def async_update_entity(
         self, entity_id: str, *, name: str = None, icon: str = None,
-        disabled_by: Optional[str] = ..., new_unique_id: str = None, **kwargs
+        disabled_by: Optional[str] = ..., new_unique_id: str = None,
+        new_entity_id: str = None, **kwargs
     ):
         """Update entity properties.
 
         Mirrors HA's ``entity_registry.async_update_entity``. Supports the
         fields shims commonly rely on: ``name``/``icon`` (written onto the
         Entity instance), ``new_unique_id`` (rewrites the registry entry's
-        unique_id), and ``disabled_by`` (``None`` enables the entity; any
-        other value such as "integration"/"user" disables it). Extra kwargs
-        are applied onto the Entity when present.
+        unique_id), ``new_entity_id`` (renames in place, see below), and
+        ``disabled_by`` (``None`` enables the entity; any other value such as
+        "integration"/"user" disables it). Extra kwargs are applied onto the
+        Entity when present.
+
+        ``new_entity_id`` follows Home Assistant 2026.11 semantics: the state
+        under the old entity_id is removed, the bookkeeping (registry entry,
+        state machine mapping) is moved, ``async_registry_entry_updated`` and
+        the entity's ``async_entity_id_changed(old_entity_id)`` hook run, and
+        the state is written under the new entity_id. The entity is *not*
+        removed and re-added, so a hook that subscribes keyed on entity_id must
+        update it. HA only keeps the remove-and-re-add behaviour for custom
+        integrations that have not implemented the hook until 2027.11; the
+        shim never did remove-and-re-add on rename, so it is simply in place.
         """
         entity = self._entities.get(entity_id)
+        entry = self.get_registry_entry(entity_id)
+
+        if new_entity_id is not None and new_entity_id != entity_id:
+            self._async_rename_entity(entity_id, new_entity_id, entity, entry)
+            entity_id = new_entity_id
+
         if entity is not None:
             if name is not None:
                 entity._attr_name = name
@@ -597,7 +708,6 @@ class EntityRegistry:
                 if hasattr(entity, key):
                     setattr(entity, key, value)
 
-        entry = self.get_registry_entry(entity_id)
         if entry is not None:
             if new_unique_id is not None:
                 entry.unique_id = new_unique_id
@@ -606,6 +716,75 @@ class EntityRegistry:
                 entry.disabled = disabled_by is not None
                 self._persist_override(entity_id, disabled_by)
         return entity or entry
+
+    def _async_rename_entity(
+        self, old_entity_id: str, new_entity_id: str, entity, entry
+    ) -> None:
+        """Move an entity to a new entity_id in place (HA 2026.11 semantics)."""
+        if old_entity_id.split(".")[0] != new_entity_id.split(".")[0]:
+            raise ValueError(
+                f"Cannot change domain of {old_entity_id} to {new_entity_id}"
+            )
+        if new_entity_id in self._entities:
+            raise ValueError(f"Entity {new_entity_id} already exists")
+
+        hass = self._hass
+
+        # State under the old entity_id goes away first.
+        if hass is not None:
+            try:
+                hass.states.async_remove(old_entity_id)
+            except Exception as e:  # noqa: BLE001 - best effort, like HA
+                _LOGGER.debug(f"Could not remove state {old_entity_id}: {e}")
+
+        if entity is not None:
+            self._entities.pop(old_entity_id, None)
+            self._entities[new_entity_id] = entity
+            entity.entity_id = new_entity_id
+
+        if entry is not None:
+            entry.entity_id = new_entity_id
+
+        if hass is not None:
+            unique_id = getattr(entity, "unique_id", None) if entity else None
+            if unique_id:
+                try:
+                    hass.states.async_register_entity_id(unique_id, new_entity_id)
+                except Exception as e:  # noqa: BLE001
+                    _LOGGER.debug(
+                        f"Could not remap unique_id {unique_id} to "
+                        f"{new_entity_id}: {e}"
+                    )
+
+        _LOGGER.debug(f"Renamed entity {old_entity_id} to {new_entity_id}")
+
+        if entity is None:
+            return
+
+        # HA's order: bookkeeping first, then the update notification, then the
+        # entity_id hook, then the state under the new id.
+        entity.async_registry_entry_updated()
+        try:
+            entity.async_entity_id_changed(old_entity_id)
+        except Exception:  # noqa: BLE001 - HA catches and logs, rename still lands
+            _LOGGER.exception(
+                f"Error in async_entity_id_changed for {new_entity_id}"
+            )
+
+        # MQTT topics derive from the entity_id, so the retained discovery
+        # config has to move too.
+        if hass is not None:
+            try:
+                hass.async_add_job(
+                    entity._async_move_mqtt_topics(old_entity_id)
+                )
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.debug(f"Could not move MQTT topics for rename: {e}")
+
+        try:
+            entity.async_write_ha_state()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception(f"Error writing state for {new_entity_id}")
 
 
 class Entity:
@@ -633,6 +812,9 @@ class Entity:
     _attr_should_poll: bool = False
     _attr_unique_id: Optional[str] = None
     _attr_unit_of_measurement: Optional[str] = None
+    # Set by add_to_platform_start(); HA hands over the platform's update
+    # semaphore. Integrations may read self.parallel_updates.
+    parallel_updates: Optional[Any] = None
     _unrecorded_attributes: frozenset = frozenset()
     # Last exception message seen while computing state; used to de-duplicate
     # warnings for entities whose state property raises on every update.
@@ -1079,6 +1261,35 @@ class Entity:
         """Run when entity about to be added to hass."""
         pass
 
+    async def async_prepare_to_add_to_hass(self) -> None:
+        """Run before the entity is added to hass.
+
+        Awaited on every add attempt — before the platform applies the entity
+        registry entry (so also for adds that end up aborted, e.g. because the
+        entity is disabled) and before any state is written. ``self.hass`` and
+        ``self.platform`` are set; ``entity_id`` and the registry entry may not
+        be. Raising aborts the add.
+
+        Clean up with ``async_on_remove``, not ``async_will_remove_from_hass``,
+        because an aborted add never reaches the latter. Added in Home
+        Assistant Core 2026.10; integrations used to override
+        ``add_to_platform_start`` for this.
+        """
+
+    def async_registry_entry_updated(self) -> None:
+        """Run when the entity registry entry has been updated."""
+
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Run when the entity_id has been changed in the entity registry.
+
+        From Home Assistant Core 2026.11 an ``entity_id`` change no longer
+        removes and re-adds the entity, so anything keyed on ``entity_id``
+        (state listeners, dispatcher signals) must be updated here.
+        ``self.entity_id`` already holds the new id; ``async_will_remove_from_hass``
+        and ``async_added_to_hass`` are not called. Overrides must call
+        ``super().async_entity_id_changed(old_entity_id)``.
+        """
+
     def async_on_remove(self, func):
         """Add a function to call when entity is removed from hass."""
         if not hasattr(self, "_on_remove_callbacks"):
@@ -1089,11 +1300,7 @@ class Entity:
     async def async_will_remove_from_hass(self) -> None:
         """Run when entity will be removed from hass."""
         # Call registered removal callbacks
-        if hasattr(self, "_on_remove_callbacks"):
-            for callback in self._on_remove_callbacks:
-                if callable(callback):
-                    callback()
-            self._on_remove_callbacks.clear()
+        self._call_on_remove_callbacks()
 
     async def async_update(self) -> None:
         """Fetch new state data for the entity."""
@@ -1240,15 +1447,83 @@ class Entity:
 
         _LOGGER.debug(f"Cleaned up MQTT topics for {self.entity_id}")
 
+    async def _async_move_mqtt_topics(self, old_entity_id: str) -> None:
+        """Move retained MQTT topics after an in-place entity_id rename.
+
+        Discovery, state and attribute topics are derived from the entity_id,
+        so the old ones are cleared and the discovery config is republished
+        under the new id (the state follows from async_write_ha_state).
+        """
+        current_entity_id = self.entity_id
+        self.entity_id = old_entity_id
+        try:
+            await self._cleanup_mqtt()
+        finally:
+            self.entity_id = current_entity_id
+
+        if hasattr(self, "_publish_mqtt_discovery"):
+            await self._publish_mqtt_discovery()
+
     def add_to_platform_start(
         self,
         hass,
         platform,
-        parallel_updates,
+        parallel_updates=None,
     ) -> None:
-        """Start adding an entity to a platform."""
+        """Start adding an entity to a platform.
+
+        Called by the shim's entity-add path, like HA's ``EntityPlatform``.
+        Integrations must not override this; use
+        ``async_prepare_to_add_to_hass`` instead (see HA 2026.10).
+        """
         self.hass = hass
         self.platform = platform
+        self.parallel_updates = parallel_updates
+
+    def _call_on_remove_callbacks(self) -> None:
+        """Run and clear callbacks registered with ``async_on_remove``.
+
+        Called both when a successfully added entity is removed and when an
+        add attempt is aborted (``add_to_platform_abort``), matching HA.
+        """
+        callbacks = getattr(self, "_on_remove_callbacks", None)
+        if not callbacks:
+            return
+        self._on_remove_callbacks = []
+        for callback in reversed(callbacks):
+            try:
+                callback()
+            except Exception as e:  # noqa: BLE001 - one bad callback must not
+                # stop the rest of the cleanup, like HA.
+                _LOGGER.error(
+                    f"Error in async_on_remove callback for {self.entity_id}: {e}"
+                )
+
+    def add_to_platform_abort(self) -> None:
+        """Abort adding an entity to a platform.
+
+        Mirrors HA: runs the ``async_on_remove`` cleanup, then detaches the
+        entity. The shim also drops a partial registration and state, because
+        its add path registers the entity before ``async_added_to_hass`` and
+        there is no platform-level rollback afterwards.
+        """
+        self._call_on_remove_callbacks()
+
+        hass = self.hass
+        entity_id = self.entity_id
+        if hass is not None and entity_id:
+            try:
+                hass.states.async_remove(entity_id)
+            except Exception as e:  # noqa: BLE001 - best effort cleanup
+                _LOGGER.debug(f"Could not remove state {entity_id}: {e}")
+        if entity_id:
+            EntityRegistry().unregister(entity_id)
+
+        self.hass = None
+        self.platform = None
+        self.parallel_updates = None
+        self._added = False
+        _LOGGER.debug(f"Aborted adding {entity_id} to a platform")
 
     @property
     def _entity_registry_enabled_default_raw(self) -> bool:

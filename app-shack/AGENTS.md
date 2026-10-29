@@ -45,6 +45,7 @@ shim/
 > State Restoration (RestoreEntity) → [`state-restore.md`](docs/state-restore.md)
 > Blocking Call Detection (warn-only) → [`blocking-calls.md`](docs/blocking-calls.md)
 > Entity Enable/Disable & Polling Control → [`entity-enable-disable.md`](docs/entity-enable-disable.md)
+> Entity Lifecycle Hooks (`async_prepare_to_add_to_hass`, `async_entity_id_changed`) → [`entity-lifecycle.md`](docs/entity-lifecycle.md)
 
 ### Import patterns
 
