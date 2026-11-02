@@ -219,7 +219,10 @@ class ImportPatcher:
         data_entry_flow.FlowHandler = config_entries.ConfigFlow
         data_entry_flow.FlowResult = config_entries.FlowResult
         data_entry_flow.FlowResultType = config_entries.FlowResultType
-        data_entry_flow.AbortFlow = type("AbortFlow", (Exception,), {})
+        # The shim's AbortFlow keeps ``reason``/``description_placeholders``;
+        # integrations raise it to abort from inside a step and the flow
+        # manager turns it into an abort result.
+        data_entry_flow.AbortFlow = config_entries.AbortFlow
         homeassistant.data_entry_flow = data_entry_flow
 
         # STEP 3: Create the remaining stub modules

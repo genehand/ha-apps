@@ -4,13 +4,16 @@ Provides classes for config flow handling.
 """
 
 from enum import Enum
-from typing import Any, Optional, Dict, Callable
+from typing import Any, Callable, Dict, Optional, Union
 from dataclasses import dataclass
 from contextvars import ContextVar
 
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.typing import UNDEFINED, UndefinedType
 from .logging import get_logger
 from .models import ConfigEntry, callback
+
+HOMEASSISTANT_DOMAIN = "homeassistant"
 
 _LOGGER = get_logger(__name__)
 
@@ -44,6 +47,55 @@ CONN_CLASS_CLOUD_PUSH = "cloud_push"
 CONN_CLASS_LOCAL_POLL = "local_poll"
 CONN_CLASS_LOCAL_PUSH = "local_push"
 CONN_CLASS_ASSUMED = "assumed"
+
+
+class AbortFlow(Exception):
+    """Raise inside a flow step to abort the flow.
+
+    Mirrors ``homeassistant.data_entry_flow.AbortFlow``: integrations raise it
+    (directly or through helpers such as ``_abort_if_unique_id_mismatch``) when
+    the step cannot continue, and the flow manager turns it into an abort
+    result instead of letting the exception escape.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        description_placeholders: Optional[Dict[str, str]] = None,
+        *,
+        translation_domain: Optional[str] = None,
+    ) -> None:
+        """Initialize the abort flow exception."""
+        super().__init__(f"Flow aborted: {reason}")
+        self.reason = reason
+        self.description_placeholders = description_placeholders
+        self.translation_domain = translation_domain
+
+
+class ConfigError(HomeAssistantError):
+    """Base class for config entry errors."""
+
+
+class UnknownEntry(ConfigError):
+    """Unknown config entry id specified."""
+
+
+def abort_result_from_flow_error(flow_id: str, exc: AbortFlow) -> Dict[str, Any]:
+    """Build the abort result for a raised ``AbortFlow``.
+
+    ``flow_id`` is included because the web UI continues the flow by id, and an
+    abort result that loses it leaves the wizard page without a next request.
+    """
+    result: Dict[str, Any] = {
+        "type": "abort",
+        "reason": exc.reason,
+        "flow_id": flow_id,
+    }
+    if exc.description_placeholders:
+        result["description_placeholders"] = dict(exc.description_placeholders)
+    if exc.translation_domain:
+        result["translation_domain"] = exc.translation_domain
+    return result
 
 # Result types where Home Assistant's flow manager fills in a missing ``step_id``
 # with the step it called. Mirrors ``data_entry_flow.STEP_ID_OPTIONAL_STEPS``.
@@ -215,6 +267,15 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         Assistant 2027.5.0; the flow manager backfills it via
         ``apply_step_id_fallback``.
         """
+        # HA appends the entry name to the reauth description so the user can
+        # tell which account they are re-authenticating (nest_protect's reauth
+        # forms rely on it). Guarded on ``entry_id`` because integrations may
+        # start a flow with source=reauth themselves, without an entry.
+        if self.source == SOURCE_REAUTH and "entry_id" in self.context:
+            description_placeholders = dict(description_placeholders or {})
+            if description_placeholders.get("name") is None:
+                description_placeholders["name"] = self._get_reauth_entry().title
+
         result: Dict[str, Any] = {
             "type": "form",
             "data_schema": data_schema,
@@ -269,12 +330,17 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
             result["description_placeholders"] = description_placeholders
         return result
 
-    def async_abort(self, reason: str):
+    def async_abort(
+        self, reason: str, *, translation_domain: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Abort config flow."""
-        return {
+        result: Dict[str, Any] = {
             "type": "abort",
             "reason": reason,
         }
+        if translation_domain is not None:
+            result["translation_domain"] = translation_domain
+        return result
 
     def add_suggested_values_to_schema(self, data_schema, suggested_values):
         """Add suggested values to a data schema.
@@ -350,6 +416,144 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
         """Return current entry IDs."""
         entries = self._async_current_entries()
         return [entry.unique_id for entry in entries if entry.unique_id]
+
+    # -- reauth / reconfigure helpers ----------------------------------
+    # HA hands reauth and reconfigure flows the entry they act on through the
+    # flow context (``entry_id``); these accessors are how every migrated
+    # integration gets at it and how it updates the entry afterwards.
+
+    @property
+    def _reauth_entry_id(self) -> str:
+        """Return the reauth entry id."""
+        if self.source != SOURCE_REAUTH:
+            raise ValueError(f"Source is {self.source}, expected {SOURCE_REAUTH}")
+        return self.context["entry_id"]
+
+    def _get_reauth_entry(self) -> ConfigEntry:
+        """Return the reauth config entry linked to the current context."""
+        return self.hass.config_entries.async_get_known_entry(self._reauth_entry_id)
+
+    @property
+    def _reconfigure_entry_id(self) -> str:
+        """Return the reconfigure entry id."""
+        if self.source != SOURCE_RECONFIGURE:
+            raise ValueError(f"Source is {self.source}, expected {SOURCE_RECONFIGURE}")
+        return self.context["entry_id"]
+
+    def _get_reconfigure_entry(self) -> ConfigEntry:
+        """Return the reconfigure config entry linked to the current context."""
+        return self.hass.config_entries.async_get_known_entry(
+            self._reconfigure_entry_id
+        )
+
+    def _abort_if_unique_id_mismatch(
+        self,
+        *,
+        reason: str = "unique_id_mismatch",
+        description_placeholders: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Abort if the unique ID does not match the reauth/reconfigure entry.
+
+        Raises ``AbortFlow`` (not an abort result) because it is called from
+        inside a step, exactly like upstream.
+        """
+        if (
+            self.source == SOURCE_REAUTH
+            and self._get_reauth_entry().unique_id != self.unique_id
+        ) or (
+            self.source == SOURCE_RECONFIGURE
+            and self._get_reconfigure_entry().unique_id != self.unique_id
+        ):
+            raise AbortFlow(reason, description_placeholders)
+
+    # -- entry updates from a flow -------------------------------------
+
+    def __async_update(
+        self,
+        entry: ConfigEntry,
+        *,
+        unique_id: Union[str, None, UndefinedType],
+        title: Union[str, UndefinedType],
+        data: Union[Dict[str, Any], UndefinedType],
+        data_updates: Union[Dict[str, Any], UndefinedType],
+        options: Union[Dict[str, Any], UndefinedType],
+    ) -> bool:
+        """Update a config entry from a flow; returns True if anything changed."""
+        if data_updates is not UNDEFINED:
+            if data is not UNDEFINED:
+                raise ValueError("Cannot set both data and data_updates")
+            data = {**entry.data, **data_updates}
+
+        updates: Dict[str, Any] = {}
+        for key, value in (
+            ("unique_id", unique_id),
+            ("title", title),
+            ("data", data),
+            ("options", options),
+        ):
+            if value is not UNDEFINED:
+                updates[key] = value
+        return self.hass.config_entries.async_update_entry(entry, **updates)
+
+    def _async_abort_after_update(
+        self, reason: Union[str, UndefinedType]
+    ) -> Dict[str, Any]:
+        """Build the abort result for a finished reauth/reconfigure flow."""
+        translation_domain: Optional[str] = None
+        if reason is UNDEFINED:
+            if self.source == SOURCE_RECONFIGURE:
+                reason = "reconfigure_successful"
+            else:
+                reason = "reauth_successful"
+            translation_domain = HOMEASSISTANT_DOMAIN
+        return self.async_abort(reason=reason, translation_domain=translation_domain)
+
+    def async_update_and_abort(
+        self,
+        entry: ConfigEntry,
+        *,
+        unique_id: Union[str, None, UndefinedType] = UNDEFINED,
+        title: Union[str, UndefinedType] = UNDEFINED,
+        data: Union[Dict[str, Any], UndefinedType] = UNDEFINED,
+        data_updates: Union[Dict[str, Any], UndefinedType] = UNDEFINED,
+        options: Union[Dict[str, Any], UndefinedType] = UNDEFINED,
+        reason: Union[str, UndefinedType] = UNDEFINED,
+    ) -> Dict[str, Any]:
+        """Update a config entry and finish the flow without reloading it."""
+        self.__async_update(
+            entry=entry,
+            unique_id=unique_id,
+            title=title,
+            data=data,
+            data_updates=data_updates,
+            options=options,
+        )
+        return self._async_abort_after_update(reason)
+
+    def async_update_reload_and_abort(
+        self,
+        entry: ConfigEntry,
+        *,
+        unique_id: Union[str, None, UndefinedType] = UNDEFINED,
+        title: Union[str, UndefinedType] = UNDEFINED,
+        data: Union[Dict[str, Any], UndefinedType] = UNDEFINED,
+        data_updates: Union[Dict[str, Any], UndefinedType] = UNDEFINED,
+        options: Union[Dict[str, Any], UndefinedType] = UNDEFINED,
+        reason: Union[str, UndefinedType] = UNDEFINED,
+        reload_even_if_entry_is_unchanged: bool = True,
+    ) -> Dict[str, Any]:
+        """Update a config entry, schedule a reload and finish the flow."""
+        result = self.__async_update(
+            entry=entry,
+            unique_id=unique_id,
+            title=title,
+            data=data,
+            data_updates=data_updates,
+            options=options,
+        )
+        if reload_even_if_entry_is_unchanged or result:
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        return self._async_abort_after_update(reason)
 
 
 class OptionsFlow:
@@ -441,6 +645,17 @@ class OptionsFlowWithConfigEntry(OptionsFlow):
     def config_entry(self):
         """Return the config entry."""
         return self._config_entry
+
+
+class OptionsFlowWithReload(OptionsFlow):
+    """Options flow that reloads the entry when its options change.
+
+    Mirrors HA's marker class: integrations subclass it instead of
+    ``OptionsFlow`` and stop wiring a config entry update listener (HA raises if
+    both are used). ``automatic_reload = False`` opts back out.
+    """
+
+    automatic_reload: bool = True
 
 
 class HANDLERS:

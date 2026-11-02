@@ -34,15 +34,21 @@ This aims to support all entity platforms supported by the [MQTT integration](ht
 
 ### Import Patching
 
-The shim patches Python's import system to intercept Home Assistant's:
+The shim patches Python's import system to intercept Home Assistant's. Integration code is
+never rewritten — instead, the shim rebinds the `homeassistant.components.*` module objects to
+its own implementations, so an unchanged import resolves to the shim class:
 
 ```python
 # Integration code:
 from homeassistant.components.sensor import SensorEntity
 
-# Shim intercepts and provides:
-from shim.platforms.sensor import SensorEntity
+# At startup the shim rebinds the module object, so the same import
+# resolves to the shim implementation:
+homeassistant.components.sensor = shim.platforms.sensor
 ```
+
+Integration code only ever imports from `homeassistant.components.*`; importing from
+`shim.platforms.*` directly is for the shim's own tests.
 
 ### Entity Lifecycle
 

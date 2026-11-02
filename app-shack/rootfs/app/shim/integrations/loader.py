@@ -14,7 +14,11 @@ from typing import Any, Dict, List, Optional, Callable
 from ..logging import get_logger, set_current_integration
 from ..hass import HomeAssistant
 from ..models import ConfigEntry, _slugify_name
-from ..config_entries import apply_step_id_fallback
+from ..config_entries import (
+    AbortFlow,
+    abort_result_from_flow_error,
+    apply_step_id_fallback,
+)
 from ..entity import (
     EntityRegistry,
     async_get_entity_platform,
@@ -398,6 +402,18 @@ class IntegrationLoader:
             self._hass, wait_time, _retry
         )
 
+    @staticmethod
+    def _entry_was_set_up(entry: ConfigEntry) -> bool:
+        """Return True if the integration's setup ran for this entry.
+
+        HA's ``ConfigEntry.async_unload`` returns early unless the state is
+        ``LOADED``. A ``not_loaded``/``setup_retry``/``setup_error`` entry has no
+        instance, so there is nothing for ``async_unload_entry`` to tear down —
+        and integrations dereference ``entry.runtime_data`` that setup never
+        populated.
+        """
+        return getattr(entry, "state", None) == "loaded"
+
     async def unload_integration(
         self, entry: ConfigEntry, cleanup_mqtt: bool = True
     ) -> bool:
@@ -440,7 +456,22 @@ class IntegrationLoader:
             # the rest of the teardown: the caller (install_and_reload) goes on
             # to set the entry up again, and anything left running here becomes a
             # duplicate instance next to the new one.
-            if hasattr(module, "async_unload_entry"):
+            #
+            # Only an entry that was actually set up has an instance to tear
+            # down. HA never calls the hook otherwise (``ConfigEntry.async_unload``
+            # returns early unless the state is LOADED), and integrations
+            # dereference ``entry.runtime_data`` that setup never populated:
+            # nest_protect aborts with "'NoneType' object has no attribute
+            # 'subscription_task'" when a never-loaded entry is deleted.
+            if not self._entry_was_set_up(entry):
+                _LOGGER.debug(
+                    "Skipping async_unload_entry for %s entry %s: state is %s, "
+                    "the integration was never set up for it",
+                    domain,
+                    entry.entry_id,
+                    getattr(entry, "state", None),
+                )
+            elif hasattr(module, "async_unload_entry"):
                 try:
                     result = await module.async_unload_entry(self._hass, entry)
                 except Exception as e:
@@ -835,11 +866,20 @@ class IntegrationLoader:
             set_current_integration(domain)
             _LOGGER.info(f"Removing config entry {entry.entry_id} for {domain}")
 
-            # Unload the entry first
+            # Unload the entry first. Keep the module reference: unloading pops
+            # it from ``_loaded_integrations`` (and its modules from
+            # ``sys.modules``), but ``async_remove_entry`` still needs it.
+            module = self._loaded_integrations.get(domain)
             await self.unload_integration(entry)
 
             # Remove the config entry from storage
             await self._hass.config_entries.async_remove(entry.entry_id)
+
+            # HA calls ``async_remove_entry`` after the entry is gone, so the
+            # integration can clean up what it persisted for it (nest_protect
+            # deletes its stored Google session). Nothing did this before, so
+            # those files outlived the entry they belonged to.
+            await self._async_call_remove_entry(module, entry)
 
             _LOGGER.info(f"Successfully removed config entry {entry.entry_id}")
             return True
@@ -849,6 +889,35 @@ class IntegrationLoader:
             return False
         finally:
             set_current_integration(None)
+
+    async def _async_call_remove_entry(self, module, entry: ConfigEntry) -> None:
+        """Call the integration's ``async_remove_entry`` hook.
+
+        Mirrors ``ConfigEntry.async_remove``: ignored-source entries are skipped
+        and a raising hook is logged without failing the removal (the entry is
+        already gone from storage at this point).
+        """
+        from ..config_entries import SOURCE_IGNORE
+
+        if module is None or entry.source == SOURCE_IGNORE:
+            return
+
+        hook = getattr(module, "async_remove_entry", None)
+        if hook is None:
+            return
+
+        try:
+            await hook(self._hass, entry)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+
+            _LOGGER.error(
+                f"async_remove_entry failed for {entry.domain} entry "
+                f"{entry.entry_id}: {e}"
+            )
+            _LOGGER.debug(
+                f"async_remove_entry traceback:\n{traceback.format_exc()}"
+            )
 
     def get_entities(
         self, domain: Optional[str] = None, integration_domain: Optional[str] = None
@@ -1187,11 +1256,17 @@ class IntegrationLoader:
             # Start the config flow at init step
             result = await options_flow.async_step_init(None)
             result = apply_step_id_fallback(options_flow, "init", result)
-            result["flow_id"] = flow_id
+            result = self._finalize_result(flow_id, result)
+
+            # An options flow can finish without asking anything.
+            if result.get("type") == "create_entry":
+                self._apply_options_result(options_flow, entry, result)
 
             _LOGGER.info(f"Started options flow for {domain} entry {entry.entry_id}")
             return result
 
+        except AbortFlow as exc:
+            return self._abort_flow_result(locals().get("flow_id"), exc)
         except Exception as e:
             _LOGGER.error(f"Failed to start options flow for {domain}: {e}")
             import traceback
@@ -1280,7 +1355,7 @@ class IntegrationLoader:
                     result = await step_method(user_input)
 
             result = apply_step_id_fallback(flow, step_id, result)
-            result["flow_id"] = flow_id
+            result = self._finalize_result(flow_id, result)
 
             # Update cur_step_id based on result type
             # If the step returns a form, update cur_step_id to match the returned step_id
@@ -1297,12 +1372,16 @@ class IntegrationLoader:
                 _LOGGER.info(
                     f"Options flow completed for {domain} entry {entry.entry_id}"
                 )
-                # Note: The options flow should have already updated the entry data
-                # via config_entry.data updates. We just need to save it.
+                # The flow manager owns "flow data -> entry.options"; the step
+                # only returns what the user entered. A legacy flow that wrote
+                # entry.data directly is still saved by _save_updated_config_entry.
+                self._apply_options_result(flow, entry, result)
                 await self._save_updated_config_entry(entry)
 
             return result
 
+        except AbortFlow as exc:
+            return self._abort_flow_result(flow_id, exc)
         except Exception as e:
             _LOGGER.error(f"Failed to continue options flow for {domain}: {e}")
             import traceback
@@ -1363,6 +1442,70 @@ class IntegrationLoader:
             return False
         finally:
             set_current_integration(None)
+
+    def _apply_options_result(self, flow, entry: ConfigEntry, result: dict) -> bool:
+        """Write a finished options flow's data to ``entry.options``.
+
+        Mirrors ``OptionsFlowManager.async_finish_flow``: on ``create_entry`` the
+        step's ``data`` *replaces* ``entry.options``. No one applied it before,
+        so the options picked in the web UI were silently dropped for every
+        integration that leaves persisting them to the flow manager.
+        """
+        if not isinstance(result, dict) or result.get("type") != "create_entry":
+            return False
+
+        options = result.get("data")
+        if options is None:
+            options = result.get("options")
+        if options is None:
+            return False
+
+        changed = self._hass.config_entries.async_update_entry(
+            entry, options=dict(options)
+        )
+        _LOGGER.debug(
+            "Options flow for %s entry %s wrote options=%s (changed=%s)",
+            entry.domain,
+            entry.entry_id,
+            dict(options),
+            changed,
+        )
+        return changed
+
+    def _finalize_result(self, flow_id: str, result: dict) -> dict:
+        """Attach the flow id and discard the flow when the step ended it.
+
+        Home Assistant's flow manager removes the progress entry as soon as a
+        step returns ``abort``. Leaving it behind makes
+        ``ConfigEntry.async_get_active_flows`` report a reauth/reconfigure flow
+        still running, which silently blocks every later reauth of that entry.
+        """
+        if not isinstance(result, dict):
+            return result
+        result["flow_id"] = flow_id
+        if result.get("type") == "abort":
+            try:
+                self._hass.config_entries.flow.async_abort(flow_id)
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.debug(f"Could not discard aborted flow {flow_id}: {e}")
+                self._hass.config_entries._flow_progress.pop(flow_id, None)
+        return result
+
+    def _abort_flow_result(self, flow_id: str, exc: AbortFlow) -> dict:
+        """Turn a raised ``AbortFlow`` into an abort result and drop the flow.
+
+        Home Assistant's flow manager catches ``AbortFlow``, discards the
+        progress entry and returns an abort result; returning ``None`` instead
+        (what our generic ``except Exception`` would do) leaves the user staring
+        at "Failed to continue config flow" with the reason thrown away.
+        """
+        result = abort_result_from_flow_error(flow_id, exc)
+        try:
+            self._hass.config_entries.flow.async_abort(flow_id)
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug(f"Could not discard aborted flow {flow_id}: {e}")
+        _LOGGER.debug(f"Flow {flow_id} aborted from a step: {exc.reason}")
+        return result
 
     async def start_config_flow(self, domain: str) -> Optional[dict]:
         """Start a config flow for an integration."""
@@ -1437,10 +1580,12 @@ class IntegrationLoader:
             # Start the flow
             result = await flow.async_step_user(None)
             result = apply_step_id_fallback(flow, "user", result)
-            result["flow_id"] = flow_id
+            result = self._finalize_result(flow_id, result)
 
             return result
 
+        except AbortFlow as exc:
+            return self._abort_flow_result(locals().get("flow_id"), exc)
         except Exception as e:
             _LOGGER.error(f"Failed to start config flow for {domain}: {e}")
             return None
@@ -1498,7 +1643,7 @@ class IntegrationLoader:
                     result = await step_method(user_input)
 
             result = apply_step_id_fallback(flow, step_id, result)
-            result["flow_id"] = flow_id
+            result = self._finalize_result(flow_id, result)
 
             # Update cur_step_id based on result type
             # If the step returns a form, external, or external_done, update cur_step_id
@@ -1526,6 +1671,8 @@ class IntegrationLoader:
 
             return result
 
+        except AbortFlow as exc:
+            return self._abort_flow_result(flow_id, exc)
         except Exception as e:
             _LOGGER.error(f"Failed to continue config flow for {domain}: {e}")
             import traceback

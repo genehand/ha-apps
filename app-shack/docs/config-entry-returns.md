@@ -29,7 +29,18 @@ re-ran on every start).
   state `setup_retry`, retry after `min(2**(tries-1) * 5, 600)` seconds, counter
   reset on success, pending retry cancelled by unload/reload.
 - `shim/integrations/loader.py::unload_integration` — `async_unload_entry`
-  returning `None` is a clean unload; only `False` warns.
+  returning `None` is a clean unload; only `False` warns. The hook itself is
+  only called for an entry whose state is `loaded`: HA's
+  `ConfigEntry.async_unload` returns early otherwise, and integrations
+  dereference `entry.runtime_data` that setup never populated (deleting a
+  `nest_protect` entry that was never set up raised
+  `'NoneType' object has no attribute 'subscription_task'`).
+- `shim/integrations/loader.py::remove_config_entry` — mirrors HA's
+  `ConfigEntries.async_remove`: unload (best effort), drop the entry from the
+  store, then call the integration's `async_remove_entry` hook (skipped for
+  `SOURCE_IGNORE`, and a raise is logged, not fatal). Nothing called that hook
+  before, so per-entry files integrations persist (nest_protect's stored Google
+  session) outlived the entries that owned them.
 - migration — `None`/`True` persist the new entry version, `False` or a raised
   `ConfigEntryError` set `migration_error` and skip setup.
 - `shim/registries.py::ConfigEntries.async_unload_platforms_or_raise` — the

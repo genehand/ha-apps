@@ -23,7 +23,7 @@ the area you are changing.
 | [`entity-lifecycle.md`](docs/entity-lifecycle.md) | `async_prepare_to_add_to_hass`, `async_entity_id_changed` |
 | [`entity-descriptions.md`](docs/entity-descriptions.md) | `EntityDescription` subclasses, `FrozenOrThawed` |
 | [`config-entry-returns.md`](docs/config-entry-returns.md) | setup/unload/migration return values (`None` vs bool, `ConfigEntry*` exceptions) |
-| [`config-flows.md`](docs/config-flows.md) | config flow step results (`step_id` fallback, progress-step gap) |
+| [`config-flows.md`](docs/config-flows.md) | config flow step results (`step_id` fallback, progress-step gap, reauth/reconfigure helpers) |
 | [`blocking-calls.md`](docs/blocking-calls.md) | the blocking-call detector warns |
 | [`async-patterns.md`](docs/async-patterns.md) | async I/O, `asyncio.to_thread`, aiohttp sessions against `github.com` |
 | [`mqtt-topics.md`](docs/mqtt-topics.md) | publishing or parsing MQTT discovery topics |

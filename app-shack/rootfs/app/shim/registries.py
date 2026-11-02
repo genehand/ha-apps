@@ -221,6 +221,19 @@ class ConfigEntries:
                     return entry
         return None
 
+    def async_get_known_entry(self, entry_id: str) -> ConfigEntry:
+        """Return the entry with ``entry_id``, raising if it is unknown.
+
+        Mirrors ``config_entries.async_get_known_entry``, which reauth and
+        reconfigure flows go through (``ConfigFlow._get_reauth_entry``).
+        """
+        from .config_entries import UnknownEntry
+
+        entry = self.async_get_entry(entry_id)
+        if entry is None:
+            raise UnknownEntry(entry_id)
+        return entry
+
     def async_entry_for_domain_unique_id(
         self, domain: str, unique_id: str
     ) -> Optional[ConfigEntry]:
@@ -795,6 +808,7 @@ class FlowManager:
         data: Optional[dict] = None,
     ) -> dict:
         """Initialize a new config flow."""
+        from .config_entries import AbortFlow, abort_result_from_flow_error
         from .config_entries import apply_step_id_fallback
         from .integrations.loader import IntegrationLoader
 
@@ -826,7 +840,18 @@ class FlowManager:
             flow = self._config_entries._flow_progress.get(flow_id)
             if flow and hasattr(flow, step_method):
                 step_func = getattr(flow, step_method)
-                result = await step_func(data)
+                try:
+                    result = await step_func(data)
+                except AbortFlow as exc:
+                    # HA's flow manager converts the exception into an abort
+                    # result; the reauth entry point is a step like any other
+                    # (``_abort_if_unique_id_mismatch`` raises from here).
+                    try:
+                        self.async_abort(flow_id)
+                    except Exception as e:  # noqa: BLE001
+                        _LOGGER.debug(f"Could not discard aborted flow {flow_id}: {e}")
+                        self._config_entries._flow_progress.pop(flow_id, None)
+                    return abort_result_from_flow_error(flow_id, exc)
                 result = apply_step_id_fallback(flow, source, result)
                 result["flow_id"] = flow_id
 
@@ -906,6 +931,18 @@ class FlowManager:
                             )
             except Exception as e:
                 _LOGGER.error(f"Error creating config entry from flow: {e}")
+
+        # A flow that ended in an abort is finished: Home Assistant drops the
+        # progress entry when the step returns ``abort``, and keeping it makes
+        # ``async_get_active_flows`` report a reauth/reconfigure still running,
+        # which blocks every later reauth of that entry until a restart.
+        flow_id = result.get("flow_id")
+        if result.get("type") == "abort" and flow_id:
+            try:
+                self.async_abort(flow_id)
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.debug(f"Could not discard aborted flow {flow_id}: {e}")
+                self._config_entries._flow_progress.pop(flow_id, None)
 
         return result
 
