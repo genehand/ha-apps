@@ -1,6 +1,6 @@
 [package]
 name = "dasher"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2021"
 authors = ["Gene Hand"]
 description = "Filter websocket events for dashboard entities"
@@ -13,9 +13,9 @@ tokio-util = { version = "0.7", features = ["codec"] }
 
 # HTTP server and WebSocket
 axum = { version = "0.8", features = ["ws", "macros"] }
-yawc = { version = "0.3", features = ["axum", "reqwest"] }
+yawc = { version = "0.5", features = ["axum", "reqwest"] }
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
+tower-http = { version = "0.7", features = ["fs", "trace", "cors"] }
 
 # Lazy static
 lazy_static = "1.4"
@@ -44,7 +44,7 @@ thiserror = "2.0"
 dashmap = "6.1"
 
 # Compression for HTML injection
-brotli = "8.0"
+brotli = "9.0"
 flate2 = "1.0"
 ruzstd = "0.9"
 

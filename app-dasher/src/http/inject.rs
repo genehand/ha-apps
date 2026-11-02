@@ -4,7 +4,16 @@ use flate2::write::{GzEncoder, ZlibEncoder};
 use flate2::Compression;
 use std::io::{Read, Write};
 
-const INJECTED_SCRIPT: &str = r#"<script>(function(){var t='';try{t=crypto.randomUUID()}catch(e){t=Math.random().toString(36).substring(2)+Date.now().toString(36)}var W=window.WebSocket;window.WebSocket=function(u,p){if(typeof u==='string'&&u.indexOf('/api/websocket')!==-1){u=u+(u.indexOf('?')!==-1?'&':'?')+'dasher_tab='+encodeURIComponent(t)}return new W(u,p)};function s(){fetch('/dasher/panel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tab_id:t,url_path:location.pathname})}).catch(function(){})}s();var P=history.pushState;var R=history.replaceState;history.pushState=function(){P.apply(this,arguments);s()};history.replaceState=function(){R.apply(this,arguments);s()};window.addEventListener('popstate',s);document.addEventListener('visibilitychange',function(){if(!document.hidden)s()})})();</script>"#;
+// Wraps `window.WebSocket` in a Proxy instead of assigning a plain function.
+// A plain wrapper drops the constructor's static constants
+// (`WebSocket.CONNECTING/OPEN/CLOSING/CLOSED`), and custom cards that compare
+// their connection state against them (e.g. the WebRTC camera card's VideoRTC:
+// `if (wsState === WebSocket.CLOSED && pcState === WebSocket.CLOSED) return;`)
+// then see `undefined === undefined`, skip their teardown path and leave the
+// stream running after the card is removed from the DOM. A Proxy forwards
+// property reads (statics), `instanceof` and the prototype chain to the real
+// constructor.
+const INJECTED_SCRIPT: &str = r#"<script>(function(){var t='';try{t=crypto.randomUUID()}catch(e){t=Math.random().toString(36).substring(2)+Date.now().toString(36)}var W=window.WebSocket;window.WebSocket=new Proxy(W,{construct:function(T,a){if(typeof a[0]==='string'&&a[0].indexOf('/api/websocket')!==-1){a[0]=a[0]+(a[0].indexOf('?')!==-1?'&':'?')+'dasher_tab='+encodeURIComponent(t)}return Reflect.construct(T,a)}});function s(){fetch('/dasher/panel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tab_id:t,url_path:location.pathname})}).catch(function(){})}s();var P=history.pushState;var R=history.replaceState;history.pushState=function(){P.apply(this,arguments);s()};history.replaceState=function(){R.apply(this,arguments);s()};window.addEventListener('popstate',s);document.addEventListener('visibilitychange',function(){if(!document.hidden)s()})})();</script>"#;
 
 const MAX_HTML_SIZE: usize = 1024 * 1024; // 1MB
 const MAX_DECOMPRESSED_HTML: usize = 16 * 1024 * 1024; // 16MB
@@ -249,6 +258,26 @@ mod tests {
         // Should only contain one instance of the script
         let count = result.matches("<script>").count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_injected_script_preserves_websocket_constructor_statics() {
+        // The WebSocket global must be replaced by something that still exposes
+        // CONNECTING/OPEN/CLOSING/CLOSED and the prototype: a plain function
+        // wrapper silently makes them `undefined`, which breaks cards that
+        // compare their connection state against those constants.
+        let result = inject_script("<html><head></head><body></body></html>");
+        assert!(result.contains("new Proxy(W"));
+        assert!(result.contains("Reflect.construct(T,a)"));
+        assert!(!result.contains("window.WebSocket=function"));
+    }
+
+    #[test]
+    fn test_injected_script_appends_tab_only_to_ha_websocket() {
+        let result = inject_script("<html><head></head><body></body></html>");
+        // Only /api/websocket gets the tab id, so proxying stays opt-in per socket
+        assert!(result.contains("a[0].indexOf('/api/websocket')!==-1"));
+        assert!(result.contains("dasher_tab="));
     }
 
     #[test]
