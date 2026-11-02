@@ -5,10 +5,7 @@ use axum::{
 };
 use futures::{sink::SinkExt, stream::StreamExt, Sink, Stream};
 use tracing::{debug, error, info, warn};
-use yawc::{
-    close::CloseCode, frame::Frame, frame::OpCode, CompressionLevel, IncomingUpgrade, Options,
-    WebSocket,
-};
+use yawc::{close::CloseCode, frame::Frame, frame::OpCode, IncomingUpgrade, WebSocket};
 
 use crate::state::AppState;
 use crate::utils;
@@ -68,11 +65,7 @@ pub async fn handler(
     // Check if client requested compression via Sec-WebSocket-Extensions header
     let client_requested_compression = utils::is_compression_negotiated(req.headers());
 
-    let options = if client_requested_compression {
-        Options::default().with_compression_level(CompressionLevel::default())
-    } else {
-        Options::default()
-    };
+    let options = utils::ws_options(client_requested_compression);
 
     let (response, ws_future) = upgrade.upgrade(options).unwrap();
 
@@ -149,11 +142,7 @@ pub async fn handle(
     }
 
     // Connect to Home Assistant with compression only if client requested it
-    let options = if use_compression {
-        Options::default().with_compression_level(CompressionLevel::default())
-    } else {
-        Options::default()
-    };
+    let options = utils::ws_options(use_compression);
 
     let ha_socket = match WebSocket::connect(url)
         .with_request(request_builder)
