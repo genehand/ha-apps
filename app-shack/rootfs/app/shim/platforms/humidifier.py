@@ -12,6 +12,7 @@ import voluptuous as vol
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
 )
 from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
@@ -72,12 +73,12 @@ class HumidifierEntity(Entity):
         """Return the current humidity."""
         return self._attr_current_humidity
 
-    @property
+    @EntityAttribute
     def device_class(self) -> Optional[HumidifierDeviceClass]:
         """Return the device class."""
         return self._attr_device_class
 
-    @property
+    @EntityAttribute
     def is_on(self) -> Optional[bool]:
         """Return True if the humidifier is on."""
         return self._attr_is_on
@@ -97,7 +98,7 @@ class HumidifierEntity(Entity):
         """Return the current mode."""
         return self._attr_mode
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> int:
         """Return the supported features."""
         return self._attr_supported_features

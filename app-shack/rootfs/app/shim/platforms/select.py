@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -41,7 +42,7 @@ class SelectEntity(Entity):
         """Return the selected entity option to represent the entity state."""
         return self._attr_current_option
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state of the entity."""
         current = self.current_option
@@ -53,7 +54,7 @@ class SelectEntity(Entity):
             return options_map[current]
         return current
 
-    @property
+    @EntityAttribute
     def available(self) -> bool:
         """Return True if entity is available."""
         return self.current_option is not None

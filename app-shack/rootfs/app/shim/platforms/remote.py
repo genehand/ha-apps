@@ -5,7 +5,7 @@ Provides compatibility for homeassistant.components.remote imports.
 
 from typing import Any, Optional, List
 
-from ..entity import Entity, EntityDescription
+from ..entity import Entity, EntityAttribute, EntityDescription
 from ..frozen_dataclass_compat import FrozenOrThawed
 
 DOMAIN = "remote"
@@ -38,7 +38,7 @@ class RemoteEntity(Entity):
     _attr_activity_list: Optional[List[str]] = None
     _attr_current_activity: Optional[str] = None
 
-    @property
+    @EntityAttribute
     def is_on(self) -> bool:
         """Return True if the remote is on."""
         return self._attr_is_on

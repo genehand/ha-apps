@@ -15,6 +15,7 @@ from homeassistant.util.percentage import (
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -77,7 +78,7 @@ class FanEntity(Entity):
     # Enable turn on/off backwards compatibility
     _enable_turn_on_off_backwards_compatibility = True
 
-    @property
+    @EntityAttribute
     def is_on(self) -> Optional[bool]:
         """Return true if the entity is on."""
         return self._attr_is_on
@@ -122,12 +123,12 @@ class FanEntity(Entity):
         """Return the number of speeds the fan supports."""
         return self._attr_speed_count
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> int:
         """Return the list of supported features."""
         return self._attr_supported_features
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state."""
         if self.is_on is None:

@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -41,17 +42,17 @@ class TextEntity(Entity):
     _attr_max: int = 255
     entity_description: Optional["TextEntityDescription"] = None
 
-    @property
+    @EntityAttribute
     def native_value(self) -> str | None:
         """Return the value of the text."""
         return self._attr_native_value
 
-    @property
+    @EntityAttribute
     def state(self):
         """Return the state of the text."""
         return self.native_value
 
-    @property
+    @EntityAttribute
     def available(self) -> bool:
         """Return True if entity is available.
 
@@ -92,7 +93,7 @@ class TextEntity(Entity):
             return self.entity_description.max
         return self._attr_max
 
-    @property
+    @EntityAttribute
     def icon(self) -> Optional[str]:
         """Return the icon to use in the frontend."""
         # Check for directly assigned icon attribute first
@@ -103,7 +104,7 @@ class TextEntity(Entity):
             return self.entity_description.icon
         return self._attr_icon
 
-    @property
+    @EntityAttribute
     def entity_category(self) -> Optional[str]:
         """Return the category of this entity."""
         # Check entity_description first

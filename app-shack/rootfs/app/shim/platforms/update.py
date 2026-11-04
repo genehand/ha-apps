@@ -11,6 +11,7 @@ from datetime import datetime
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -93,17 +94,17 @@ class UpdateEntity(Entity):
         """Indicate if the device or service has auto update enabled."""
         return self._attr_auto_update
 
-    @property
+    @EntityAttribute
     def entity_picture(self) -> Optional[str]:
         """Return the entity picture."""
         return self._attr_entity_picture
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> int:
         """Flag supported features."""
         return self._attr_supported_features
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state of the entity."""
         if self.latest_version is None or self.installed_version is None:

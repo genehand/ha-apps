@@ -11,6 +11,7 @@ import voluptuous as vol
 from ..entity import (
     ToggleEntity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -48,7 +49,7 @@ class SwitchEntity(ToggleEntity):
 
     _attr_is_on: bool = False
 
-    @property
+    @EntityAttribute
     def is_on(self) -> bool:
         """Return True if entity is on."""
         return self._attr_is_on

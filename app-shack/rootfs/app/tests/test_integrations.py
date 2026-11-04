@@ -1285,6 +1285,149 @@ async def test_meross_lan_loads():
         sys.modules.update(saved_modules)
 
 
+MEROSS_DEVICE_UUID = "1234567890"
+
+# Minimal Appliance.System.All payload: enough for meross_lan to build a
+# DeviceDescriptor (uuid + mac + type + firmware) and create its entities.
+MEROSS_DEVICE_PAYLOAD = {
+    "all": {
+        "system": {
+            "hardware": {
+                "type": "mss310",
+                "subType": "",
+                "uuid": MEROSS_DEVICE_UUID,
+                "macAddress": "48e1e9123456",
+                "version": "1.0.0",
+            },
+            "firmware": {
+                "version": "1.0.0",
+                "innerIp": "127.0.0.1",
+                "server": "127.0.0.1",
+                "port": 1,
+                "secondServer": "",
+                "secondPort": 0,
+                "userId": "0",
+            },
+            "online": {"status": 1},
+            "time": {"timezone": "UTC"},
+        },
+        "digest": {"trigger": 0, "timer": 0},
+        "control": {},
+    },
+    "ability": {},
+}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_meross_lan_v6_device_entry_setup():
+    """A meross_lan 6.0.0 device entry is set up end-to-end on the shim.
+
+    Regression for the entity attribute surface: 6.0.0's ``Entity.__init__``
+    assigns ``device_info``, ``available``, ``force_update``,
+    ``has_entity_name``, ``should_poll`` and the ``HA_ENTITY_ATTRIBUTES`` set,
+    which HA allows because those getters are ``cached_property`` (a *non-data*
+    descriptor). The shim served them as plain ``@property`` (a data
+    descriptor), so the very first entity failed with::
+
+        property 'device_info' of 'ProtocolSensor' object has no setter
+
+    and no meross device could ever set up. See docs/entity-attributes.md.
+    """
+    import types
+
+    data_dir = Path(__file__).parent.parent / "data"
+    shim_dir = data_dir / "shim"
+    custom_components_dir = shim_dir / "custom_components"
+    integration_dir = custom_components_dir / "meross_lan"
+
+    if not integration_dir.exists():
+        pytest.skip("meross_lan integration not installed")
+
+    saved_modules = {
+        name: mod
+        for name, mod in sys.modules.items()
+        if name.startswith("custom_components")
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+
+    cc_module = types.ModuleType("custom_components")
+    cc_module.__path__ = [str(custom_components_dir)]
+    sys.modules["custom_components"] = cc_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Isolated persistence (entries/entity states) for the setup.
+        runtime_dir = Path(tmp)
+        runtime_shim_dir = runtime_dir / "shim"
+        runtime_shim_dir.mkdir()
+        (runtime_shim_dir / "custom_components").symlink_to(
+            custom_components_dir, target_is_directory=True
+        )
+
+        try:
+            hass = HomeAssistant(runtime_dir)
+            setup_import_patching(hass).patch()
+
+            storage = Storage(runtime_shim_dir)
+            integration_manager = IntegrationManager(storage, runtime_shim_dir)
+            loader = IntegrationLoader(hass, integration_manager)
+            hass.data["integration_loader"] = loader
+            # The temp shim dir has no integrations.json: register the installed
+            # integration so load_integration() can resolve its path.
+            integration_manager._integrations["meross_lan"] = IntegrationInfo(
+                domain="meross_lan",
+                name="Meross LAN",
+                version="v6.0.0",
+                description="",
+                source="custom",
+                repository_url="https://github.com/krahabb/meross_lan",
+                enabled=True,
+                requirements=[],
+            )
+
+            entry = ConfigEntry(
+                entry_id="meross_device_test",
+                version=1,
+                domain="meross_lan",
+                title="Meross MSS310",
+                data={
+                    "device_id": MEROSS_DEVICE_UUID,
+                    "payload": MEROSS_DEVICE_PAYLOAD,
+                    "protocol": "auto",
+                    "host": "127.0.0.1",
+                    "key": "",
+                },
+            )
+            # meross_lan keys the entry type off the bare uuid for devices.
+            entry.unique_id = MEROSS_DEVICE_UUID
+            await hass.config_entries.async_add(entry)
+
+            assert await loader.setup_integration(entry) is True
+
+            # ProtocolSensor + the two persistent buttons at minimum.
+            entities = loader.get_entities(integration_domain="meross_lan")
+            assert entities, "no meross_lan entities were created"
+            assert any(
+                type(entity).__name__ == "ProtocolSensor" for entity in entities
+            )
+
+            api = hass.data["meross_lan"]
+            assert api.devices[MEROSS_DEVICE_UUID] is not None
+            # The device linked to the local MQTT profile (Device.profile).
+            assert api.devices[MEROSS_DEVICE_UUID].profile is not None
+
+            await loader.unload_integration(entry)
+        finally:
+            for name in [
+                name
+                for name in sys.modules
+                if name.startswith("custom_components")
+            ]:
+                del sys.modules[name]
+            sys.modules.update(saved_modules)
+
+
 if __name__ == "__main__":
     # Allow running this file directly for quick testing
     pytest.main([__file__, "-v", "-m", "integration"])

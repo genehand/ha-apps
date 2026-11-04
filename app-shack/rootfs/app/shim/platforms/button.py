@@ -9,6 +9,7 @@ from typing import Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -39,7 +40,7 @@ class ButtonEntity(Entity):
 
     _attr_device_class: Optional[str] = None
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state of the entity.
 
@@ -48,7 +49,7 @@ class ButtonEntity(Entity):
         """
         return "Press"
 
-    @property
+    @EntityAttribute
     def available(self) -> bool:
         """Return True if entity is available.
 

@@ -102,11 +102,24 @@ entry until the app restarted. `IntegrationLoader._finalize_result` and
 `FlowManager.async_init` now discard it (`FlowManager.async_abort`, which also
 dismisses the reauth notification).
 
-Not implemented, and deliberately left alone: `_abort_if_unique_id_configured`
-is a no-op in the shim (it does not abort on a duplicate `unique_id`). Turning it
-into an abort changes behaviour for integrations that currently rely on the
-no-op and needs the same `AbortFlow` plumbing verified for the discovery sources
-first.
+**`_abort_if_unique_id_configured` mirrors HA.** It aborts with
+`already_configured` when an entry for the handler already carries this
+`unique_id`, after merging `updates` into that entry's data and reloading it
+unless `reload_on_update=False` (only if the entry is `loaded`/`setup_retry`),
+and it reloads an entry in `setup_retry` when a *discovery* source rediscovers
+it. An entry of source `ignore` is still configurable from the manual user step.
+It used to be a no-op stub that only accepted `updates`, so meross_lan 6.0.0's
+
+```python
+self._abort_if_unique_id_configured(updates=device_config, reload_on_update=False)
+```
+
+raised `TypeError: ... unexpected keyword argument 'reload_on_update'` inside
+`async_try_discovery` and the rediscovered device could not be added. Duplicate
+discoveries now abort (like HA) instead of creating a second entry for the same
+device — `DISCOVERY_SOURCES` in `shim/config_entries.py` is the source set that
+triggers the `setup_retry` reload; `tests/test_abort_if_unique_id_configured.py`
+pins all of it.
 
 ## 4. Options flows: `entry.options`, reloads, and subentries
 

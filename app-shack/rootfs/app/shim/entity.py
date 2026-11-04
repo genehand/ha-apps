@@ -904,6 +904,42 @@ class EntityRegistry:
             _LOGGER.exception(f"Error writing state for {new_entity_id}")
 
 
+class EntityAttribute:
+    """Non-data descriptor for the ``Entity`` attribute surface.
+
+    Home Assistant declares these getters as ``cached_property``, which is a
+    *non-data* descriptor: an integration assigning the legacy way
+    (``self.device_info = ...``, or the kwargs-driven ``setattr`` in meross_lan's
+    own ``Entity.__init__``) stores an instance attribute, and ``__dict__`` wins
+    over the class attribute. A plain ``@property`` is a *data* descriptor
+    instead, so the same assignment raises::
+
+        property 'device_info' of 'ProtocolSensor' object has no setter
+
+    ``Device`` in meross_lan 6.0.0 assigns ``device_info``,
+    ``extra_state_attributes`` and the ``HA_ENTITY_ATTRIBUTES`` set on every
+    entity it creates, so without this its first entity cannot be constructed.
+
+    Unlike ``cached_property`` this does not cache: the shim reads these on
+    every state publish and integrations flip the ``_attr_*`` they read at
+    runtime, which a one-shot cached value would freeze (HA integrations that
+    change them override the property instead).
+    """
+
+    def __init__(self, func):
+        self.func = func
+        self.__doc__ = func.__doc__
+        self.__name__ = func.__name__
+
+    def __set_name__(self, owner, name):
+        self.__name__ = name
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return self.func(instance)
+
+
 class Entity:
     """Base class for all entities."""
 
@@ -942,7 +978,7 @@ class Entity:
         self._added = False
         self._available = True
 
-    @property
+    @EntityAttribute
     def name(self) -> Optional[str]:
         """Return the name of the entity."""
         if self._attr_name is not None:
@@ -975,7 +1011,7 @@ class Entity:
         # Replace underscores with spaces and title case
         return translation_key.replace("_", " ").title()
 
-    @property
+    @EntityAttribute
     def unique_id(self) -> Optional[str]:
         """Return a unique ID."""
         return self._attr_unique_id
@@ -991,7 +1027,7 @@ class Entity:
             return None
         return get_mqtt_object_id(self.entity_id)
 
-    @property
+    @EntityAttribute
     def device_info(self) -> Optional[Dict[str, Any]]:
         """Return device information about this entity."""
         return self._attr_device_info
@@ -1014,7 +1050,7 @@ class Entity:
         """Return the integration domain that created this entity."""
         return self._attr_integration_domain
 
-    @property
+    @EntityAttribute
     def device_class(self) -> Optional[str]:
         """Return the class of this device."""
         # Check for directly assigned device_class attribute first (integrations may set entity.device_class = "...")
@@ -1025,7 +1061,7 @@ class Entity:
             return getattr(self.entity_description, "device_class", None)
         return self._attr_device_class
 
-    @property
+    @EntityAttribute
     def icon(self) -> Optional[str]:
         """Return the icon to use in the frontend."""
         # Check for directly assigned icon attribute first (integrations may set entity.icon = "...")
@@ -1036,7 +1072,7 @@ class Entity:
             return getattr(self.entity_description, "icon", None)
         return self._attr_icon
 
-    @property
+    @EntityAttribute
     def entity_category(self) -> Optional[str]:
         """Return the category of this entity."""
         # Check entity_description first (integrations may set via entity_description)
@@ -1046,7 +1082,7 @@ class Entity:
                 return desc_category
         return self._attr_entity_category
 
-    @property
+    @EntityAttribute
     def has_entity_name(self) -> bool:
         """Return if the entity uses the new naming scheme with the device name.
 
@@ -1061,47 +1097,47 @@ class Entity:
             return getattr(self.entity_description, "has_entity_name", False)
         return getattr(self, "_attr_has_entity_name", False)
 
-    @property
+    @EntityAttribute
     def unit_of_measurement(self) -> Optional[str]:
         """Return the unit of measurement of this entity."""
         return self._attr_unit_of_measurement
 
-    @property
+    @EntityAttribute
     def extra_state_attributes(self) -> Optional[Dict[str, Any]]:
         """Return entity specific state attributes."""
         return self._attr_extra_state_attributes
 
-    @property
+    @EntityAttribute
     def available(self) -> bool:
         """Return True if entity is available."""
         return self._attr_available
 
-    @property
+    @EntityAttribute
     def should_poll(self) -> bool:
         """Return True if entity has to be polled for state."""
         return self._attr_should_poll
 
-    @property
+    @EntityAttribute
     def force_update(self) -> bool:
         """Return True if state updates should be forced."""
         return self._attr_force_update
 
-    @property
+    @EntityAttribute
     def attribution(self) -> Optional[str]:
         """Return the attribution string."""
         return getattr(self, "_attr_attribution", None)
 
-    @property
+    @EntityAttribute
     def assumed_state(self) -> bool:
         """Return whether the state is presumed to be without real state."""
         return getattr(self, "_attr_assumed_state", False)
 
-    @property
+    @EntityAttribute
     def entity_picture(self) -> Optional[str]:
         """Return the entity picture."""
         return getattr(self, "_attr_entity_picture", None)
 
-    @property
+    @EntityAttribute
     def entity_registry_visible_default(self) -> bool:
         """Return if the entity should be visible by default."""
         # Check entity_description for entity_registry_visible_default
@@ -1113,22 +1149,22 @@ class Entity:
                 return value
         return getattr(self, "_attr_entity_registry_visible_default", True)
 
-    @property
+    @EntityAttribute
     def translation_placeholders(self) -> Optional[Dict[str, str]]:
         """Return translation placeholders."""
         return getattr(self, "_attr_translation_placeholders", None)
 
-    @property
+    @EntityAttribute
     def capability_attributes(self) -> Optional[Dict[str, Any]]:
         """Return capability attributes."""
         return getattr(self, "_attr_capability_attributes", None)
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> Optional[Any]:
         """Return the supported features of the entity."""
         return getattr(self, "_attr_supported_features", None)
 
-    @property
+    @EntityAttribute
     def state(self) -> Any:
         """Return the state of the entity."""
         return None
@@ -1686,7 +1722,7 @@ class Entity:
         # Fall back to class attribute for entity_registry_enabled_default
         return getattr(self, "_attr_entity_registry_enabled_default", True)
 
-    @property
+    @EntityAttribute
     def entity_registry_enabled_default(self) -> bool:
         """Effective enabled state, preferring an entity-registry override.
 
@@ -1798,12 +1834,12 @@ class ToggleEntity(Entity):
 
     _attr_is_on: Optional[bool] = None
 
-    @property
+    @EntityAttribute
     def is_on(self) -> Optional[bool]:
         """Return True if entity is on."""
         return self._attr_is_on
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state."""
         if self.is_on is None:
@@ -1875,7 +1911,7 @@ class DysonEntity(Entity):
             )
             self.async_write_ha_state()
 
-    @property
+    @EntityAttribute
     def available(self) -> bool:
         """Return True if entity is available."""
         return self._device.connected if hasattr(self._device, "connected") else True

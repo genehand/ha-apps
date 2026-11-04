@@ -10,6 +10,7 @@ from typing import Any, List, Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
@@ -87,7 +88,7 @@ class WaterHeaterEntity(Entity):
         """Return current operation mode."""
         return self._attr_current_operation
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state of the entity - the current operation mode."""
         return self.current_operation
@@ -117,7 +118,7 @@ class WaterHeaterEntity(Entity):
         """Return the list of available operation modes."""
         return self._attr_operation_list
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> int:
         """Return the list of supported features."""
         return self._attr_supported_features

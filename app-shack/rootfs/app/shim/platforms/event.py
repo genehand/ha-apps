@@ -11,6 +11,7 @@ from typing import Any, Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
@@ -58,7 +59,7 @@ class EventEntity(Entity):
     _attr_event_types: Optional[list[str]] = None
     _attr_state: Optional[str] = None
 
-    @property
+    @EntityAttribute
     def device_class(self) -> Optional[EventDeviceClass]:
         """Return the class of this entity."""
         if hasattr(self, "_attr_device_class") and self._attr_device_class is not None:
@@ -80,7 +81,7 @@ class EventEntity(Entity):
             return self.entity_description.event_types
         return []
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the entity state (timestamp of last event)."""
         last_event = getattr(self, "_last_event_triggered", None)
@@ -88,7 +89,7 @@ class EventEntity(Entity):
             return None
         return last_event.isoformat(timespec="milliseconds")
 
-    @property
+    @EntityAttribute
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
         attributes: dict[str, Any] = {}

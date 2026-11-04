@@ -9,6 +9,7 @@ from typing import Any, Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -57,19 +58,19 @@ class NumberEntity(Entity):
     _attr_native_step: float = 1.0
     _attr_mode: NumberMode = NumberMode.AUTO
 
-    @property
+    @EntityAttribute
     def native_value(self) -> Optional[float]:
         """Return the value of the entity."""
         return self._attr_native_value
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state of the entity."""
         if self.native_value is None:
             return None
         return str(self.native_value)
 
-    @property
+    @EntityAttribute
     def available(self) -> bool:
         """Return True if entity is available."""
         return self.native_value is not None

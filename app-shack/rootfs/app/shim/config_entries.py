@@ -40,6 +40,30 @@ SOURCE_IMPORT = "import"
 SOURCE_IGNORE = "ignore"
 SOURCE_STORAGE = "storage"
 SOURCE_ONBOARDING = "onboarding"
+SOURCE_HARDWARE = "hardware"
+SOURCE_HOMEKIT = "homekit"
+SOURCE_USB = "usb"
+
+# Sources that mean "we found this device ourselves". Mirrors HA's
+# ``DISCOVERY_SOURCES``: an entry sitting in ``setup_retry`` is reloaded when one
+# of these rediscovers it, because that proves the device is back online.
+DISCOVERY_SOURCES = frozenset(
+    {
+        SOURCE_BLUETOOTH,
+        SOURCE_DHCP,
+        SOURCE_DISCOVERY,
+        SOURCE_HARDWARE,
+        SOURCE_HASSIO,
+        SOURCE_HOMEKIT,
+        SOURCE_IMPORT,
+        SOURCE_INTEGRATION_DISCOVERY,
+        SOURCE_MQTT,
+        SOURCE_SSDP,
+        SOURCE_SYSTEM,
+        SOURCE_USB,
+        SOURCE_ZEROCONF,
+    }
+)
 
 # Connection class constants (deprecated but still used by integrations)
 CONN_CLASS_CLOUD_POLL = "cloud_poll"
@@ -400,11 +424,59 @@ class ConfigFlow(metaclass=ConfigFlowMeta):
     def _abort_if_unique_id_configured(
         self,
         updates: Optional[Dict[str, Any]] = None,
+        reload_on_update: bool = True,
+        *,
+        error: str = "already_configured",
+        description_placeholders: Optional[Dict[str, str]] = None,
     ) -> None:
-        """Abort if unique_id is already configured."""
-        # This would check config entries
-        # For now, do nothing (let it proceed)
-        pass
+        """Abort if the unique ID is already configured.
+
+        Mirrors HA's ``ConfigFlow._abort_if_unique_id_configured``. A discovery
+        flow that rediscovers an already-configured device must not create a
+        second entry (HA raises ``AbortFlow`` with ``already_configured``), but
+        it may also refresh the existing entry's data first -- a device that
+        moved to another IP reports its new address in the discovery payload --
+        and have it reloaded.
+
+        meross_lan 6.0.0 calls this from ``async_try_discovery`` as::
+
+            self._abort_if_unique_id_configured(
+                updates=device_config, reload_on_update=False
+            )
+
+        The shim used to accept only ``updates`` and do nothing, so the call
+        raised ``TypeError: ... unexpected keyword argument 'reload_on_update'``
+        and discovery of the device failed.
+        """
+        if self.unique_id is None or self.hass is None:
+            return
+
+        entry = self.hass.config_entries.async_entry_for_domain_unique_id(
+            self.handler, self.unique_id
+        )
+        if entry is None:
+            return
+
+        should_reload = False
+        if updates is not None and self.hass.config_entries.async_update_entry(
+            entry, data={**entry.data, **updates}
+        ):
+            # Existing entry present and the data just changed.
+            if reload_on_update and entry.state in ("loaded", "setup_retry"):
+                should_reload = True
+        elif self.source in DISCOVERY_SOURCES and entry.state == "setup_retry":
+            # Retrying setup and we just discovered the unique id, so the device
+            # is online again: retry now instead of waiting out the backoff.
+            should_reload = True
+
+        # Allow ignored entries to be configured again on the manual user step.
+        if entry.source == SOURCE_IGNORE and self.source == SOURCE_USER:
+            return
+
+        if should_reload:
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+
+        raise AbortFlow(error, description_placeholders)
 
     def _async_current_entries(self):
         """Return current entries."""

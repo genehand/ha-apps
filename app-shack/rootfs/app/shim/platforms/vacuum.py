@@ -10,6 +10,7 @@ from typing import Any, List, Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
 )
 from ..frozen_dataclass_compat import FrozenOrThawed
 from ..logging import get_logger
@@ -79,7 +80,7 @@ class StateVacuumEntity(Entity):
         """Return the list of available fan speeds."""
         return self._attr_fan_speed_list
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> int:
         """Return the supported features."""
         return self._attr_supported_features
@@ -157,7 +158,7 @@ class VacuumEntity(Entity):
         """Return the list of available fan speeds."""
         return self._attr_fan_speed_list
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> int:
         """Return the supported features."""
         return self._attr_supported_features

@@ -22,6 +22,7 @@ the area you are changing.
 | [`entity-enable-disable.md`](docs/entity-enable-disable.md) | entity enable/disable and polling control |
 | [`entity-lifecycle.md`](docs/entity-lifecycle.md) | `async_prepare_to_add_to_hass`, `async_entity_id_changed` |
 | [`entity-descriptions.md`](docs/entity-descriptions.md) | `EntityDescription` subclasses, `FrozenOrThawed` |
+| [`entity-attributes.md`](docs/entity-attributes.md) | adding/editing an `Entity` attribute getter (`EntityAttribute` vs `@property`) |
 | [`config-entry-returns.md`](docs/config-entry-returns.md) | setup/unload/migration return values (`None` vs bool, `ConfigEntry*` exceptions) |
 | [`config-flows.md`](docs/config-flows.md) | config flow step results (`step_id` fallback, progress-step gap, reauth/reconfigure helpers) |
 | [`blocking-calls.md`](docs/blocking-calls.md) | the blocking-call detector warns |
@@ -168,6 +169,18 @@ The `EntityRegistry` tracks entities by config entry ID:
 - `EntityRegistry` maintains `_entries_by_config_entry: Dict[str, List[RegistryEntry]]` for lookups
 - `RegistryEntry` entity registry entries (compatible with HA's entity registry format) track `entity_id`, `unique_id`, `config_entry_id`, and `disabled` status
 - Cleanup on unregister: when an entity is unregistered, it's removed from both the flat `_entities` dict and the config-entry-bucketed `_entries_by_config_entry` dict
+
+## Entity Attribute Surface
+
+Entity attribute getters in `shim/entity.py` and `shim/platforms/` are
+`@EntityAttribute` descriptors, **not** `@property`. HA declares them as
+`cached_property` (a non-data descriptor), so integrations assign them the legacy
+way (`self.device_info = ...`, `setattr(self, "icon", ...)`, `self.native_value = x`).
+A plain property is a data descriptor and makes that a
+`property 'X' has no setter` crash — this is what broke every meross_lan 6.0.0
+entity. Read-only-by-design attributes (`enabled`) stay properties.
+
+→ [`docs/entity-attributes.md`](docs/entity-attributes.md)
 
 ## Code conventions
 

@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 from ..entity import (
     Entity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -251,7 +252,7 @@ class ClimateEntity(Entity):
         """Return the humidity we try to reach."""
         return self._attr_target_humidity
 
-    @property
+    @EntityAttribute
     def supported_features(self) -> int:
         """Return the list of supported features."""
         return self._attr_supported_features
@@ -276,7 +277,7 @@ class ClimateEntity(Entity):
         """Return the maximum humidity."""
         return self._attr_max_humidity
 
-    @property
+    @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the current state."""
         return self.hvac_mode

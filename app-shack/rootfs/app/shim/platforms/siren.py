@@ -6,7 +6,7 @@ Provides compatibility for homeassistant.components.siren imports.
 from enum import StrEnum
 from typing import Any, Optional
 
-from ..entity import Entity, EntityDescription
+from ..entity import Entity, EntityAttribute, EntityDescription
 from ..frozen_dataclass_compat import FrozenOrThawed
 
 DOMAIN = "siren"
@@ -28,7 +28,7 @@ class SirenEntity(Entity):
     _attr_is_on: bool = False
     _attr_supported_features: int = 0
 
-    @property
+    @EntityAttribute
     def is_on(self) -> bool:
         """Return True if the siren is on."""
         return self._attr_is_on

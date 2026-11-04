@@ -12,6 +12,7 @@ from ..entity import (
     STATE_UNAVAILABLE,
     ToggleEntity,
     EntityDescription,
+    EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
     build_entity_mqtt_device_config,
@@ -76,7 +77,7 @@ class BinarySensorEntity(ToggleEntity):
 
     _attr_is_on: Optional[bool] = None
 
-    @property
+    @EntityAttribute
     def is_on(self) -> Optional[bool]:
         """Return True if entity is on."""
         return self._attr_is_on

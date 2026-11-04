@@ -15,6 +15,7 @@ from shim.entity import (
     STATE_UNAVAILABLE,
     Entity,
     EntityDescription,
+    EntityAttribute,
     build_entity_mqtt_device_config,
     format_device_identifiers,
     get_device_info_attr,
@@ -218,7 +219,7 @@ class SensorEntity(Entity):
     _attr_last_reset: Optional[datetime] = None
     entity_description: Optional[SensorEntityDescription] = None
 
-    @property
+    @EntityAttribute
     def name(self) -> Optional[str]:
         """Return the name of the entity."""
         if hasattr(self, "_attr_name") and self._attr_name is not None:
@@ -239,7 +240,7 @@ class SensorEntity(Entity):
         # Fall back to parent class name property
         return super().name
 
-    @property
+    @EntityAttribute
     def native_value(self):
         """Return the value reported by the sensor."""
         return self._attr_native_value
@@ -271,7 +272,7 @@ class SensorEntity(Entity):
             return self.entity_description.state_class
         return self._attr_state_class
 
-    @property
+    @EntityAttribute
     def icon(self) -> Optional[str]:
         """Return the icon to use in the frontend."""
         # Check for directly assigned icon attribute first
@@ -287,7 +288,7 @@ class SensorEntity(Entity):
         """Return the time when the sensor was last reset."""
         return self._attr_last_reset
 
-    @property
+    @EntityAttribute
     def state(self):
         """Return the state of the sensor."""
         if self.native_value is None:
@@ -307,7 +308,7 @@ class SensorEntity(Entity):
 
         return str(self.native_value)
 
-    @property
+    @EntityAttribute
     def available(self) -> bool:
         """Return True if entity is available.
 
@@ -316,7 +317,7 @@ class SensorEntity(Entity):
         """
         return self.native_value is not None
 
-    @property
+    @EntityAttribute
     def unit_of_measurement(self) -> Optional[str]:
         """Return the unit of measurement of this entity."""
         return self.native_unit_of_measurement

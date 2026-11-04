@@ -3,7 +3,7 @@
 Provides base classes for device tracker entities.
 """
 
-from ..entity import Entity
+from ..entity import Entity, EntityAttribute
 from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
@@ -62,7 +62,7 @@ class DeviceTrackerEntity(Entity):
     _attr_battery_level: int | None = None
     _attr_source_type: str = "gps"
 
-    @property
+    @EntityAttribute
     def state(self):
         """Return the state of the device."""
         if self.location_name is not None:
@@ -126,7 +126,7 @@ class TrackerEntity(Entity):
     _attr_location_accuracy: int = 0
     _attr_location_name: str | None = None
 
-    @property
+    @EntityAttribute
     def state(self):
         """Return the state of the device."""
         if self.location_name is not None:
