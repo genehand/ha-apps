@@ -38,7 +38,29 @@ a form that works here. If it does not, prefer a stub over a hand-copy:
   be missing on the first boot after a venv rebuild. Follow the pattern in
   `stubs/components.py` (`_load_zeroconf_classes`) — resolve on first use, cache only
   successful resolutions, and expose classes to integrations through a module-level
-  `__getattr__` so they appear without a restart.
+  `__getattr__` so they appear without a restart. `_load_bluetooth_classes` is the
+  second instance of the pattern: it hands out upstream's own
+  `BluetoothServiceInfoBleak` / `BluetoothScanningMode` (from the pure
+  `home_assistant_bluetooth` / `habluetooth` packages) instead of look-alikes, while
+  the `homeassistant.components.bluetooth` functions answer "no adapter here".
+
+## Third-party placeholders
+
+A stub is normally a `homeassistant.*` module. The exception is a package that
+cannot exist on the host at all and is only imported for its *shape*:
+`shim/dbus_fast_placeholder.py` stands in for `dbus-fast`, the Linux-only D-Bus
+client behind bleak's BlueZ backend. meross_lan imports that backend at module
+import time on every platform, so without the placeholder the whole integration
+fails to load on a macOS dev box (`./run.sh`), even for its Wi-Fi devices.
+
+The placeholder is a `sys.meta_path` finder that answers `dbus_fast` and every
+`dbus_fast.*` submodule with an empty, subclassable class per attribute — enough
+for base classes, decorators, enum-ish members and annotations. It is installed
+by `ImportPatcher.patch()`, only when `sys.platform != "linux"` **and** the real
+package is missing; on Linux a missing `dbus_fast` is a broken venv (it is in
+`uv.lock` through `bleak`) and must stay visible instead of silently disabling
+BLE. Nothing calls into D-Bus, so a placeholder can never make a device work —
+only keep the import from killing the integration.
 
 ## Testing a stub
 

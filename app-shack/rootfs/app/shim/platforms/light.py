@@ -58,6 +58,7 @@ ATTR_BRIGHTNESS = "brightness"
 ATTR_COLOR_TEMP = "color_temp"
 ATTR_COLOR_TEMP_KELVIN = "color_temp_kelvin"
 ATTR_EFFECT = "effect"
+ATTR_EFFECT_LIST = "effect_list"
 ATTR_HS_COLOR = "hs_color"
 ATTR_RGB_COLOR = "rgb_color"
 ATTR_RGBW_COLOR = "rgbw_color"
@@ -67,6 +68,10 @@ ATTR_WHITE_VALUE = "white_value"
 ATTR_WHITE = "white"
 ATTR_TRANSITION = "transition"
 ATTR_FLASH = "flash"
+
+# Sentinel integrations put in an effect list to offer "no effect"
+# (homeassistant/components/light/const.py).
+EFFECT_OFF = "off"
 
 
 class LightEntity(ToggleEntity):

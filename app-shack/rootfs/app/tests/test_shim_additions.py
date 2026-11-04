@@ -790,6 +790,127 @@ class TestMqttStub:
                 patcher.unpatch()
 
 
+class TestBluetoothStub:
+    """Tests for the homeassistant.components.bluetooth stub.
+
+    meross_lan 6.x does ``from homeassistant.components import bluetooth as
+    ha_bt, mqtt`` at module import time, which used to fail the whole
+    integration with "cannot import name 'bluetooth' from
+    'homeassistant.components'".
+    """
+
+    @pytest.fixture
+    def hass(self):
+        """A HomeAssistant with import patching applied."""
+        import tempfile
+
+        from shim.core import HomeAssistant
+        from shim.import_patch import ImportPatcher
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            # HomeAssistant() grabs the current loop in its constructor.
+            asyncio.set_event_loop(asyncio.new_event_loop())
+        hass = HomeAssistant(Path(tmpdir.name))
+        patcher = ImportPatcher(hass)
+        patcher.patch()
+        try:
+            yield hass
+        finally:
+            patcher.unpatch()
+            tmpdir.cleanup()
+
+    def test_import_as_meross_lan_does(self, hass):
+        """The exact import form that broke meross_lan's module load."""
+        from homeassistant.components import bluetooth as ha_bt, mqtt
+
+        assert ha_bt.DOMAIN == "bluetooth"
+        assert mqtt.DOMAIN == "mqtt"
+        assert ha_bt.async_track_unavailable is not None
+
+    def test_service_info_classes_are_the_real_ones(self, hass):
+        """The stub hands out upstream's classes, not look-alikes."""
+        from home_assistant_bluetooth import (
+            BluetoothServiceInfo,
+            BluetoothServiceInfoBleak,
+        )
+
+        from homeassistant.components.bluetooth import (
+            BluetoothServiceInfo as StubServiceInfo,
+        )
+        from homeassistant.components.bluetooth import (
+            BluetoothServiceInfoBleak as StubServiceInfoBleak,
+        )
+        from homeassistant.helpers.service_info import bluetooth as service_info
+
+        assert StubServiceInfo is BluetoothServiceInfo
+        assert StubServiceInfoBleak is BluetoothServiceInfoBleak
+        assert service_info.BluetoothServiceInfo is BluetoothServiceInfo
+
+    def test_model_classes_and_enums(self, hass):
+        """The scanning-mode/change types integrations import exist."""
+        from homeassistant.components.bluetooth import (
+            BluetoothCallbackMatcher,
+            BluetoothChange,
+            BluetoothScanningMode,
+        )
+
+        # Enum("BluetoothChange", "ADVERTISEMENT") upstream, so the value is 1.
+        assert BluetoothChange.ADVERTISEMENT.value == 1
+        assert BluetoothScanningMode.PASSIVE.value == "passive"
+        # TypedDicts are runtime dict factories; integrations build matchers
+        # with them when calling async_register_callback.
+        assert BluetoothCallbackMatcher(domain="meross_lan")["domain"] == "meross_lan"
+
+    def test_registrations_return_unsubscribe(self, hass):
+        """Every registration returns a callable unsubscribe handle."""
+        from homeassistant.components import bluetooth as ha_bt
+
+        unsub = ha_bt.async_track_unavailable(hass, lambda info: None, "AA:BB", True)
+        assert callable(unsub)
+        unsub()
+
+        unsub = ha_bt.async_register_callback(
+            hass, lambda info, change: None, None, ha_bt.BluetoothScanningMode.PASSIVE
+        )
+        assert callable(unsub)
+        unsub()
+
+        unsub = ha_bt.async_register_advertisement_callback(
+            hass, lambda info: None, "AA:BB"
+        )
+        assert callable(unsub)
+        unsub()
+
+    def test_scan_queries_report_nothing(self, hass):
+        """An adapter-less host has seen no devices."""
+        from homeassistant.components import bluetooth as ha_bt
+
+        assert ha_bt.async_address_present(hass, "AA:BB") is False
+        assert ha_bt.async_ble_device_from_address(hass, "AA:BB") is None
+        assert ha_bt.async_last_service_info(hass, "AA:BB") is None
+        assert ha_bt.async_discovered_service_info(hass) == ()
+        assert ha_bt.async_scanner_count(hass) == 0
+        assert ha_bt.async_current_scanners(hass) == []
+        assert ha_bt.async_get_scanner(hass) is None
+
+    @pytest.mark.asyncio
+    async def test_process_advertisements_times_out(self, hass):
+        """Nothing can ever match, so waiting can only time out."""
+        from homeassistant.components import bluetooth as ha_bt
+
+        with pytest.raises(TimeoutError):
+            await ha_bt.async_process_advertisements(
+                hass,
+                lambda info: True,
+                {"domain": "meross_lan"},
+                ha_bt.BluetoothScanningMode.PASSIVE,
+                1,
+            )
+
+
 class TestDeviceRegistryConstants:
     """Tests for device registry connection constants."""
 

@@ -258,6 +258,25 @@ class TestHomeAssistantComponentImports:
         assert HumidifierEntity is not None
         assert HumidifierEntityFeature is not None
 
+    def test_light_component_constants(self):
+        """Light module-level constants integrations import directly.
+
+        meross_lan's light.py builds its effect list from ``light.EFFECT_OFF``
+        at class-creation time, so a missing constant fails the whole module
+        import (and, through the select-description walk, the integration load).
+        """
+        from homeassistant.components.light import (
+            ATTR_EFFECT,
+            ATTR_EFFECT_LIST,
+            EFFECT_OFF,
+            LightEntityFeature,
+        )
+
+        assert EFFECT_OFF == "off"
+        assert ATTR_EFFECT_LIST == "effect_list"
+        assert ATTR_EFFECT == "effect"
+        assert LightEntityFeature.EFFECT == 4
+
 
 class TestConfigFlowResult:
     """Tests for ConfigFlowResult import compatibility."""

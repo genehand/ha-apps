@@ -1,13 +1,14 @@
 """Home Assistant components stub modules.
 
 Provides alarm_control_panel, cover, persistent_notification, diagnostics,
-zeroconf, cloud, webhook, mqtt, image, number, scene, and various const modules.
+zeroconf, bluetooth, cloud, webhook, mqtt, image, number, scene, and various const
+modules.
 """
 
 import sys
 import types
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TypedDict
 
 import voluptuous as vol
 
@@ -371,6 +372,151 @@ def _zeroconf_stub_getattr(name: str):
     )
 
 
+# Bluetooth model classes resolved on first use, for the same reason as the
+# zeroconf classes above: ``habluetooth``/``home_assistant_bluetooth`` arrive with
+# the ``homeassistant`` wheel, but a rebuilt ``/data/.venv`` may not have them yet
+# when the patch runs. A failed resolution is not cached, so a later install is
+# picked up without a restart.
+_BLUETOOTH_CLASSES: Dict[str, Any] = {}
+
+_BLUETOOTH_EXPORTED = (
+    "FALLBACK_MAXIMUM_STALE_ADVERTISEMENT_SECONDS",
+    "MONOTONIC_TIME",
+    "BaseHaRemoteScanner",
+    "BaseHaScanner",
+    "BluetoothCallback",
+    "BluetoothCallbackMatcher",
+    "BluetoothCallbackReplay",
+    "BluetoothChange",
+    "BluetoothReachabilityIntent",
+    "BluetoothScannerDevice",
+    "BluetoothScanningMode",
+    "BluetoothServiceInfo",
+    "BluetoothServiceInfoBleak",
+    "HaBluetoothConnector",
+)
+
+
+def _load_bluetooth_classes() -> Optional[Dict[str, Any]]:
+    """Import the third-party bluetooth model classes (cached).
+
+    ``home_assistant_bluetooth`` and ``habluetooth`` are pure packages: the real
+    ``BluetoothServiceInfoBleak``/``BluetoothScanningMode`` types come from them
+    in upstream HA too, so the stub hands integrations the same classes instead
+    of look-alike replacements that would fail an ``isinstance`` check.
+    """
+    classes = _BLUETOOTH_CLASSES.get("classes")
+    if classes is not None:
+        return classes
+
+    try:
+        from bluetooth_data_tools import monotonic_time_coarse as _MonotonicTime
+        from habluetooth import (
+            FALLBACK_MAXIMUM_STALE_ADVERTISEMENT_SECONDS as _FallbackStaleSeconds,
+        )
+        from habluetooth import (
+            BaseHaRemoteScanner as _BaseHaRemoteScanner,
+        )
+        from habluetooth import BaseHaScanner as _BaseHaScanner
+        from habluetooth import (
+            BluetoothReachabilityIntent as _ReachabilityIntent,
+        )
+        from habluetooth import BluetoothScannerDevice as _ScannerDevice
+        from habluetooth import BluetoothScanningMode as _ScanningMode
+        from habluetooth import HaBluetoothConnector as _HaBluetoothConnector
+        from home_assistant_bluetooth import (
+            BluetoothServiceInfo as _ServiceInfo,
+        )
+        from home_assistant_bluetooth import (
+            BluetoothServiceInfoBleak as _ServiceInfoBleak,
+        )
+    except ImportError:
+        if not _BLUETOOTH_CLASSES.get("warned"):
+            _BLUETOOTH_CLASSES["warned"] = True
+            _LOGGER.warning(
+                "habluetooth/home_assistant_bluetooth not available; bluetooth "
+                "stub disabled until they are installed (will retry on next use)"
+            )
+        return None
+
+    # Mirrors homeassistant/components/bluetooth/models.py; both are plain
+    # type definitions with no manager state behind them.
+    _BluetoothChange = Enum("BluetoothChange", "ADVERTISEMENT")
+
+    class _BluetoothCallbackReplay(Enum):
+        """How history is replayed when a callback is registered."""
+
+        OLDEST_FIRST = 1
+        NEWEST_FIRST = 2
+        DISABLED = 3
+
+    class _BluetoothMatcherOptional(TypedDict, total=False):
+        """Optional matcher fields (homeassistant.loader.BluetoothMatcherOptional)."""
+
+        address: str
+        local_name: str
+        service_uuid: str
+        service_data_uuid: str
+        manufacturer_id: int
+        manufacturer_data_start: list
+        connectable: bool
+
+    class _BluetoothCallbackMatcher(_BluetoothMatcherOptional):
+        """Matcher for callback registrations (bluetooth/match.py)."""
+
+        domain: str
+
+    classes = {
+        "FALLBACK_MAXIMUM_STALE_ADVERTISEMENT_SECONDS": _FallbackStaleSeconds,
+        "MONOTONIC_TIME": _MonotonicTime,
+        "BaseHaRemoteScanner": _BaseHaRemoteScanner,
+        "BaseHaScanner": _BaseHaScanner,
+        "BluetoothCallback": Callable[[_ServiceInfoBleak, _BluetoothChange], None],
+        "BluetoothCallbackMatcher": _BluetoothCallbackMatcher,
+        "BluetoothCallbackReplay": _BluetoothCallbackReplay,
+        "BluetoothChange": _BluetoothChange,
+        "BluetoothReachabilityIntent": _ReachabilityIntent,
+        "BluetoothScannerDevice": _ScannerDevice,
+        "BluetoothScanningMode": _ScanningMode,
+        "BluetoothServiceInfo": _ServiceInfo,
+        "BluetoothServiceInfoBleak": _ServiceInfoBleak,
+        "HaBluetoothConnector": _HaBluetoothConnector,
+    }
+    _BLUETOOTH_CLASSES["classes"] = classes
+    return classes
+
+
+def _bluetooth_stub_getattr(name: str):
+    """Resolve the bluetooth model classes lazily (stub module ``__getattr__``)."""
+    if name in _BLUETOOTH_EXPORTED:
+        classes = _load_bluetooth_classes()
+        if classes is None:
+            raise AttributeError(
+                f"module 'homeassistant.components.bluetooth' has no attribute "
+                f"{name!r} (habluetooth is not installed)"
+            )
+        return classes[name]
+    raise AttributeError(
+        f"module 'homeassistant.components.bluetooth' has no attribute {name!r}"
+    )
+
+
+def _bluetooth_service_info_getattr(name: str):
+    """Resolve ``BluetoothServiceInfo`` lazily for discovery-flow payloads."""
+    if name == "BluetoothServiceInfo":
+        classes = _load_bluetooth_classes()
+        if classes is None:
+            raise AttributeError(
+                "module 'homeassistant.helpers.service_info.bluetooth' has no "
+                "attribute 'BluetoothServiceInfo' (habluetooth is not installed)"
+            )
+        return classes[name]
+    raise AttributeError(
+        "module 'homeassistant.helpers.service_info.bluetooth' has no attribute "
+        f"{name!r}"
+    )
+
+
 def create_additional_stubs(hass, homeassistant):
     """Create additional stub modules for HA dependencies."""
 
@@ -409,6 +555,108 @@ def create_additional_stubs(hass, homeassistant):
     zeroconf_stub.__getattr__ = _zeroconf_stub_getattr
     homeassistant.components.zeroconf = zeroconf_stub
     sys.modules["homeassistant.components.zeroconf"] = zeroconf_stub
+
+    # bluetooth
+    # HA's bluetooth component *is* the scanner manager (habluetooth, bleak, its
+    # own config entries and watchdog), so it cannot be adopted from the wheel --
+    # but integrations import it for more than the manager: meross_lan 6.x does
+    # ``from homeassistant.components import bluetooth`` at module import time to
+    # annotate a callback and call ``async_track_unavailable``. The stub answers
+    # every scan query the way an adapter-less host would: nothing has been seen,
+    # so nothing is present, and every registration returns a no-op unsubscribe.
+    # Devices reachable over Wi-Fi/MQTT keep working; the BLE paths never fire.
+    def _noop_unsub(*args, **kwargs):
+        """Unsubscribe handle for a registration that never fires."""
+
+    bluetooth_stub = types.ModuleType("homeassistant.components.bluetooth")
+    bluetooth_stub.DOMAIN = "bluetooth"
+    bluetooth_stub.SOURCE_LOCAL = "local"
+    bluetooth_stub.UNAVAILABLE_TRACK_SECONDS = 60 * 5
+    bluetooth_stub.async_address_present = lambda hass, address, connectable=True: False
+    bluetooth_stub.async_track_unavailable = (
+        lambda hass, callback, address, connectable=True: _noop_unsub
+    )
+    bluetooth_stub.async_ble_device_from_address = (
+        lambda hass, address, connectable=True: None
+    )
+    bluetooth_stub.async_last_service_info = (
+        lambda hass, address, connectable=True: None
+    )
+    bluetooth_stub.async_discovered_service_info = (
+        lambda hass, connectable=True: ()
+    )
+    bluetooth_stub.async_get_scanner = lambda hass: None
+    bluetooth_stub.async_scanner_by_source = lambda hass, source: None
+    bluetooth_stub.async_scanner_count = lambda hass, connectable=True: 0
+    bluetooth_stub.async_current_scanners = lambda hass: []
+    bluetooth_stub.async_scanner_devices_by_address = (
+        lambda hass, address, connectable=True: []
+    )
+    bluetooth_stub.async_address_reachability_diagnostics = (
+        lambda hass, address, intent: "no bluetooth adapters in this environment"
+    )
+    bluetooth_stub.async_get_learned_advertising_interval = (
+        lambda hass, address: None
+    )
+    bluetooth_stub.async_get_fallback_availability_interval = (
+        lambda hass, address: None
+    )
+    bluetooth_stub.async_set_fallback_availability_interval = (
+        lambda hass, address, interval: None
+    )
+    bluetooth_stub.async_register_callback = (
+        lambda hass, callback, match_dict, mode, *args, **kwargs: _noop_unsub
+    )
+    bluetooth_stub.async_register_advertisement_callback = (
+        lambda hass, callback, address: _noop_unsub
+    )
+    bluetooth_stub.async_register_scanner = (
+        lambda hass, scanner, *args, **kwargs: _noop_unsub
+    )
+    bluetooth_stub.async_remove_scanner = lambda hass, source: None
+    bluetooth_stub.async_rediscover_address = lambda hass, address: None
+    bluetooth_stub.async_clear_address_from_match_history = (
+        lambda hass, address: None
+    )
+    bluetooth_stub.async_clear_advertisement_history = lambda hass, address: None
+    bluetooth_stub.async_get_advertisement_callback = (
+        lambda hass: _noop_unsub
+    )
+
+    async def _async_process_advertisements(
+        hass, callback, match_dict, mode, timeout
+    ):
+        """Nothing is ever advertised here, so waiting can only time out."""
+        _LOGGER.debug(
+            "bluetooth stub: async_process_advertisements(%s) cannot match "
+            "anything without a bluetooth adapter",
+            match_dict,
+        )
+        raise TimeoutError("bluetooth stub: no bluetooth adapters")
+
+    async def _async_request_active_scan(hass, duration=None):
+        """No scanners to sweep."""
+
+    bluetooth_stub.async_process_advertisements = _async_process_advertisements
+    bluetooth_stub.async_request_active_scan = _async_request_active_scan
+    # Service-info / scanning classes come from __getattr__ so they appear as
+    # soon as the packages become importable, without another restart.
+    bluetooth_stub.__getattr__ = _bluetooth_stub_getattr
+    homeassistant.components.bluetooth = bluetooth_stub
+    sys.modules["homeassistant.components.bluetooth"] = bluetooth_stub
+
+    # bluetooth discovery payload (homeassistant.helpers.service_info.bluetooth)
+    service_info = getattr(homeassistant.helpers, "service_info", None)
+    if service_info is not None:
+        service_info_bluetooth = types.ModuleType(
+            "homeassistant.helpers.service_info.bluetooth"
+        )
+        service_info_bluetooth.__getattr__ = _bluetooth_service_info_getattr
+        service_info.bluetooth = service_info_bluetooth
+        homeassistant.helpers.service_info.bluetooth = service_info_bluetooth
+        sys.modules["homeassistant.helpers.service_info.bluetooth"] = (
+            service_info_bluetooth
+        )
 
     # cloud
     cloud_stub = types.ModuleType("homeassistant.components.cloud")

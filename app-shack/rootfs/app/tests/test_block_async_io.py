@@ -284,6 +284,27 @@ class TestCheckAllowed:
         """Normal paths are not allowed."""
         assert _check_file_allowed({"args": ("/etc/passwd",)}) is False
 
+    def test_check_file_allowed_keyword_only_file(self):
+        """open(file=...) passes the path in kwargs, not args.
+
+        meross_lan opens its devices.json that way; indexing ``args[0]``
+        blindly raised IndexError from inside the detector instead of
+        warning.
+        """
+        assert (
+            _check_file_allowed({"args": (), "kwargs": {"file": "/proc/self/status"}})
+            is True
+        )
+        assert (
+            _check_file_allowed({"args": (), "kwargs": {"file": "/etc/passwd"}})
+            is False
+        )
+
+    def test_check_file_allowed_no_args_no_file(self):
+        """A call with neither args nor a file kwarg does not raise."""
+        assert _check_file_allowed({"args": (), "kwargs": {}}) is False
+        assert _check_file_allowed({}) is False
+
     def test_check_load_verify_locations_cadata(self):
         """cadata-only kwargs are allowed."""
         assert (

@@ -1220,6 +1220,71 @@ class TestAvailableVersionsAndDownload:
         assert "libdyson-neon==1.6.0" in install_calls[0]
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_meross_lan_loads():
+    """meross_lan 6.x must load against the shim's bluetooth stub.
+
+    Regression: 6.x does ``from homeassistant.components import bluetooth`` at
+    module import time (component_api.py), which failed the whole integration
+    with "cannot import name 'bluetooth' from 'homeassistant.components'". The
+    platform modules are imported too because ``load_integration`` walks them to
+    patch select descriptions -- that is where meross's light.py needs
+    ``light.EFFECT_OFF``. It also imports bleak's BlueZ backend unconditionally,
+    which needs ``dbus_fast``: Linux-only, so the import patcher installs an
+    import-only placeholder off Linux (shim/dbus_fast_placeholder.py).
+    """
+    import types
+
+    data_dir = Path(__file__).parent.parent / "data"
+    shim_dir = data_dir / "shim"
+    custom_components_dir = shim_dir / "custom_components"
+    integration_dir = custom_components_dir / "meross_lan"
+
+    if not integration_dir.exists():
+        pytest.skip("meross_lan integration not installed")
+
+    # Other tests build ``custom_components`` in temp dirs and leave it cached
+    # in sys.modules; point it at the bundled integrations for this test.
+    saved_modules = {
+        name: mod
+        for name, mod in sys.modules.items()
+        if name.startswith("custom_components")
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+
+    cc_module = types.ModuleType("custom_components")
+    cc_module.__path__ = [str(custom_components_dir)]
+    sys.modules["custom_components"] = cc_module
+
+    try:
+        hass = HomeAssistant(data_dir)
+        setup_import_patching(hass).patch()
+
+        storage = Storage(shim_dir)
+        integration_manager = IntegrationManager(storage, shim_dir)
+        loader = IntegrationLoader(hass, integration_manager)
+        hass.data["integration_loader"] = loader
+
+        assert await loader.load_integration("meross_lan") is True
+
+        module = sys.modules["custom_components.meross_lan"]
+        assert hasattr(module, "async_setup_entry")
+
+        from homeassistant.components import bluetooth as ha_bt
+
+        # The two attributes meross_lan touches at import/runtime.
+        assert ha_bt.BluetoothServiceInfoBleak is not None
+        assert callable(ha_bt.async_track_unavailable)
+    finally:
+        for name in [
+            name for name in sys.modules if name.startswith("custom_components")
+        ]:
+            del sys.modules[name]
+        sys.modules.update(saved_modules)
+
+
 if __name__ == "__main__":
     # Allow running this file directly for quick testing
     pytest.main([__file__, "-v", "-m", "integration"])

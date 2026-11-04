@@ -81,8 +81,19 @@ def _check_file_allowed(mapped_args: dict[str, Any]) -> bool:
     - Jinja2's template loader (template rendering on the event loop)
     - The shim's own storage layer (entity states, JSON files — fast I/O)
     """
-    args = mapped_args["args"]
-    path = args[0] if type(args[0]) is str else str(args[0])
+    # ``args[0]`` is the path for ``open(path)``, the ``Path`` itself for the
+    # ``Path.*`` methods, and absent altogether for keyword-only calls such as
+    # ``open(file=..., encoding=...)`` (meross_lan's devices.json). Indexing it
+    # blindly turned the warning into an IndexError raised *from* the detector.
+    args = mapped_args.get("args") or ()
+    if args:
+        path = args[0] if type(args[0]) is str else str(args[0])
+    else:
+        path = (mapped_args.get("kwargs") or {}).get("file")
+        if path is None:
+            return False
+        if type(path) is not str:
+            path = str(path)
     if path.startswith(ALLOWED_FILE_PREFIXES):
         return True
     with suppress(ValueError):

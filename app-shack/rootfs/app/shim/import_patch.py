@@ -12,6 +12,7 @@ import types
 from . import block_async_io
 from . import config_entries
 from . import core
+from . import dbus_fast_placeholder
 from . import entity
 from . import selectors
 from .logging import get_logger
@@ -138,10 +139,21 @@ def _import_upstream_helpers() -> dict[str, types.ModuleType]:
 
 
 def _find_empty_response_exception():
-    """Search loaded modules for any EmptyResponseException class."""
+    """Search loaded modules for any EmptyResponseException class.
+
+    Only an exception class counts: modules that answer ``__getattr__`` for
+    everything (the ``dbus_fast`` placeholder, ``unittest.mock`` mocks) report
+    the attribute but hand back something that cannot be raised.
+    """
     for mod in sys.modules.values():
-        if mod is not None and hasattr(mod, 'EmptyResponseException'):
-            return mod.EmptyResponseException
+        if mod is None:
+            continue
+        try:
+            candidate = getattr(mod, 'EmptyResponseException', None)
+        except Exception:
+            continue
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            return candidate
     return None
 
 
@@ -280,6 +292,10 @@ class ImportPatcher:
 
         # Patch curl_cffi to strip Content-Encoding after auto-decompression
         self._patch_curl_cffi_content_encoding()
+
+        # Let Linux-only third-party backends import off Linux (dbus_fast, used
+        # by bleak's BlueZ backend, which meross_lan imports unconditionally).
+        dbus_fast_placeholder.install()
 
         # Enable blocking call detection (warn-only)
         block_async_io.enable()
