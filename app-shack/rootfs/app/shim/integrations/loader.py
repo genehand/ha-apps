@@ -116,6 +116,11 @@ class IntegrationLoader:
                 importlib.invalidate_caches()
                 _LOGGER.debug(f"Added {parent_path} to sys.path")
 
+            # Reaching this import means no module of this domain is live (see
+            # unload_integration), so the previous generation is gone and the
+            # singleton it parked in hass.data must go with it.
+            self._drop_domain_data(domain)
+
             # Import the integration
             _LOGGER.debug(
                 f"Importing custom_components.{domain} from path: {custom_components_path}"
@@ -425,13 +430,24 @@ class IntegrationLoader:
                          server shutdown to preserve topics for reconnection.
         """
         domain = entry.domain
+        module = self._loaded_integrations.get(domain)
 
-        if domain not in self._loaded_integrations:
+        if module is None:
             return True
 
         try:
             set_current_integration(domain)
             _LOGGER.debug(f"Unloading {domain} (cleanup_mqtt={cleanup_mqtt})")
+
+            # Entries of one domain share this module *and* the singleton it
+            # built in ``hass.data[domain]``. Both are generation-scoped: they
+            # may only be discarded once the last entry of the domain is down,
+            # or the survivors keep running objects of a generation that no
+            # longer exists (meross_lan: a stale ``Device`` built by 5.8.0 is
+            # read through 6.0.0's ``device.profile``).
+            siblings_stay_loaded = self._domain_has_loaded_entries(
+                domain, exclude=entry
+            )
 
             # A pending setup retry must not resurrect the integration after
             # a manual unload/reload.
@@ -449,8 +465,6 @@ class IntegrationLoader:
             if not cleanup_mqtt:
                 self._hass._shim_shutdown_in_progress = True
                 _LOGGER.debug("Set _shim_shutdown_in_progress flag on hass")
-
-            module = self._loaded_integrations[domain]
 
             # Check for async_unload_entry. A raising unload_entry must not skip
             # the rest of the teardown: the caller (install_and_reload) goes on
@@ -507,10 +521,15 @@ class IntegrationLoader:
             except ImportError:
                 pass
 
-            # Remove all entities for this domain
-            # (This includes the reload button entity since it has
-            # integration_domain set to the entry's domain)
-            await self._remove_domain_entities(domain, cleanup_mqtt=cleanup_mqtt)
+            # Remove the entities this entry created (this includes its reload
+            # button, which carries integration_domain + config_entry_id). When
+            # sibling entries stay loaded their entities belong to them, and
+            # nothing in this unload would recreate them.
+            await self._remove_domain_entities(
+                domain,
+                cleanup_mqtt=cleanup_mqtt,
+                entry_id=entry.entry_id if siblings_stay_loaded else None,
+            )
 
             # Clean up reload button tracking for this entry
             self._remove_reload_button(entry.entry_id)
@@ -523,24 +542,24 @@ class IntegrationLoader:
             # which the device answers with ECONNRESET every RECONNECT_INTERVAL).
             await entry._run_unload_callbacks(self._hass)
 
-            # Call async_unload for global cleanup if no more entries
-            entries = self._hass.config_entries.async_entries(domain)
-            if len(entries) <= 1 and hasattr(module, "async_unload"):
+            # Call async_unload for global cleanup if no other entry is set up
+            if not siblings_stay_loaded and hasattr(module, "async_unload"):
                 _LOGGER.debug(f"Calling async_unload for {domain}")
                 await module.async_unload(self._hass)
 
-            # Remove from loaded
-            if domain in self._loaded_integrations:
-                del self._loaded_integrations[domain]
-            else:
-                _LOGGER.warning(
-                    f"Domain {domain} not found in _loaded_integrations during unload"
-                )
-
-            # Clean up sys.modules so the next load re-reads from disk
-            self._cleanup_sys_modules(domain)
-
             entry.state = "not_loaded"
+
+            if siblings_stay_loaded:
+                _LOGGER.debug(
+                    f"Keeping {domain} modules loaded: other entries are still set up"
+                )
+            else:
+                # Last entry down: drop the module generation so the next setup
+                # re-reads the files on disk (and, via load_integration, the
+                # hass.data singleton the old modules left behind).
+                self._loaded_integrations.pop(domain, None)
+                self._cleanup_sys_modules(domain)
+
             _LOGGER.debug(f"Successfully unloaded {domain}")
             return True
 
@@ -553,26 +572,63 @@ class IntegrationLoader:
         finally:
             set_current_integration(None)
 
+    def _domain_has_loaded_entries(
+        self, domain: str, exclude: Optional[ConfigEntry] = None
+    ) -> bool:
+        """Return True while any entry of ``domain`` is still set up."""
+        return any(
+            other is not exclude and self._entry_was_set_up(other)
+            for other in self._hass.config_entries.async_entries(domain)
+        )
+
+    def _drop_domain_data(self, domain: str) -> None:
+        """Drop the singleton an integration cached in ``hass.data[domain]``.
+
+        Called only when a new module generation is imported. Home Assistant
+        keeps ``hass.data[domain]`` across an entry reload, but it never
+        re-imports the modules in-process: doing one without the other hands
+        the new classes instances built by the old ones (meross_lan 6.0.0
+        renamed ``Device._profile`` to ``Device.profile``, so the ``Device``
+        left in the 5.8.0 ``ComponentApi`` made ``MQTTProfile.link`` raise
+        ``'Device' object has no attribute 'profile'`` after an in-app update).
+        A HA update restarts the process; this reproduces that for its state.
+        """
+        if self._hass.data.pop(domain, None) is not None:
+            _LOGGER.debug(
+                f"Dropped hass.data['{domain}'] left by the previous module generation"
+            )
+
     async def _remove_domain_entities(
-        self, domain: str, cleanup_mqtt: bool = True
+        self,
+        domain: str,
+        cleanup_mqtt: bool = True,
+        entry_id: Optional[str] = None,
     ) -> None:
-        """Remove all entities for an integration domain.
+        """Remove entities for an integration domain.
 
         Args:
             domain: The integration domain to remove entities for.
             cleanup_mqtt: Whether to clean up MQTT topics.
+            entry_id: When set, only entities owned by that config entry are
+                     removed. Used when the domain's other entries stay loaded.
         """
         entities_to_remove = []
         total_entities = sum(len(entities) for entities in self._entities.values())
         _LOGGER.debug(
-            f"_remove_domain_entities: domain={domain}, total entities tracked={total_entities}, cleanup_mqtt={cleanup_mqtt}"
+            f"_remove_domain_entities: domain={domain}, entry_id={entry_id}, "
+            f"total entities tracked={total_entities}, cleanup_mqtt={cleanup_mqtt}"
         )
 
         for platform_domain, entities in list(self._entities.items()):
             for entity in list(entities):
                 entity_domain = getattr(entity, "integration_domain", None)
-                if entity_domain == domain:
-                    entities_to_remove.append((platform_domain, entity))
+                if entity_domain != domain:
+                    continue
+                if entry_id is not None and (
+                    getattr(entity, "_attr_config_entry_id", None) != entry_id
+                ):
+                    continue
+                entities_to_remove.append((platform_domain, entity))
 
         _LOGGER.debug(
             f"Found {len(entities_to_remove)} entities to remove for domain {domain}"
@@ -815,6 +871,21 @@ class IntegrationLoader:
             "manufacturer": "Shack",
             "model": "Integration",
         }
+
+    def reset_domain(self, domain: str) -> None:
+        """Throw away everything the shim holds for ``domain`` in-process.
+
+        Used by the install/update path once the new files are on disk: the
+        entries are about to be set up again and must neither import the old
+        modules nor find the previous generation's ``hass.data[domain]``
+        singleton. Unloading the entries already does this, but only for a
+        domain that was actually loaded — a domain whose setup failed after it
+        cached state, or whose unload hook raised, would otherwise keep serving
+        the old generation after the version changed.
+        """
+        self._loaded_integrations.pop(domain, None)
+        self._cleanup_sys_modules(domain)
+        self._drop_domain_data(domain)
 
     def _cleanup_sys_modules(self, domain: str) -> None:
         """Remove all cached modules for an integration domain from sys.modules.

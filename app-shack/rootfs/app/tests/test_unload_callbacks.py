@@ -226,17 +226,21 @@ async def test_reload_leaves_exactly_one_connection_open(hass, loader):
     entry = await _add_entry(hass)
 
     assert await loader.setup_integration(entry) is True
+    await _settle()
+    (first_device,) = hass.data["fake_socket"]
+
     await loader.unload_integration(entry)
     assert await loader.setup_integration(entry) is True
     await _settle()
 
-    devices = hass.data["fake_socket"]
-    assert len(devices) == 2
-    open_devices = [d for d in devices if d.connected and not d.closed]
-    assert len(open_devices) == 1, (
-        f"expected one live connection after reload, got {len(open_devices)}: "
-        f"{[(d.entry_id, d.connected, d.closed) for d in devices]}"
-    )
+    # The reload re-imports the module, so it also starts from an empty
+    # hass.data[DOMAIN] instead of appending to the previous generation's.
+    (second_device,) = hass.data["fake_socket"]
+    assert second_device is not first_device
+    assert first_device.closed is True
+    assert first_device.connected is False
+    assert second_device.connected is True
+    assert second_device.closed is False
 
 
 @pytest.mark.asyncio

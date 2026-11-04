@@ -51,6 +51,42 @@ Callbacks run LIFO, awaitables are awaited (the reload does not complete until t
 finish), errors are logged and swallowed, and the list is cleared afterwards so the
 next setup registers a fresh generation.
 
+### Module generations (multi-entry domains)
+
+Unloading the **last** entry of a domain is what discards the generation: the module
+is purged from `sys.modules` *and* `hass.data[domain]` is dropped (see
+`IntegrationLoader.reset_domain` / `_drop_domain_data`). Both go together, because a
+fresh import with the previous `hass.data` value leaves the new classes holding
+instances the old ones built. That is not hypothetical — it is the meross_lan update
+bug:
+
+```
+ERROR: shim.integrations.loader - Error setting up entry Meross LAN for meross_lan:
+       'Device' object has no attribute 'profile'
+  helpers/mqtt_profile.py, line 623, in link
+    assert (device.id not in self.linkeddevices) and (device.profile is not self)
+```
+
+meross_lan keeps a `ComponentApi` in `hass.data[DOMAIN]` and only removes it in its
+`EVENT_HOMEASSISTANT_STOP` listener. Home Assistant never re-imports an integration
+in-process, so the singleton is always the same generation there; the shack does, so
+6.0.0's `Device.profile` was read off a `Device` that 5.8.0 had built with `_profile`.
+
+While any entry of the domain is still set up, the module and the singleton stay: HA
+reloads one entry at a time, and the survivors keep running that generation. Two
+consequences for the unload path:
+
+- `unload_integration` is **per entry**, not per domain (`_domain_has_loaded_entries`
+  decides what may be discarded). Doing it per domain skipped every later entry's
+  `async_unload_entry`, so the next setup logged `device already initialized`.
+- `_remove_domain_entities` is filtered by `_attr_config_entry_id` in that case: the
+  sibling entries are not re-set up, so deleting their entities would not restore
+  them.
+
+`ShimManager.install_and_reload` calls `reset_domain()` after installing the new
+files and before re-setup, so the update path is deterministic even when an unload
+failed or the domain never reached `loaded`.
+
 ### MQTT Behavior
 
 - The **MQTT connection is NOT disconnected** during a reload — only the entities for that integration are re-published

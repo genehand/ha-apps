@@ -981,6 +981,13 @@ class ShimManager:
             )
             return False
 
+        # The files on disk are now a different version. Anything the unload
+        # loop could not tear down (an entry that failed to load in the first
+        # place, or an unload hook that raised) must not serve the entries we
+        # set up next: the module objects and the hass.data[domain] singleton
+        # they built both belong to the version we just replaced.
+        self._integration_loader.reset_domain(domain)
+
         # Reload entries to activate the newly installed code.
         for entry in entries:
             await self._integration_loader.setup_integration(entry)

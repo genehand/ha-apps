@@ -1302,8 +1302,12 @@ class TestInstallAndReload:
         async def setup(entry):
             recorder.setup(entry)
 
+        def reset_domain(domain):
+            recorder.reset_domain(domain)
+
         manager._integration_loader.unload_integration = unload
         manager._integration_loader.setup_integration = setup
+        manager._integration_loader.reset_domain = reset_domain
         manager._integration_manager.install_integration = AsyncMock(
             return_value=True
         )
@@ -1317,11 +1321,14 @@ class TestInstallAndReload:
         manager._integration_manager.install_integration.assert_awaited_once_with(
             "owner/repo", version="1.2.3", source="hacs_default", wait=True
         )
-        # ordered call sequence: unload, unload, setup, setup — never interleaved
+        # ordered call sequence: unload, unload, reset, setup, setup — never
+        # interleaved. The reset sits between install and setup so no entry can
+        # import the previous version's modules or hass.data singleton.
         method_names = [c[0] for c in recorder.mock_calls]
         assert method_names == [
             "unload",
             "unload",
+            "reset_domain",
             "setup",
             "setup",
         ]
@@ -1343,6 +1350,7 @@ class TestInstallAndReload:
         assert ok is False
         manager._integration_loader.unload_integration.assert_awaited_once_with(entry)
         manager._integration_manager.install_integration.assert_awaited_once()
+        manager._integration_loader.reset_domain.assert_not_called()
         manager._integration_loader.setup_integration.assert_not_awaited()
 
     @pytest.mark.asyncio
