@@ -320,8 +320,56 @@ class ConfigEntries:
 
         if changed:
             self._save_entries()
+            self._notify_update_listeners(entry)
             _LOGGER.debug(f"Updated config entry {entry.entry_id}")
         return changed
+
+    def _notify_update_listeners(self, entry: ConfigEntry) -> None:
+        """Run the entry's ``add_update_listener`` callbacks (HA parity).
+
+        HA does this on every change (``ConfigEntries._async_save_and_notify``),
+        and integrations rely on it to apply new config **in place** instead of
+        being reloaded — the listener is what re-reads ``entry.data``/``options``
+        into the running objects. The shim never called them, so an option only
+        took effect on the next full entry reload.
+
+        meross_lan is the worked example: its profile listener re-applies
+        ``allow_mqtt_publish`` to the live ``MQTTConnection``s
+        (``MQTTProfile.entry_update_listener`` -> ``MQTTConnection
+        .entry_update_listener``). Without the callback the connection kept the
+        disabled publisher installed at construction, and the device binding to
+        it logged ``ValueError(MQTT publish is not allowed by configuration)``
+        long after the option was switched back on.
+        """
+        listeners = getattr(entry, "_update_listeners", None)
+        if not listeners:
+            return
+
+        title = getattr(entry, "title", None) or entry.entry_id
+        domain = getattr(entry, "domain", "")
+        for listener in list(listeners):
+            try:
+                result = listener(self._hass, entry)
+                if inspect.isawaitable(result):
+                    task = self._hass.async_create_task(
+                        result, f"config entry update listener {title} {domain}"
+                    )
+                    # asyncio keeps only weak references to tasks: hold them so
+                    # a listener cannot be collected mid-run (HA keeps
+                    # ``hass._tasks`` for this).
+                    pending = getattr(
+                        self._hass, "_config_entry_listener_tasks", None
+                    )
+                    if pending is None:
+                        pending = set()
+                        self._hass._config_entry_listener_tasks = pending
+                    pending.add(task)
+                    task.add_done_callback(pending.discard)
+            except Exception as e:  # noqa: BLE001 - one listener must not break the update
+                _LOGGER.error(
+                    f"Error in update listener for {domain} entry {entry.entry_id}: {e}"
+                )
+
 
     async def async_reload(self, entry_id: str) -> None:
         """Reload an entry.

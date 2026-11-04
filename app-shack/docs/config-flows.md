@@ -146,9 +146,25 @@ integration that leaves persisting to the manager (the submit said
 `OptionsFlowWithReload` exists as HA's marker class (`automatic_reload = True`,
 73 of those 181 modules subclass it; without the class the import fails and the
 integration cannot load). The reload itself is still done by the web route
-after a successful options flow rather than by the markers' value — the shim has
-no config-entry update listeners to collide with, so HA's
-`automatic_reload and entry.update_listeners` conflict cannot arise here.
+after a successful options flow rather than by the markers' value.
+
+**Update listeners now fire.** `ConfigEntries.async_update_entry` runs every
+callback registered with `entry.add_update_listener(...)`, exactly like HA's
+`_async_save_and_notify` (listeners get `(hass, entry)`, a raising listener is
+logged and does not undo the change, and nothing fires when the entry did not
+change). That is how integrations apply config *in place* instead of being
+reloaded, and its absence is why meross_lan's cloud-profile option looked
+enabled while the running MQTT connection still had the disabled publisher
+installed::
+
+    WARNING: custom_components.meross_lan.mss620_... - MQTT:
+    ValueError(MQTT publish is not allowed by configuration) in async_connect
+
+`MQTTProfile.entry_update_listener` is what re-applies `allow_mqtt_publish` to
+live `MQTTConnection`s (`del self.async_publish_raw` restores the real
+publisher). Listeners are fired by `async_update_entry`, so a flow that writes
+`entry.data` itself (meross's `OptionsFlow.finish_flow` does) notifies them too.
+`tests/test_config_entry_update_listeners.py` pins all of it.
 
 ### 4.2 Subentries — not implemented (deliberately)
 
