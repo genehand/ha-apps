@@ -105,7 +105,67 @@ empty from the registry. It is always called with the entity's `hass` now (it us
 to look up the process-global registry), so the payload comes from the right
 instance. A `device_info` that supplies identifiers + name/manufacturer/model still
 produces exactly those fields; one that supplies only identifiers stays
-identifiers-only (see `tests/test_device_registration.py`).
+identifiers-only (see `tests/test_device_registration.py`) — unless it has a
+parent, see below.
+
+### Child devices: `device.via_device`
+
+HA's MQTT discovery has no `via_device_id`. The parent link is `device.via_device`,
+a **string** identifier of the parent
+(`homeassistant/components/mqtt/entity.py::_via_device_identifier` turns it into a
+`("mqtt", <string>)` registry identifier, matching the ones the parent device gets
+from its own `device.identifiers` list). `build_mqtt_device_config` therefore emits
+`via_device` whenever the device has a parent:
+
+| Source | When |
+|--------|------|
+| `device_info.via_device` (`(domain, identifier)` tuple) | always, even when the parent row does not exist yet |
+| the registry row's `via_device_id` → parent row → its first identifier (sorted) | the meross_lan / hub shape, where the entity's `device_info` carries identifiers only |
+| the registry row's own `via_device` tuple | fallback for a link that never resolved |
+
+The value is produced by `format_device_identifiers`, i.e. the same rendering the
+parent publishes in `device.identifiers`, because HA needs an exact match. Two
+deliberate choices:
+
+- **No registry lookup gates the deprecated tuple.** HA stub-creates a missing
+  parent (`mqtt.entity.ensure_via_device_exists`) since discovery order is not
+  deterministic; resolving through the registry instead would drop the link for
+  whichever device is announced first.
+- **Self-references are dropped** (a row whose `via_device_id` is its own id), which
+  is what HA's registry migration does too.
+
+Root devices must stay root: the payload only gains the key when a link exists, and
+an identifiers-only `device_info` for an unlinked device still produces an
+identifiers-only block.
+
+This fixed meross_lan's multi-channel devices: an MSS620 (2 outlets) showed up as
+three unrelated devices because the per-channel blocks carried the channel
+identifiers and nothing else. `tests/test_integrations.py::
+test_meross_lan_mss620_channel_devices_are_children` pins it against the real
+integration.
+
+A per-entry control also must not inherit a child device: the reload button takes
+the `device_info` of an entity of the same integration and now prefers one on a
+device without a parent (`IntegrationLoader._get_reload_button_device_info`). It
+used to take the first entity it found, which for a channel-based integration meant
+the button lived on "<plug> Channel 1".
+
+### Not supported: registry-level child devices
+
+HA 2026.8+ has real child devices (`ChildDeviceEntry.parent_device_id`,
+`async_get_or_create_child_from_info`, `dr.ChildDeviceInfo`, and MQTT's
+`device.child_device` block). The shim does not model them:
+
+- `register_entity_device` drops `parent_device_id` (a `DeviceInfo` carrying it
+  registers a root device), and the stub `device_registry` module exports no
+  `ChildDeviceInfo`, so `DeviceInfo(parent_device_id=...)` / `dr.ChildDeviceInfo(...)`
+  raise in an integration that migrates to them.
+- No bundled integration uses it yet, and meross_lan (the reason this matters) still
+  registers `via_device_id` — its own TODO is to migrate. When it does, the shim
+  needs `ChildDeviceInfo`, `async_get_or_create_child(_from_info)`,
+  `DeviceEntry.parent_device_id`, and the MQTT `device.child_device` block (an
+  inverted payload: the `device` block describes the *parent*, `child_device` the
+  identifiers/name of the entity's device).
 
 ## Tests
 
@@ -116,6 +176,11 @@ identifiers-only (see `tests/test_device_registration.py`).
   existing area, create a new one, never move an existing device).
 - `tests/test_device_registration.py` — the entity-add paths end to end with a fake
   gateway/sub-device integration, reload idempotency (no duplicate rows), reload
-  button placement, and the discovery device-block shape.
+  button placement (root-device preference included), `via_device` in the discovery
+  device block (tuple, registry row, self-reference, multi-identifier parent), and
+  the discovery device-block shape.
 - `tests/test_device_info.py` — `DeviceInfo` dict-protocol and the real localtuya
   `device_info` property.
+- `tests/test_integrations.py::test_meross_lan_mss620_channel_devices_are_children`
+  — the real meross_lan integration: channel device rows, channel discovery blocks
+  carrying `via_device`, and the reload button staying on the plug.

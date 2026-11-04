@@ -1428,6 +1428,205 @@ async def test_meross_lan_v6_device_entry_setup():
             sys.modules.update(saved_modules)
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_meross_lan_mss620_channel_devices_are_children():
+    """A 2-outlet MSS620 must nest its channel devices under the plug.
+
+    meross_lan models the plug as one device plus a per-channel device: it
+    registers the channel row itself with ``via_device_id`` and hands the
+    channel entity an identifiers-only ``DeviceInfo`` (``helpers/device.py``,
+    ``get_device_entry_info``). The shim's registry kept that link, but the MQTT
+    discovery ``device`` block dropped it, so the two outlets arrived in Home
+    Assistant as separate root devices instead of children of the plug.
+
+    MQTT discovery transports the parent link as ``device.via_device``: a
+    *string* identifier that has to match one the parent publishes in its own
+    ``device.identifiers`` - HA resolves both sides to ``("mqtt", <string>)``
+    (``homeassistant/components/mqtt/entity.py::_via_device_identifier``).
+    """
+    import json
+    import types
+
+    data_dir = Path(__file__).parent.parent / "data"
+    shim_dir = data_dir / "shim"
+    custom_components_dir = shim_dir / "custom_components"
+    integration_dir = custom_components_dir / "meross_lan"
+
+    if not integration_dir.exists():
+        pytest.skip("meross_lan integration not installed")
+
+    saved_modules = {
+        name: mod
+        for name, mod in sys.modules.items()
+        if name.startswith("custom_components")
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+
+    cc_module = types.ModuleType("custom_components")
+    cc_module.__path__ = [str(custom_components_dir)]
+    sys.modules["custom_components"] = cc_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        runtime_shim_dir = runtime_dir / "shim"
+        runtime_shim_dir.mkdir()
+        (runtime_shim_dir / "custom_components").symlink_to(
+            custom_components_dir, target_is_directory=True
+        )
+
+        try:
+            hass = HomeAssistant(runtime_dir)
+            setup_import_patching(hass).patch()
+
+            storage = Storage(runtime_shim_dir)
+            integration_manager = IntegrationManager(storage, runtime_shim_dir)
+            loader = IntegrationLoader(hass, integration_manager)
+            hass.data["integration_loader"] = loader
+            integration_manager._integrations["meross_lan"] = IntegrationInfo(
+                domain="meross_lan",
+                name="Meross LAN",
+                version="v6.0.0",
+                description="",
+                source="custom",
+                repository_url="https://github.com/krahabb/meross_lan",
+                enabled=True,
+                requirements=[],
+            )
+
+            entry = ConfigEntry(
+                entry_id="meross_mss620_test",
+                version=1,
+                domain="meross_lan",
+                title="Meross MSS620",
+                data={
+                    "device_id": MEROSS_MSS620_UUID,
+                    "payload": MEROSS_MSS620_PAYLOAD,
+                    "protocol": "auto",
+                    "host": "127.0.0.1",
+                    "key": "",
+                },
+            )
+            entry.unique_id = MEROSS_MSS620_UUID
+            await hass.config_entries.async_add(entry)
+
+            assert await loader.setup_integration(entry) is True
+
+            from homeassistant.helpers import device_registry as dr
+
+            registry = dr.async_get(hass)
+            main_identifier = ("meross_lan", MEROSS_MSS620_UUID)
+            plug = registry.async_get_device_by_identifier(
+                main_identifier, entry.entry_id
+            )
+            assert plug is not None
+            assert plug.via_device_id is None
+
+            channel_rows = {
+                identifier: registry.async_get_device_by_identifier(
+                    identifier, entry.entry_id
+                )
+                for identifier in (
+                    ("meross_lan", f"{MEROSS_MSS620_UUID}_1"),
+                    ("meross_lan", f"{MEROSS_MSS620_UUID}_2"),
+                )
+            }
+            for identifier, row in channel_rows.items():
+                assert row is not None, f"no device row for {identifier}"
+                assert row.via_device_id == plug.id
+                assert row.name.startswith("Smart Switch Channel")
+
+            # ``via_device`` is a *string* in the discovery payload, and it has to
+            # be one of the identifiers the parent advertises.
+            parent_block = None
+            channel_blocks = {}
+            reload_block = None
+            mock_mqtt = MagicMock()
+            mock_mqtt.is_connected.return_value = True
+            hass._mqtt_client = mock_mqtt
+            for entity in loader.get_entities(integration_domain="meross_lan"):
+                await entity._publish_mqtt_discovery()
+            for call in mock_mqtt.publish.call_args_list:
+                topic, payload = call.args[0], call.args[1]
+                if not topic.endswith("/config"):
+                    continue
+                block = json.loads(payload).get("device")
+                if block is None:
+                    continue
+                if topic.startswith("homeassistant/button/reload-"):
+                    reload_block = block
+                elif "meross_lan-620620620_" in "".join(block["identifiers"]):
+                    channel_blocks[topic] = block
+                elif block["identifiers"] == ["meross_lan-620620620"]:
+                    parent_block = block
+
+            assert parent_block is not None, "no discovery block for the plug"
+            assert "via_device" not in parent_block
+            assert len(channel_blocks) == 2, sorted(channel_blocks.items())
+            for block in channel_blocks.values():
+                assert block["via_device"] == "meross_lan-620620620"
+                assert block["via_device"] in parent_block["identifiers"]
+
+            # The per-entry reload button is a plug control: it must not be
+            # inherited onto a channel device (the first entity found used to win,
+            # which here is a channel's).
+            assert reload_block is not None
+            assert reload_block["identifiers"] == ["meross_lan-620620620"]
+            assert "via_device" not in reload_block
+
+            await loader.unload_integration(entry)
+        finally:
+            for name in [
+                name
+                for name in sys.modules
+                if name.startswith("custom_components")
+            ]:
+                del sys.modules[name]
+            sys.modules.update(saved_modules)
+
+
+MEROSS_MSS620_UUID = "620620620"
+# Minimal Appliance.System.All payload for a 2-outlet MSS620: the digest carries
+# one ``togglex`` entry per outlet channel, which is what makes meross_lan build
+# the per-channel ToggleX entities (and their channel device rows).
+MEROSS_MSS620_PAYLOAD = {
+    "all": {
+        "system": {
+            "hardware": {
+                "type": "mss620",
+                "subType": "un",
+                "uuid": MEROSS_MSS620_UUID,
+                "macAddress": "48e1e9000620",
+                "version": "1.0.0",
+            },
+            "firmware": {
+                "version": "1.0.0",
+                "innerIp": "127.0.0.1",
+                "server": "127.0.0.1",
+                "port": 1,
+                "secondServer": "",
+                "secondPort": 0,
+                "userId": "0",
+            },
+            "online": {"status": 1},
+            "time": {"timezone": "UTC"},
+        },
+        "digest": {
+            "trigger": 0,
+            "timer": 0,
+            "togglex": [
+                {"channel": 1, "onoff": 0},
+                {"channel": 2, "onoff": 0},
+            ],
+        },
+        "control": {},
+        "ability": {"Appliance.Control.ToggleX": {}},
+    },
+    "ability": {"Appliance.Control.ToggleX": {}},
+}
+
+
 if __name__ == "__main__":
     # Allow running this file directly for quick testing
     pytest.main([__file__, "-v", "-m", "integration"])

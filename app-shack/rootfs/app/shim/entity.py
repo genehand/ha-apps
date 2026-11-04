@@ -237,6 +237,86 @@ def _async_lookup_registry_device(
     return None
 
 
+def _format_via_device_identifier(identifier: Any) -> Optional[str]:
+    """Format one parent identifier exactly like a ``device.identifiers`` entry.
+
+    MQTT discovery matches ``device.via_device`` against the *formatted strings*
+    the parent publishes in its own ``device.identifiers`` list (HA turns them
+    into ``("mqtt", <string>)`` registry identifiers on both sides - see
+    ``homeassistant/components/mqtt/entity.py::_via_device_identifier``), so the
+    child has to send the same rendering ``format_device_identifiers`` produces
+    here. A bare string or a malformed pair yields ``None``: emitting a value
+    that cannot match would create an orphan stub device in Home Assistant.
+    """
+    if not (isinstance(identifier, (tuple, list)) and len(identifier) == 2):
+        return None
+    formatted = format_device_identifiers({tuple(identifier)})
+    return formatted[0] if formatted else None
+
+
+def _discovery_via_device(
+    device_info: Any, registry_device: Any, registry: Any
+) -> Optional[str]:
+    """Return the MQTT discovery ``device.via_device`` value for a device.
+
+    This is HA's child-device link in the MQTT transport: a string identifier of
+    the parent device. Without it the child appears as a separate root device in
+    the user's Home Assistant, which is what meross_lan's per-channel devices
+    (``MSS620`` outlets and other multi-channel plugs) used to do.
+
+    Sources, in order:
+
+    1. ``device_info.via_device`` - the deprecated ``(domain, identifier)``
+       tuple integrations still emit. Used as-is, without a registry lookup:
+       HA stub-creates a parent that discovery has not announced yet
+       (``mqtt.entity.ensure_via_device_exists``), so a not-yet-registered
+       parent must not break the link.
+    2. The registry row's ``via_device_id``/``via_device``, resolved to the
+       parent row and rendered through its *first* identifier (sorted, so the
+       payload is stable across restarts). This is the meross_lan path: it
+       registers the channel device itself with ``via_device_id`` and hands the
+       entity an identifiers-only ``DeviceInfo``.
+
+    A self-reference is dropped: HA's registry migration clears those too.
+    """
+    own = _format_via_device_identifier(get_device_info_attr(device_info, "via_device"))
+    if own:
+        return own
+
+    parent_id = get_device_info_attr(device_info, "via_device_id")
+    if not parent_id and registry_device is not None:
+        parent_id = getattr(registry_device, "via_device_id", None)
+
+    parent = None
+    if parent_id and registry is not None:
+        try:
+            parent = registry.async_get(parent_id)
+        except Exception:  # pragma: no cover - defensive, see docstring
+            parent = None
+
+    if parent is None:
+        # No parent row to read identifiers from (discovery ran before the parent
+        # was registered, or the link never resolved). The deprecated tuple may
+        # still be mirrored on the row.
+        if registry_device is None:
+            return None
+        return _format_via_device_identifier(getattr(registry_device, "via_device", None))
+
+    if getattr(parent, "id", None) == getattr(registry_device, "id", None):
+        return None
+
+    candidates = sorted(
+        filter(
+            None,
+            (
+                _format_via_device_identifier(identifier)
+                for identifier in (getattr(parent, "identifiers", None) or ())
+            ),
+        )
+    )
+    return candidates[0] if candidates else None
+
+
 def _device_string_attr(device: Any, attr: str) -> Optional[str]:
     """Read a device-row field that the discovery payload can transport.
 
@@ -279,6 +359,7 @@ def build_mqtt_device_config(
 
     # Look up device in registry once if we have identifiers
     registry_device = None
+    registry = None
     identifiers = get_device_info_attr(device_info, "identifiers")
     if identifiers:
         try:
@@ -318,6 +399,12 @@ def build_mqtt_device_config(
         sw_version = _device_string_attr(registry_device, "sw_version")
     if sw_version:
         config["sw_version"] = sw_version
+
+    # Parent link (child device in the HA UI). Only emitted when the entity or
+    # its registry row actually carries one - a root device must stay root.
+    via_device = _discovery_via_device(device_info, registry_device, registry)
+    if via_device:
+        config["via_device"] = via_device
 
     return config
 

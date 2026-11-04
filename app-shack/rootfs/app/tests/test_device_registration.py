@@ -114,6 +114,55 @@ async def async_setup_entry(hass, entry, async_add_entities):
     )
 '''
 
+FAKE_CHILD_FIRST_PLATFORM = '''
+"""Fake platform that adds its child-device entity before the parent's."""
+
+from homeassistant.helpers.device_registry import DeviceInfo
+from shim.platforms.sensor import SensorEntity
+
+DOMAIN = "fake_devices"
+
+
+class _FakeSensor(SensorEntity):
+    """Sensor whose device_info is a property, like the integration entities."""
+
+    _attr_native_value = 1
+
+    def __init__(self, unique_id, name, device_info_factory):
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+        self._device_info_factory = device_info_factory
+
+    @property
+    def device_info(self):
+        return self._device_info_factory()
+
+
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Add the sub-device entity first: entity order must not matter."""
+
+    def subdevice_info():
+        return DeviceInfo(
+            identifiers={(DOMAIN, "local_sub1")},
+            name="Sub device",
+            # Deprecated tuple form: the gateway row may not exist yet.
+            via_device=(DOMAIN, "local_gw1"),
+        )
+
+    def gateway_info():
+        return DeviceInfo(
+            identifiers={(DOMAIN, "local_gw1")},
+            name="Gateway",
+        )
+
+    async_add_entities(
+        [
+            _FakeSensor("sub_sensor", "Sub device sensor", subdevice_info),
+            _FakeSensor("gw_sensor", "Gateway sensor", gateway_info),
+        ]
+    )
+'''
+
 FAKE_DEVICE_INFO_LESS_PLATFORM = '''
 """Fake platform whose entities carry no device_info at all."""
 
@@ -576,3 +625,229 @@ async def test_entity_discovery_block_passes_its_config_entry(hass, loader):
     assert block["name"] == "Gateway"
     assert block["manufacturer"] == "Tuya"
     assert block["model"] == "GW model"
+
+
+@pytest.mark.asyncio
+async def test_subdevice_discovery_block_links_its_gateway(hass, loader):
+    """The sub-device's discovery block carries the parent link (HA parity).
+
+    HA's MQTT discovery has no ``via_device_id``: the parent link is
+    ``device.via_device``, a *string identifier* of the parent
+    (``mqtt.entity._via_device_identifier`` turns it into
+    ``("mqtt", <string>)``, matching the identifiers the parent publishes). The
+    block used to drop the link entirely, so every multi-channel / hub-attached
+    device showed up as an unrelated root device in the user's Home Assistant -
+    meross_lan's per-channel devices for an MSS620 look like three devices.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    entry = await _add_entry(hass)
+    assert await loader.setup_integration(entry) is True
+
+    by_entity_id = {entity.entity_id: entity for entity in loader.get_entities()}
+    mock_mqtt = MagicMock()
+    mock_mqtt.is_connected.return_value = True
+    hass._mqtt_client = mock_mqtt
+
+    async def _discovery_config(entity, topic):
+        mock_mqtt.publish.reset_mock()
+        await entity._publish_mqtt_discovery()
+        for call in mock_mqtt.publish.call_args_list:
+            if call.args[0] == topic:
+                return json.loads(call.args[1])
+        raise AssertionError(f"no discovery published to {topic}")
+
+    gateway_block = (
+        await _discovery_config(
+            by_entity_id["sensor.gw_sensor"],
+            "homeassistant/sensor/gw-sensor/config",
+        )
+    )["device"]
+    subdevice_block = (
+        await _discovery_config(
+            by_entity_id["sensor.sub_sensor"],
+            "homeassistant/sensor/sub-sensor/config",
+        )
+    )["device"]
+
+    # The parent must not point anywhere.
+    assert "via_device" not in gateway_block
+    # The child points at the identifier the gateway publishes in its own block.
+    assert subdevice_block["via_device"] == f"{DOMAIN}-local_gw1"
+    assert subdevice_block["via_device"] in gateway_block["identifiers"]
+
+
+@pytest.mark.asyncio
+async def test_via_device_follows_a_multi_channel_registry_row(hass):
+    """The meross_lan shape: identifiers-only entity, link only in the registry.
+
+    meross_lan registers a per-channel device itself with ``via_device_id`` and
+    hands the channel entity a ``DeviceInfo(identifiers=...)``; nothing about the
+    link is visible in that ``device_info``. The discovery block has to pick it
+    up from the registry row so the channel lands under the plug, not next to it.
+    """
+    from shim.entity import build_mqtt_device_config
+
+    from homeassistant.helpers import device_registry as dr
+
+    registry = dr.async_get(hass)
+    parent = registry.async_get_or_create(
+        config_entry_id="ml_entry",
+        identifiers={("meross_lan", "mss620")},
+        name="Desk plug",
+        manufacturer="Meross",
+        model="mss620",
+    )
+    channel = registry.async_get_or_create(
+        config_entry_id="ml_entry",
+        identifiers={("meross_lan", "mss620_1")},
+        name="Desk plug Channel 1",
+        manufacturer="Meross",
+        model="mss620",
+        via_device_id=parent.id,
+    )
+
+    block = build_mqtt_device_config(
+        {"identifiers": {("meross_lan", "mss620_1")}}, hass, "ml_entry"
+    )
+    assert block["via_device"] == "meross_lan-mss620"
+    assert block["identifiers"] == ["meross_lan-mss620_1"]
+    assert block["name"] == "Desk plug Channel 1"
+
+    # The parent stays a root device.
+    parent_block = build_mqtt_device_config(
+        {"identifiers": {("meross_lan", "mss620")}}, hass, "ml_entry"
+    )
+    assert "via_device" not in parent_block
+    assert channel.via_device_id == parent.id
+
+
+@pytest.mark.asyncio
+async def test_via_device_from_device_info_without_a_parent_row(hass):
+    """A deprecated ``via_device`` tuple must be emitted even before the parent exists.
+
+    HA's own discovery path never looks the parent up: ``ensure_via_device_exists``
+    stub-creates it, because MQTT discovery order is not deterministic. Doing a
+    registry lookup instead would drop the link for whichever device is announced
+    first.
+    """
+    from shim.entity import build_mqtt_device_config
+
+    block = build_mqtt_device_config(
+        {
+            "identifiers": {("localtuya", "sub1")},
+            "via_device": ("localtuya", "gw1"),
+        },
+        hass,
+        "tuya_entry",
+    )
+    assert block["via_device"] == "localtuya-gw1"
+
+    # Identifiers that cannot render as a parent identifier are dropped rather
+    # than published (a non-matching value would create an orphan stub device).
+    for malformed in ("gw1", ("localtuya",), ("localtuya", "gw1", "extra"), 42):
+        block = build_mqtt_device_config(
+            {"identifiers": {("localtuya", "sub1")}, "via_device": malformed},
+            hass,
+            "tuya_entry",
+        )
+        assert "via_device" not in block, malformed
+
+
+@pytest.mark.asyncio
+async def test_via_device_pick_is_stable_and_never_self_referential(hass):
+    """One parent, several identifiers: pick deterministically, never itself."""
+    from shim.entity import build_mqtt_device_config
+
+    from homeassistant.helpers import device_registry as dr
+
+    registry = dr.async_get(hass)
+    parent = registry.async_get_or_create(
+        config_entry_id="e1",
+        identifiers={("dl", "zzz"), ("dl", "aaa")},
+        name="Parent",
+    )
+    registry.async_get_or_create(
+        config_entry_id="e1",
+        identifiers={("dl", "child")},
+        name="Child",
+        via_device_id=parent.id,
+    )
+
+    blocks = {
+        build_mqtt_device_config({"identifiers": {("dl", "child")}}, hass, "e1")[
+            "via_device"
+        ]
+        for _ in range(5)
+    }
+    assert blocks == {"dl-aaa"}
+
+    # A row linked to itself (possible after a bad integration update) must not
+    # publish a self-reference; HA's registry migration clears those too.
+    self_linked = registry.async_get_or_create(
+        config_entry_id="e1", identifiers={("dl", "loner")}, name="Loner"
+    )
+    self_linked.via_device_id = self_linked.id
+    assert "via_device" not in build_mqtt_device_config(
+        {"identifiers": {("dl", "loner")}}, hass, "e1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reload_button_prefers_the_root_device(hass, temp_data_dir):
+    """A per-entry reload button must not land on a child device.
+
+    ``_get_reload_button_device_info`` inherits the device of the first entity it
+    finds, and for an integration whose entities are per channel / per sub-device
+    that first entity can be a child (meross_lan's MSS620 outlets publish their
+    reload button on "<plug> Channel 1"). Preferring a device without a parent
+    keeps the plug-level control on the plug, whatever the entity order.
+    """
+    shim_dir = temp_data_dir / "shim"
+    integration_manager = IntegrationManager(Storage(shim_dir), shim_dir)
+    integration_loader = IntegrationLoader(hass, integration_manager)
+    hass.data["integration_loader"] = integration_loader
+
+    _reset_custom_components_imports()
+    _write_fake_integration(shim_dir, FAKE_CHILD_FIRST_PLATFORM)
+    integration_manager._integrations[DOMAIN] = IntegrationInfo(
+        domain=DOMAIN,
+        name="Fake Devices",
+        version="1.0.0",
+        description="Child entity first",
+        source="local",
+        repository_url="https://example.com/fake_devices",
+        enabled=True,
+    )
+
+    entry = await _add_entry(hass)
+    assert await integration_loader.setup_integration(entry) is True
+
+    from shim.entity import build_entity_mqtt_device_config
+
+    _dr, registry = _device_registry(hass)
+    gateway = registry.async_get_device_by_identifier(GATEWAY_IDENTIFIER, entry.entry_id)
+    subdevice = registry.async_get_device_by_identifier(
+        SUBDEVICE_IDENTIFIER, entry.entry_id
+    )
+    assert gateway is not None and subdevice is not None
+    # This entity was added first, so its parent row did not exist yet: the
+    # deprecated tuple is what marks it as a child (HA leaves via_device_id unset
+    # in the same situation), and the discovery block still transports it.
+    assert subdevice.via_device == (DOMAIN, "local_gw1")
+
+    button = integration_loader._reload_buttons[entry.entry_id]
+    assert button.device_entry.id == gateway.id
+    assert "via_device" not in build_entity_mqtt_device_config(button)
+
+    # The sub-device entity's own discovery block keeps the link.
+    sub_entity = next(
+        entity
+        for entity in integration_loader.get_entities()
+        if entity.entity_id == "sensor.sub_sensor"
+    )
+    assert (
+        build_entity_mqtt_device_config(sub_entity)["via_device"]
+        == f"{DOMAIN}-local_gw1"
+    )

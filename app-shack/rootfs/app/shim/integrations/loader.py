@@ -21,6 +21,7 @@ from ..config_entries import (
 )
 from ..entity import (
     EntityRegistry,
+    _async_lookup_registry_device,
     async_get_entity_platform,
     register_entity_device,
 )
@@ -846,9 +847,12 @@ class IntegrationLoader:
     ) -> Dict[str, Any]:
         """Build device info for a reload button entity.
 
-        Tries to find an existing entity from this integration to reuse
-        its device_info, so the reload button appears on the same device
-        as the integration's entities. Falls back to a Shack-managed device.
+        Reuses the device_info of an entity of this integration, so the reload
+        button appears on the same device as the integration's entities. A
+        *root* device is preferred over a child one: integrations model a plug with
+        outlets (meross_lan's per-channel devices) or a hub with sub-devices, and
+        a per-entry control on "<plug> Channel 1" is both surprising and easy to
+        miss - the first entity found used to win that race.
 
         Args:
             entry: The config entry.
@@ -857,12 +861,20 @@ class IntegrationLoader:
             A device_info dict suitable for MQTT discovery.
         """
         # Try to find an entity from this integration to inherit its device
+        inherited: Any = None
         for platform_domain, entities in self._entities.items():
             for entity in entities:
-                if getattr(entity, "_attr_config_entry_id", None) == entry.entry_id:
-                    entity_device = getattr(entity, "device_info", None)
-                    if entity_device:
-                        return entity_device
+                if getattr(entity, "_attr_config_entry_id", None) != entry.entry_id:
+                    continue
+                entity_device = getattr(entity, "device_info", None)
+                if not entity_device:
+                    continue
+                if not self._is_child_device_info(entity_device, entry):
+                    return entity_device
+                inherited = inherited or entity_device
+
+        if inherited is not None:
+            return inherited
 
         # Fallback: create a Shack-managed device for this integration
         return {
@@ -871,6 +883,39 @@ class IntegrationLoader:
             "manufacturer": "Shack",
             "model": "Integration",
         }
+
+    def _is_child_device_info(self, device_info: Any, entry: ConfigEntry) -> bool:
+        """Return whether ``device_info`` belongs to a child (parent-linked) device.
+
+        Either form counts: the deprecated ``via_device`` tuple the
+        ``device_info`` itself carries (works even before the parent row exists,
+        which is why the entity order must not matter) and the resolved
+        ``via_device_id`` on the registry row. Read-only probe - the row is already
+        registered by the time the reload button is created, and an unknown row
+        simply means "not a child".
+        """
+        getter = (
+            (lambda key: device_info.get(key))
+            if isinstance(device_info, dict)
+            else (lambda key: getattr(device_info, key, None))
+        )
+        if isinstance(getter("via_device"), (tuple, list)):
+            return True
+
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            row = _async_lookup_registry_device(
+                dr.async_get(self._hass), getter("identifiers"), entry.entry_id
+            )
+        except Exception:  # pragma: no cover - defensive, see docstring
+            return False
+        if row is None:
+            return False
+        return bool(
+            getattr(row, "via_device_id", None)
+            or isinstance(getattr(row, "via_device", None), (tuple, list))
+        )
 
     def reset_domain(self, domain: str) -> None:
         """Throw away everything the shim holds for ``domain`` in-process.
