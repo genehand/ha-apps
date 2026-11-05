@@ -477,3 +477,148 @@ def selector(
     selector_config = config or {}
     selector_config.update(kwargs)
     return {selector_type: selector_config}
+
+
+class UnitOfMeasurementSelectorContext(TypedDict, total=False):
+    """Context for the unit of measurement selector (HA 2026.11)."""
+
+    filter_device_class: str
+    filter_state_class: str
+
+
+class UnitOfMeasurementSelectorConfig(TypedDict, total=False):
+    """Unit of measurement selector config (HA 2026.11).
+
+    ``device_classes``/``state_classes`` limit the allowed units to the sensor
+    tables. ``context`` names sibling fields the frontend filters on; it is
+    frontend-only and can't be combined with the matching fixed limit.
+    """
+
+    device_classes: Union[str, List[str], None]
+    state_classes: Union[str, List[str], None]
+    context: UnitOfMeasurementSelectorContext
+
+
+def _sensor_units_tables():
+    """Return the real sensor unit tables, or ``None`` when unavailable.
+
+    ``homeassistant.components.sensor`` is synthetic in the shim, but its
+    ``const`` module is model-layer-free. Load the wheel's file directly so the
+    selector validates against HA's own tables rather than a copy that drifts.
+    """
+    try:
+        import importlib.util
+        from pathlib import Path
+
+        import homeassistant.const as ha_const
+
+        path = (
+            Path(ha_const.__file__).parent / "components" / "sensor" / "const.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_shack_sensor_const", path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - a missing wheel file only relaxes validation
+        return None
+
+
+def _units_set(dict_name: str, keys: List[str]):
+    """Return the units allowed for any of ``keys`` (mirrors HA's ``_units_set``).
+
+    ``None`` means one of the keys does not limit the units, so any (custom)
+    unit has to be accepted.
+    """
+    module = _sensor_units_tables()
+    if module is None:
+        return None
+    units_dict = getattr(module, dict_name, None)
+    if units_dict is None:
+        return None
+    non_numeric = getattr(module, "NON_NUMERIC_DEVICE_CLASSES", set())
+
+    units = set()
+    for key in keys:
+        if key in units_dict:
+            units |= units_dict[key]
+        elif key in non_numeric:
+            units.add(None)
+        else:
+            return None
+    return units
+
+
+class UnitOfMeasurementSelector(Selector):
+    """Selector for a unit of measurement (HA 2026.11)."""
+
+    selector_type = "unit_of_measurement"
+    allowed_context_keys = {
+        "filter_device_class": frozenset({"device_class"}),
+        "filter_state_class": frozenset({"state_class"}),
+    }
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """Initialize the selector."""
+        super().__init__(config)
+        self._validate_context()
+
+    def _validate_context(self) -> None:
+        """Reject a context key combined with the matching fixed limit."""
+        context = self.config.get("context") or {}
+        for option, context_key in (
+            ("device_classes", "filter_device_class"),
+            ("state_classes", "filter_state_class"),
+        ):
+            if self.config.get(option) and context_key in context:
+                raise ValueError(
+                    f"Context key {context_key} can not be used with {option}"
+                )
+
+    def _units(self):
+        """Return the raw allowed-unit set, or ``None`` when unconstrained."""
+        device_classes = self._as_list(self.config.get("device_classes"))
+        state_classes = self._as_list(self.config.get("state_classes"))
+
+        valid = None
+        if device_classes:
+            valid = _units_set("DEVICE_CLASS_UNITS", device_classes)
+        if state_classes:
+            state_units = _units_set("STATE_CLASS_UNITS", state_classes)
+            if state_units is not None:
+                valid = state_units if valid is None else valid & state_units
+        return valid
+
+    def allowed_units(self) -> Optional[List[str]]:
+        """Return the allowed units for the UI, or ``None`` for "any"."""
+        valid = self._units()
+        if valid is None:
+            return None
+        return sorted(
+            str(unit.value if isinstance(unit, Enum) else unit)
+            for unit in valid
+            if unit is not None
+        )
+
+    def __call__(self, data: Any) -> Optional[str]:
+        """Validate the selected unit (``None`` clears the unit)."""
+        valid = self._units()
+        if valid is None:
+            if data is not None and not isinstance(data, str):
+                raise ValueError("Value should be a string or None")
+            return data
+        if data not in valid:
+            raise ValueError(
+                f"Value {data} is not a valid unit of measurement for this selector"
+            )
+        return data
+
+    @staticmethod
+    def _as_list(value: Any) -> List[str]:
+        """Normalize a single value or list config entry to a list."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return list(value)

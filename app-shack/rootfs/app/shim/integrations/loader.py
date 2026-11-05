@@ -18,6 +18,7 @@ from ..config_entries import (
     AbortFlow,
     abort_result_from_flow_error,
     apply_step_id_fallback,
+    strip_hidden_fields,
 )
 from ..entity import (
     EntityRegistry,
@@ -33,6 +34,10 @@ _LOGGER = get_logger(__name__)
 
 # HA's cap for the SETUP_RETRY backoff (homeassistant/config_entries.py).
 SETUP_RETRY_MAX_WAIT = 600
+# HA 2026.11: a config entry can ask for a longer delay via
+# ``ConfigEntryNotReady(retry_after=...)``. The backoff stays the floor, this is
+# the ceiling (one day).
+SETUP_RETRY_AFTER_MAX_WAIT = 86400
 
 
 class IntegrationLoader:
@@ -382,6 +387,14 @@ class IntegrationLoader:
 
         tries = getattr(entry, "_retry_count", 0) + 1
         wait_time = min(2 ** (tries - 1) * 5, SETUP_RETRY_MAX_WAIT)
+        # HA 2026.11: ``ConfigEntryNotReady(retry_after=...)`` asks for at least
+        # that long; the backoff stays the floor, so a delay that already passed
+        # does not retry immediately.
+        retry_after = getattr(err, "retry_after", None)
+        if retry_after is not None:
+            wait_time = max(
+                wait_time, min(retry_after, SETUP_RETRY_AFTER_MAX_WAIT)
+            )
         entry._retry_count = tries
         entry.state = "setup_retry"
         _LOGGER.info(
@@ -1439,6 +1452,12 @@ class IntegrationLoader:
                 f"Continuing options flow for {domain}: step_id={step_id}, user_input={user_input}"
             )
 
+            # HA 2026.11: drop fields a ``visible`` condition now hides.
+            if user_input:
+                _, user_input = strip_hidden_fields(
+                    getattr(flow, "_last_form_schema", None), user_input
+                )
+
             # Handle menu selection
             if user_input and "next_step" in user_input:
                 step_id = user_input["next_step"]
@@ -1599,6 +1618,12 @@ class IntegrationLoader:
         if not isinstance(result, dict):
             return result
         result["flow_id"] = flow_id
+        if result.get("type") == "form":
+            # HA 2026.11: remember the form schema so the next submission can
+            # drop fields its ``visible`` condition now hides.
+            flow = self._hass.config_entries._flow_progress.get(flow_id)
+            if flow is not None:
+                flow._last_form_schema = result.get("data_schema")
         if result.get("type") == "abort":
             try:
                 self._hass.config_entries.flow.async_abort(flow_id)
@@ -1723,6 +1748,13 @@ class IntegrationLoader:
 
             # Get the current step_id (defaults to 'user' for initial step)
             step_id = getattr(flow, "cur_step_id", "user")
+
+            # HA 2026.11: a field whose ``visible`` condition no longer matches
+            # is hidden, so its value must not reach the step as a stale value.
+            if user_input:
+                _, user_input = strip_hidden_fields(
+                    getattr(flow, "_last_form_schema", None), user_input
+                )
 
             # Handle menu selection - if next_step is present, call that step method
             if user_input and "next_step" in user_input:

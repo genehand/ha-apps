@@ -43,6 +43,6 @@ COPY rootfs /
 RUN .venv/bin/python -c "from shim.import_patch import setup_import_patching, UPSTREAM_HELPER_MODULES; setup_import_patching(None); import importlib; [importlib.import_module(f'homeassistant.helpers.{n}') for n in UPSTREAM_HELPER_MODULES]; print(len(UPSTREAM_HELPER_MODULES), 'upstream HA helper modules importable')"
 
 LABEL \
-    org.opencontainers.image.title="Home Assistant App: HACS Shack" \
-    org.opencontainers.image.description="Run HACS integrations separately" \
+    org.opencontainers.image.title="Home Assistant App: Shack" \
+    org.opencontainers.image.description="Run Marketplace integrations separately" \
     org.opencontainers.image.source="https://github.com/genehand/ha-apps"

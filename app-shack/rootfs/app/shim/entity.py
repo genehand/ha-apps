@@ -159,6 +159,10 @@ def get_mqtt_object_id(entity_id: str) -> str:
 def get_device_info_attr(device_info: Any, attr: str, default: Any = None) -> Any:
     """Safely get an attribute from device_info whether it's a dict or dataclass.
 
+    An HA 2026.11 ``DeviceInfo`` field that was never set holds ``UNDEFINED``,
+    which means "no value" here, so it is reported as ``default``. ``None`` is a
+    real value and is returned as-is.
+
     Args:
         device_info: Device info as a dict or DeviceInfo dataclass.
         attr: The attribute name to get.
@@ -171,9 +175,26 @@ def get_device_info_attr(device_info: Any, attr: str, default: Any = None) -> An
         return default
 
     if isinstance(device_info, dict):
-        return device_info.get(attr, default)
+        value = device_info.get(attr, default)
     else:
-        return getattr(device_info, attr, default)
+        value = getattr(device_info, attr, default)
+
+    if _is_undefined(value):
+        return default
+    return value
+
+
+def _is_undefined(value: Any) -> bool:
+    """Return whether ``value`` is Home Assistant's UNDEFINED sentinel.
+
+    Resolved lazily: ``helpers.typing`` is an adopted upstream module that the
+    import patch attaches after the shim modules are imported.
+    """
+    try:
+        from homeassistant.helpers.typing import UNDEFINED
+    except Exception:  # noqa: BLE001 - before patching there is no sentinel
+        return False
+    return value is UNDEFINED
 
 
 def _iter_device_identifier_pairs(identifiers: Any):
@@ -424,6 +445,67 @@ def build_entity_mqtt_device_config(entity: Any) -> Dict[str, Any]:
     )
 
 
+def build_entity_mqtt_child_device_config(
+    entity: Any,
+) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Build the inverted ``device``/``child_device`` payload for a child device.
+
+    HA 2026.11 child devices use an inverted MQTT discovery shape: ``device``
+    describes the *parent* physical product and ``child_device`` the logical part
+    the entity lives on. The child is identified by its own identifiers, so the
+    payload is only produced when the entity's row is a child and its parent row
+    exists - otherwise the caller falls back to a plain device block (an
+    orphaned child published as a main device is better than inventing a parent).
+
+    Returns:
+        ``(child_block, parent_block)``, or ``None`` for a non-child entity.
+    """
+    device_info = getattr(entity, "device_info", None)
+    entry = getattr(entity, "device_entry", None)
+
+    parent_device_id = get_device_info_attr(device_info, "parent_device_id")
+    if not parent_device_id and entry is not None:
+        parent_device_id = getattr(entry, "parent_device_id", None)
+    if not parent_device_id or not isinstance(parent_device_id, str):
+        return None
+
+    hass = getattr(entity, "hass", None)
+    try:
+        from homeassistant.helpers import device_registry as dr
+
+        parent = dr.async_get(hass).async_get(
+            parent_device_id, include_child_devices=False
+        )
+    except Exception:  # noqa: BLE001 - no parent row means a plain device block
+        parent = None
+    if parent is None:
+        _LOGGER.debug(
+            "Child device %s: parent %s has no row; publishing it as a main "
+            "device",
+            getattr(entity, "entity_id", None),
+            parent_device_id,
+        )
+        return None
+
+    identifiers = get_device_info_attr(device_info, "identifiers")
+    if not identifiers and entry is not None:
+        identifiers = getattr(entry, "identifiers", None)
+
+    child_block: Dict[str, Any] = {
+        "identifiers": format_device_identifiers(identifiers or set()),
+    }
+    name = get_device_info_attr(device_info, "name")
+    if not name and entry is not None:
+        name = _device_string_attr(entry, "name")
+    if name:
+        child_block["name"] = name
+
+    parent_block = build_mqtt_device_config(
+        parent, hass, getattr(entity, "_attr_config_entry_id", None)
+    )
+    return child_block, parent_block
+
+
 def register_entity_device(
     hass: Any, entity: Any, config_entry_id: Optional[str] = None
 ) -> Any:
@@ -483,15 +565,13 @@ def register_entity_device(
         )
         return None
 
-    # No child-device support in the shim: ``parent_device_id`` only applies to
-    # HA's ``async_get_or_create_child``. An explicit None means "main device".
-    if fields.pop("parent_device_id", None) is not None:
-        _LOGGER.debug(
-            "Ignoring parent_device_id for %s (child devices are not supported)",
-            getattr(entity, "entity_id", None),
-        )
+    parent_device_id = fields.get("parent_device_id")
+    if _is_undefined(parent_device_id):
+        parent_device_id = None
 
-    if not fields.get("identifiers") and not fields.get("connections"):
+    if parent_device_id is None and not fields.get("identifiers") and not fields.get(
+        "connections"
+    ):
         _LOGGER.debug(
             "Not registering a device for %s: device_info has no identifiers "
             "or connections",
@@ -502,9 +582,24 @@ def register_entity_device(
     try:
         from homeassistant.helpers import device_registry as dr
 
-        device = dr.async_get(hass).async_get_or_create(
-            config_entry_id=config_entry_id, **fields
-        )
+        registry = dr.async_get(hass)
+        if parent_device_id is not None:
+            # ChildDeviceInfo (HA 2026.11): a logical part of a parent device.
+            # The child path keeps the parent relationship, the parent's
+            # lifecycle (delete/disable cascade) and area inheritance.
+            device = registry.async_get_or_create_child_from_info(
+                config_entry_id=config_entry_id, device_info=device_info
+            )
+        elif hasattr(registry, "async_get_or_create_from_info"):
+            # HA 2026.11: pass the DeviceInfo as-is, so only set fields are
+            # applied to an existing row.
+            device = registry.async_get_or_create_from_info(
+                config_entry_id=config_entry_id, device_info=device_info
+            )
+        else:
+            device = registry.async_get_or_create(
+                config_entry_id=config_entry_id, **fields
+            )
     except Exception as err:
         # Loud, but not fatal: losing a device row is better than losing every
         # entity of the platform.
@@ -1374,6 +1469,23 @@ class Entity:
                 setattr(self, attr_key, True)
                 self.hass.async_add_job(self._publish_mqtt_discovery)
 
+    def _add_mqtt_device_config(self, config: Dict[str, Any]) -> None:
+        """Add the discovery device block(s) for this entity.
+
+        A plain device contributes one ``device`` block. A 2026.11 child device
+        contributes its parent as ``device`` plus its own ``child_device`` block
+        (HA's inverted payload), so the entity lands on the child device instead
+        of creating a new main device from its identifiers.
+        """
+        child = build_entity_mqtt_child_device_config(self)
+        if child is not None:
+            child_block, parent_block = child
+            if parent_block:
+                config["device"] = parent_block
+                config["child_device"] = child_block
+                return
+        config["device"] = build_entity_mqtt_device_config(self)
+
     def _add_mqtt_attributes_to_config(self, config: Dict[str, Any]) -> None:
         """Add json_attributes_topic to discovery config if entity has attributes.
 
@@ -1607,6 +1719,11 @@ class Entity:
                 attributes["supported_features"] = features
             else:
                 attributes["supported_features"] = features.value if hasattr(features, "value") else int(features)
+        # HA's platforms add state attributes (temperature_unit for climate and
+        # water heaters since 2026.11, ip/mac/hostname for ScannerEntity).
+        state_attributes = getattr(self, "state_attributes", None)
+        if isinstance(state_attributes, dict):
+            attributes.update(state_attributes)
         if self.extra_state_attributes:
             attributes.update(self.extra_state_attributes)
 

@@ -23,7 +23,7 @@ below first.
 | `helpers.storage`, `.dispatcher`, `.start`, `.instance_id` | import `homeassistant.core` for types/callbacks only; imported after `shim.core` is installed |
 | `helpers.issue_registry`, `.floor_registry`, `.label_registry`, `.category_registry`, `.area_registry` | same, plus `helpers.{storage,registry,singleton}` |
 | `helpers.network` | real internal/external URL resolution; `helpers.http`/`hassio` come along |
-| `helpers.debounce`, `.ratelimit`, `.location`, `.sun`, `.trace` | pure leaves; never needed the model layer |
+| `helpers.debounce`, `.ratelimit`, `.location`, `.sun`, `.trace`, `.field_visibility` | pure leaves; never needed the model layer |
 
 `homeassistant.util` is handed to integrations as the **real package object**, so a
 `util` submodule nobody listed still resolves from the wheel. `components` stays
@@ -98,25 +98,49 @@ signatures. Upstream's `device_registry.async_get_or_create` maps a
 while creating the row; the shim's registry carried the hint as an inert string
 until it was made to do the same (see [`device-registry.md`](device-registry.md)).
 
-## Waiting on 2026.11 (do not pin the beta)
+## 2026.11 notes (pinned)
 
-Verified against `2026.11.0b0`. Read this before touching the pin.
+The pin is `2026.11.0`; the beta checklist below is what the bump actually cost.
+Verified against the release (`git diff 2026.10.4 2026.11.0`), not the beta.
 
-- **HACS is absorbed into core as the Marketplace** (`components/marketplace/`,
-  ~980 KB). "The HACS installer stops at Home Assistant 2026.11." The installer
-  (`integrations/manager.py` + GitHub device flow + web routes) then duplicates
-  something the user's HA does better: policy is **stop investing in it**, let it
-  coast, revisit after the pin moves.
-- The Marketplace's `utils/` are the old HACS utils with renamed functions
-  (`version_left_higher_then_right` → `is_newer_version`). They are **not**
-  liftable: `components/marketplace/__init__.py` imports `homeassistant.auth`,
-  `components.frontend`, `components.http`, `config_entries` and `loader`.
-- `httpx==0.28.1` → `httpx2==2.14.0` in core's deps. The dev group pins `httpx`
-  for `starlette.testclient`; expect work on the web test stack at that bump.
-- Every upstream-tier file changed between 2026.10.4 and 2026.11.0b0
-  (`util/dt.py` 69 lines, `util/unit_system.py` 48, `util/color.py` 32,
-  `const.py` 4). Budget a real session for the bump even though it is "just a
-  version number".
+- **HACS is absorbed into core as the Marketplace** (`components/marketplace/`).
+  "The HACS installer stops at Home Assistant 2026.11." app-shack runs *outside*
+  HA and already owns the install/update/device-flow UI, so the policy is: **keep
+  the installer and do not port the Marketplace UI**. Adopt Marketplace *leaf*
+  utilities where the shim duplicates them, by loading the wheel file from
+  `shim/marketplace.py` (upstream stays the source of truth; nothing is copied).
+  `utils/version.py` (`is_newer_version`, `is_same_or_newer_version`) is adopted
+  and used by the integration manager. The package itself is still not
+  importable: `components/marketplace/__init__.py` pulls `homeassistant.auth`,
+  `components.frontend`, `components.http`, `config_entries` and `loader`, so
+  only relative-import-free `utils/*` files qualify.
+- **`httpx==0.28.1` → `httpx2==2.14.0`** in core's deps. `homeassistant/__init__.py`
+  now calls `httpx2.alias_httpx()`, so `import httpx` inside an integration
+  resolves to httpx2. The dev group no longer pins the old `httpx` (it was only
+  there for `starlette.testclient`, which resolves through the alias once the
+  shim's `tests/__init__.py` has imported `homeassistant`).
+- **New core re-exports the adopted helpers need.** `helpers/start.py` imports
+  `async_noop`, and the area/floor/label/category/issue registries decorate with
+  the new `verify_event_loop_thread`; both are re-exported from `shim/core.py`.
+  `helpers/area_registry.py` also subscribes to `entity_registry_updated`, so the
+  entity-registry stub now exposes `EVENT_ENTITY_REGISTRY_UPDATED` and
+  `EventEntityRegistryUpdatedData`.
+- **Integration-facing API changes** mirrored by the shim for this release (each
+  is covered by tests): `DeviceInfo`/`ChildDeviceInfo` as dataclasses with
+  `UNDEFINED` unset fields and `as_dict()`; child devices
+  (`async_get_or_create_child(_from_info)`, `async_get_or_create_from_info`,
+  `DeviceInfoError`, delete/disable cascade, effective-area inheritance, the MQTT
+  `child_device` block); `UnitOfMeasurementSelector`; update entities' `has_update`;
+  climate/water-heater `native_*` temperature properties and `temperature_unit`;
+  `ScannerEntity` device handling and disabled-by-default; and
+  `RestoreStateData.async_get_stored_state` replacing `last_states`.
+- Upstream-tier files all moved between 2026.10.4 and 2026.11.0 (`util/dt.py`,
+  `util/unit_system.py`, `util/color.py`, `const.py`, `exceptions.py`,
+  `helpers/{storage,issue_registry,deprecation,network,area_registry,sun}.py`).
+  The suite (`tests/test_upstream_modules.py` measures the transitive closure in a
+  fresh process) is what catches a keep-list miss.
+- `exceptions.ConfigEntryNotReady` gained `retry_after`; `helpers/typing.py`'s
+  `VolSchemaType` accepts `probatio.Union`. Both come from the wheel.
 
 ## Bumping the pin
 

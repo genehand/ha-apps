@@ -7,7 +7,7 @@ This repository contains Home Assistant apps (formerly 'add-ons').
 | App | Description | Location |
 |-----|-------------|----------|
 | **app-dasher** | WebSocket proxy for dashboard entities | `app-dasher/` |
-| **app-shack** | HACS compatibility layer for running integrations outside HA | `app-shack/` |
+| **app-shack** | Marketplace compatibility layer for running integrations outside HA | `app-shack/` |
 | **app-soloist** | Spotify Soloist bridge with track info + playback controls | `app-soloist/` |
 
 ## Conventions (all apps)
@@ -31,5 +31,5 @@ This repository contains Home Assistant apps (formerly 'add-ons').
 Each app has its own `AGENTS.md` file with specific build instructions, testing commands, and coding guidelines:
 
 - **Dasher**: See `app-dasher/AGENTS.md`
-- **HACS Shack**: See `app-shack/AGENTS.md`
+- **Shack**: See `app-shack/AGENTS.md`
 - **Soloist**: See `app-soloist/AGENTS.md`

@@ -14,7 +14,6 @@ from ..entity import (
     EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
-    build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
 )
@@ -53,6 +52,7 @@ class UpdateEntity(Entity):
     _attr_auto_update: bool = False
     _attr_entity_picture: Optional[str] = None
     _attr_supported_features: int = 0
+    _attr_skipped_version: Optional[str] = None
 
     @property
     def installed_version(self) -> Optional[str]:
@@ -104,14 +104,48 @@ class UpdateEntity(Entity):
         """Flag supported features."""
         return self._attr_supported_features
 
+    @property
+    def skipped_version(self) -> Optional[str]:
+        """Return the version the user skipped, if any."""
+        return self._attr_skipped_version
+
+    def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
+        """Return True if ``latest_version`` is newer than ``installed_version``.
+
+        Integrations override this to customize the comparison; the default is
+        HA's ``AwesomeVersion`` comparison.
+        """
+        try:
+            from awesomeversion import AwesomeVersion
+
+            return AwesomeVersion(latest_version) > installed_version
+        except Exception:  # noqa: BLE001 - an incomparable version still differs
+            return latest_version != installed_version
+
+    @property
+    def has_update(self) -> bool:
+        """Return True if there is an update available (HA 2026.11).
+
+        Integrations whose device or service reports availability directly can
+        override this. The base implementation compares the versions, so
+        existing ``version_is_newer`` overrides keep working.
+        """
+        installed_version = self.installed_version
+        latest_version = self.latest_version
+        if installed_version is None or latest_version is None:
+            return False
+        return self.version_is_newer(latest_version, installed_version)
+
     @EntityAttribute
     def state(self) -> Optional[str]:
         """Return the state of the entity."""
         if self.latest_version is None or self.installed_version is None:
             return None
+        if self.latest_version == self.skipped_version:
+            return "off"
         if self.latest_version == self.installed_version:
             return "off"  # No update available
-        return "on"  # Update available
+        return "on" if self.has_update else "off"
 
     def install(self, version: Optional[str] = None, backup: bool = False) -> None:
         """Install an update."""
@@ -229,7 +263,7 @@ class UpdateEntity(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_entity_mqtt_device_config(self)
+            self._add_mqtt_device_config(config)
 
         if self.entity_category:
             config["entity_category"] = self.entity_category

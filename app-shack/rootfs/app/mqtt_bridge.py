@@ -88,7 +88,7 @@ class MqttBridge:
         random_suffix = "".join(
             random.choices(string.ascii_lowercase + string.digits, k=6)
         )
-        client_id = f"hacs-shack-{random_suffix}"
+        client_id = f"shack-{random_suffix}"
 
         # Configure client with built-in automatic reconnection
         self._client = Client(

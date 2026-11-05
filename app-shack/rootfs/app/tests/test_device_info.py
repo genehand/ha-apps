@@ -1,10 +1,11 @@
-"""Tests for the DeviceInfo dict-style compatibility layer.
+"""Tests for the DeviceInfo mapping compatibility layer.
 
-In real HA, ``DeviceInfo`` is a ``TypedDict`` - a plain dict at runtime - so
-integrations read and write it with item access as well as constructor kwargs
-(e.g. localtuya's ``device_info[ATTR_VIA_DEVICE] = (DOMAIN, gateway_id)``).
-The shim backs it with a dataclass for attribute access, so these tests pin
-down the dict protocol added for integration compatibility.
+Since HA 2026.11 ``DeviceInfo`` is a dataclass with ``UNDEFINED``-valued unset
+fields, and ``as_dict()`` returns only the set fields. The pre-2026.11
+``TypedDict`` mapping surface (item access, ``get``, ``update``, ``**info``,
+``"name" in info``) still works as a compatibility layer - integrations such as
+localtuya's ``device_info[ATTR_VIA_DEVICE] = ...`` still use it. These tests pin
+down both surfaces.
 """
 
 import sys
@@ -18,6 +19,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shim.stubs.helpers import DeviceInfo
+
+from homeassistant.helpers.typing import UNDEFINED
 
 
 class TestDeviceInfoDictProtocol:
@@ -52,14 +55,29 @@ class TestDeviceInfoDictProtocol:
         assert 'future_ha_key' in info
         assert info.keys()[-1] == 'future_ha_key'
 
-    def test_contains_known_fields_and_defaults(self):
-        """All field names are present, with dataclass defaults applied."""
+    def test_unset_fields_are_undefined_not_defaults(self):
+        """Unset fields are UNDEFINED and absent from the mapping (HA 2026.11)."""
+        from homeassistant.helpers.typing import UNDEFINED
+
         info = DeviceInfo()
-        assert 'identifiers' in info
-        assert 'via_device' in info
-        assert info.identifiers == set()
-        assert info.via_device is None
+        assert 'identifiers' not in info
+        assert 'via_device' not in info
+        assert info.identifiers is UNDEFINED
+        assert info.via_device is UNDEFINED
+        assert info.as_dict() == {}
         assert 'no_such_key' not in info
+
+    def test_reading_an_unset_field_raises_key_error(self):
+        """Item access to an unset field raises, like upstream's compat layer."""
+        info = DeviceInfo(name='Kitchen')
+        assert info['name'] == 'Kitchen'
+        with pytest.raises(KeyError):
+            info['manufacturer']
+
+    def test_as_dict_returns_only_set_fields(self):
+        """as_dict() drops UNDEFINED and keeps explicit None (a real value)."""
+        info = DeviceInfo(name='Kitchen', via_device_id=None)
+        assert info.as_dict() == {'name': 'Kitchen', 'via_device_id': None}
 
     def test_update_from_mapping_pairs_and_kwargs(self):
         """update() accepts mappings, iterables of pairs, and kwargs."""
@@ -72,15 +90,15 @@ class TestDeviceInfoDictProtocol:
         assert info.manufacturer == 'Tuya'
 
     def test_items_values_keys_include_fields_and_extra(self):
-        """keys()/values()/items() cover field and extra keys."""
+        """keys()/values()/items() cover set fields and extra keys."""
         info = DeviceInfo(name='Kitchen')
         info['future_ha_key'] = 1
-        assert info.keys()[:1] == ['identifiers']
+        assert info.keys() == ['name', 'future_ha_key']
         assert info['name'] == 'Kitchen'
         items = dict(info.items())
         assert items['name'] == 'Kitchen'
         assert items['future_ha_key'] == 1
-        assert 'via_device' in info.keys()
+        assert 'via_device' not in info.keys()
 
     def test_iteration_yields_keys(self):
         """Iterating the object yields its keys like a dict."""
@@ -88,12 +106,15 @@ class TestDeviceInfoDictProtocol:
         assert 'name' in list(info)
 
     def test_delitem_resets_field_to_default(self):
-        """Deleting a field key resets it to its dataclass default."""
+        """Deleting a field key unsets it again (HA 2026.11: assign UNDEFINED)."""
+        from homeassistant.helpers.typing import UNDEFINED
+
         info = DeviceInfo(name='Kitchen')
         info['via_device'] = ('tuya', 'local_gw')
         del info['via_device']
-        assert info.via_device is None
-        assert 'via_device' in info  # fields remain present
+        assert info.via_device is UNDEFINED
+        assert 'via_device' not in info
+        assert 'via_device' not in info.as_dict()
 
     def test_delitem_removes_extra_key(self):
         """Deleting a non-field key removes it from the extras storage."""
@@ -238,8 +259,8 @@ class TestDeviceInfoLocaltuyaPattern:
 
                     info = entity.device_info
                     assert isinstance(info, DeviceInfo)
-                    assert info['via_device'] is None
-                    assert info.via_device is None
+                    assert 'via_device' not in info
+                    assert info.via_device_id is UNDEFINED
                     assert info.identifiers == {('localtuya', 'local_gw1')}
                 finally:
                     patcher.unpatch()

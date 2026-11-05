@@ -4,11 +4,14 @@ Provides classes for config flow handling.
 """
 
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, TypedDict, Union
 from dataclasses import dataclass
 from contextvars import ContextVar
 
+import probatio
+
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.field_visibility import VISIBLE_SCHEMA, get_hidden_fields
 from homeassistant.helpers.typing import UNDEFINED, UndefinedType
 from .logging import get_logger
 from .models import ConfigEntry, callback
@@ -16,6 +19,115 @@ from .models import ConfigEntry, callback
 HOMEASSISTANT_DOMAIN = "homeassistant"
 
 _LOGGER = get_logger(__name__)
+
+
+class FlowRequired(probatio.Required):
+    """Required marker that can be shown conditionally (HA 2026.11).
+
+    Exposed as ``homeassistant.data_entry_flow.Required``. Unless the ``visible``
+    condition matches the other fields, the field is not rendered, is treated as
+    optional, and its value is omitted from the submitted data. A list of
+    conditions is combined with AND.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        visible: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a required marker."""
+        super().__init__(*args, **kwargs)
+        self.visible = None if visible is None else VISIBLE_SCHEMA(visible)
+
+
+class FlowOptional(probatio.Optional):
+    """Optional marker that can be shown conditionally (HA 2026.11)."""
+
+    def __init__(
+        self,
+        *args: Any,
+        visible: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize an optional marker."""
+        super().__init__(*args, **kwargs)
+        self.visible = None if visible is None else VISIBLE_SCHEMA(visible)
+
+
+class SectionConfig(TypedDict, total=False):
+    """Section config."""
+
+    collapsed: bool
+
+
+class section:
+    """Data entry flow section.
+
+    Exposed as ``homeassistant.data_entry_flow.section`` so integrations that
+    group form fields can import it. The shim's form renderer flattens it.
+    """
+
+    CONFIG_SCHEMA = probatio.Schema(
+        {
+            probatio.Optional("collapsed", default=False): bool,
+        },
+    )
+
+    def __init__(
+        self, schema: probatio.Schema, options: Optional[SectionConfig] = None
+    ) -> None:
+        """Initialize."""
+        self.schema = schema
+        self.options: SectionConfig = self.CONFIG_SCHEMA(options or {})
+
+    def __call__(self, value: Any) -> Any:
+        """Validate input."""
+        return self.schema(value)
+
+
+def _schema_has_visible(data_schema: Any) -> bool:
+    """Return True if the schema (or a nested section) has a visible marker."""
+    if not isinstance(getattr(data_schema, "schema", None), dict):
+        return False
+    for key, val in data_schema.schema.items():
+        if getattr(key, "visible", None) is not None:
+            return True
+        if isinstance(val, section) and _schema_has_visible(val.schema):
+            return True
+    return False
+
+
+def strip_hidden_fields(data_schema: Any, user_input: dict) -> tuple[Any, dict]:
+    """Remove fields hidden by a ``visible`` condition (HA 2026.11).
+
+    The shim does not validate form input against the schema, so this is the part
+    that matters: a hidden field is dropped from the submitted data instead of
+    reaching the step as a stale value. Returns the input unchanged when the
+    schema has no visibility conditions.
+    """
+    if data_schema is None or not _schema_has_visible(data_schema):
+        return data_schema, user_input
+
+    eval_data = dict(user_input)
+    conditions: dict[str, Any] = {}
+    for key in data_schema.schema:
+        name = key.schema if isinstance(key, probatio.Marker) else key
+        if (
+            isinstance(key, (probatio.Optional, probatio.Required))
+            and name not in eval_data
+            and not isinstance(key.default, probatio.Undefined)
+        ):
+            eval_data[name] = key.default()
+        if (visible_condition := getattr(key, "visible", None)) is not None:
+            conditions[name] = visible_condition
+
+    hidden = get_hidden_fields(conditions, eval_data)
+    if not hidden:
+        return data_schema, user_input
+    return data_schema, {
+        name: value for name, value in user_input.items() if name not in hidden
+    }
 
 # Context variable to track the current config entry being set up
 current_entry: ContextVar[Optional[ConfigEntry]] = ContextVar(

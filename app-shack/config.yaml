@@ -1,7 +1,7 @@
 name: Shack
-version: 0.16.7
+version: 0.17.0
 slug: shack
-description: Run HACS integrations outside HA core
+description: Run Marketplace integrations outside HA core
 url: https://github.com/genehand/ha-apps/blob/main/app-shack/README.md
 arch:
   - aarch64

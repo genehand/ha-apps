@@ -16,9 +16,9 @@ import inspect
 import sys
 import types
 from collections.abc import Mapping
-from dataclasses import MISSING, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Any, ClassVar, Never, Optional
+from typing import Any, ClassVar, Literal, NotRequired, Optional, TypedDict
 
 import aiohttp
 import voluptuous as vol
@@ -28,37 +28,97 @@ from ..logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
+# Default for "argument not passed" where ``None`` is a meaningful value
+# (``disabled_by=None`` enables a device, ``name=None`` clears a name).
+_NOT_SET = object()
+
 # Global device registry for lookups without hass
 _global_device_registry = None
 
 
+class _EventEntityRegistryUpdatedData_CreateRemove(TypedDict):
+    """Entity registry update event payload for create/remove (HA shape)."""
+
+    action: Literal["create", "remove"]
+    entity_id: str
+
+
+class _EventEntityRegistryUpdatedData_Update(TypedDict):
+    """Entity registry update event payload for update (HA shape)."""
+
+    action: Literal["update"]
+    entity_id: str
+    changes: dict[str, Any]
+    old_entity_id: NotRequired[str]
+
+
+_EventEntityRegistryUpdatedData = (
+    _EventEntityRegistryUpdatedData_CreateRemove
+    | _EventEntityRegistryUpdatedData_Update
+)
+
+
+def _undefined():
+    """Return Home Assistant's ``UNDEFINED`` sentinel.
+
+    It has to be the *upstream* object: integrations compare
+    ``device_info.name is UNDEFINED`` against the sentinel they imported from
+    ``homeassistant.helpers.typing``. Resolved lazily because this module is
+    imported while the import patch is being built, before the adopted upstream
+    helper is attached to ``sys.modules``.
+    """
+    from homeassistant.helpers.typing import UNDEFINED  # noqa: PLC0415
+
+    return UNDEFINED
+
+
+def _is_undefined(value: Any) -> bool:
+    """Return whether ``value`` is Home Assistant's ``UNDEFINED`` sentinel."""
+    from homeassistant.helpers.typing import UNDEFINED  # noqa: PLC0415
+
+    return value is UNDEFINED
+
+
 @dataclass
 class DeviceInfo:
-    """Device info for entities.
+    """Device info for entities (HA 2026.11: a dataclass, not a TypedDict).
 
-    Mirrors HA's ``DeviceInfo`` (a ``TypedDict``, i.e. a plain dict at
-    runtime), so integrations may read and write it like a dict
-    (``device_info[ATTR_VIA_DEVICE] = (DOMAIN, id)``) as well as with the
-    constructor kwargs / attribute access used across the shim.
+    Fields left unset are ``UNDEFINED``, not ``None`` - ``None`` is a value like
+    any other (``via_device_id=None`` removes the link). ``as_dict()`` returns
+    only the fields that were set; the JSON helpers serialize the whole
+    dataclass, unset fields included, which is why it exists upstream.
 
-    Keys backed by a dataclass field are always present with their default
-    values; item assignment maps onto the field. Keys that are not modeled
-    fields are stored in ``_extra`` so item access never fails for them.
+    Attribute access is the primary surface. The pre-2026.11 dict protocol
+    (``info["name"]``, ``.get``, ``.update``, ``**info``, ``"name" in info``)
+    still works: it is exactly the compatibility layer upstream keeps until it is
+    deprecated, and integrations written against a TypedDict need it. Keys that
+    are not modelled fields are stored in ``_extra`` instead of raising, the
+    documented deviation from upstream's ``TypeError``.
     """
 
-    identifiers: set = field(default_factory=set)
-    connections: set = field(default_factory=set)
-    manufacturer: Optional[str] = None
-    model: Optional[str] = None
-    name: Optional[str] = None
-    sw_version: Optional[str] = None
-    hw_version: Optional[str] = None
-    via_device: Optional[tuple] = None
-    via_device_id: Optional[str] = None
-    entry_type: Optional[str] = None
-    configuration_url: Optional[str] = None
-    suggested_area: Optional[str] = None
-    serial_number: Optional[str] = None
+    configuration_url: Any = field(default_factory=_undefined)
+    connections: Any = field(default_factory=_undefined)
+    entry_type: Any = field(default_factory=_undefined)
+    identifiers: Any = field(default_factory=_undefined)
+    manufacturer: Any = field(default_factory=_undefined)
+    model: Any = field(default_factory=_undefined)
+    model_id: Any = field(default_factory=_undefined)
+    name: Any = field(default_factory=_undefined)
+    serial_number: Any = field(default_factory=_undefined)
+    suggested_area: Any = field(default_factory=_undefined)
+    sw_version: Any = field(default_factory=_undefined)
+    hw_version: Any = field(default_factory=_undefined)
+    translation_key: Any = field(default_factory=_undefined)
+    translation_placeholders: Any = field(default_factory=_undefined)
+    via_device_id: Any = field(default_factory=_undefined)
+    # Deprecated fields: accepted through HA 2027.8/2027.9, resolved by the
+    # registry (`via_device` -> `via_device_id`, `default_*` -> gaps only).
+    created_at: Any = field(default_factory=_undefined)
+    default_manufacturer: Any = field(default_factory=_undefined)
+    default_model: Any = field(default_factory=_undefined)
+    default_name: Any = field(default_factory=_undefined)
+    modified_at: Any = field(default_factory=_undefined)
+    via_device: Any = field(default_factory=_undefined)
 
     # Dict-protocol storage for keys that are not dataclass fields.
     _extra: dict = field(default_factory=dict, repr=False, compare=False)
@@ -75,46 +135,49 @@ class DeviceInfo:
         return cls._field_names_cache
 
     def __getitem__(self, key: str) -> Any:
-        """Return the value for ``key`` (a field or a stored extra key)."""
+        """Return the value for ``key``; a field that is unset raises KeyError."""
         if key in self._field_names():
-            return getattr(self, key)
+            value = getattr(self, key)
+            if not _is_undefined(value):
+                return value
+            raise KeyError(key)
         return self._extra[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
-        """Set ``key`` to ``value`` like real HA's dict-based DeviceInfo."""
+        """Set ``key`` to ``value`` like the deprecated dict-based DeviceInfo."""
         if key in self._field_names():
             setattr(self, key, value)
         else:
             self._extra[key] = value
 
     def __delitem__(self, key: str) -> None:
-        """Delete ``key``, resetting a field to its default if it is one."""
+        """Unset ``key`` (a field back to UNDEFINED, an extra key removed)."""
         if key in self._field_names():
-            item = next(f for f in fields(self) if f.name == key)
-            if item.default_factory is not MISSING:
-                setattr(self, key, item.default_factory())
-            else:
-                setattr(self, key, item.default)
+            setattr(self, key, _undefined())
         else:
             del self._extra[key]
 
     def __contains__(self, key: object) -> bool:
-        """Return whether ``key`` is a field or a stored extra key."""
-        return key in self._field_names() or key in self._extra
+        """Return whether ``key`` is a field that is set, or a stored extra key."""
+        if key in self._field_names():
+            return not _is_undefined(getattr(self, key))
+        return key in self._extra
 
     def __iter__(self):
         """Iterate over the keys like a dict."""
         return iter(self.keys())
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Return the value for ``key`` or ``default`` when absent."""
+        """Return the value for ``key`` or ``default`` when unset/absent."""
         if key in self:
             return self[key]
         return default
 
     def keys(self) -> list:
-        """Return field and extra keys in declaration/insertion order."""
-        return list(self._field_names()) + list(self._extra)
+        """Return the set field names and extra keys, in declaration order."""
+        return [name for name in self._field_names() if name in self] + list(
+            self._extra
+        )
 
     def values(self) -> list:
         """Return the values for :meth:`keys`."""
@@ -123,6 +186,10 @@ class DeviceInfo:
     def items(self) -> list:
         """Return ``(key, value)`` pairs for :meth:`keys`."""
         return [(key, self[key]) for key in self.keys()]
+
+    def as_dict(self) -> dict:
+        """Return only the fields that were set (HA 2026.11 serialization)."""
+        return {key: self[key] for key in self.keys()}
 
     def update(self, other=(), **kwargs: Any) -> None:
         """Update from a mapping/iterable of pairs plus keyword arguments."""
@@ -134,6 +201,68 @@ class DeviceInfo:
                 self[key] = value
         for key, value in kwargs.items():
             self[key] = value
+
+
+@dataclass
+class ChildDeviceInfo:
+    """Device info for a child device (HA 2026.11 child devices).
+
+    A child device is a logical part of one physical product (an outlet of a
+    power strip, a gang of a switch). It carries only what makes sense for a
+    part: identifiers, a name, its parent's device id, and name translation.
+    ``identifiers`` and ``parent_device_id`` are required.
+    """
+
+    identifiers: set
+    parent_device_id: str
+    name: Any = field(default_factory=_undefined)
+    suggested_area: Any = field(default_factory=_undefined)
+    translation_key: Any = field(default_factory=_undefined)
+    translation_placeholders: Any = field(default_factory=_undefined)
+
+    _extra: dict = field(default_factory=dict, repr=False, compare=False)
+
+    _field_names_cache: ClassVar[Optional[tuple]] = None
+
+    @classmethod
+    def _field_names(cls) -> tuple:
+        """Return the keys backed by dataclass fields (declaration order)."""
+        if cls._field_names_cache is None:
+            cls._field_names_cache = tuple(
+                f.name for f in fields(cls) if not f.name.startswith('_')
+            )
+        return cls._field_names_cache
+
+    __getitem__ = DeviceInfo.__getitem__
+    __setitem__ = DeviceInfo.__setitem__
+    __delitem__ = DeviceInfo.__delitem__
+    __contains__ = DeviceInfo.__contains__
+    __iter__ = DeviceInfo.__iter__
+    get = DeviceInfo.get
+    keys = DeviceInfo.keys
+    values = DeviceInfo.values
+    items = DeviceInfo.items
+    as_dict = DeviceInfo.as_dict
+    update = DeviceInfo.update
+
+
+class DeviceInfoError(Exception):
+    """Invalid device info (HA 2026.11).
+
+    Upstream subclasses ``HomeAssistantError``; the shim keeps the same shape and
+    attributes but a plain base, because this module is built before the upstream
+    ``exceptions`` module is registered and the shim never raises it (it stays
+    lenient where HA raises - see ``docs/device-registry.md``).
+    """
+
+    def __init__(self, domain, device_info, message):
+        """Initialize the error."""
+        super().__init__(
+            f"Invalid device info {device_info} for '{domain}' config entry: "
+            f"{message}"
+        )
+        self.device_info = device_info
+        self.domain = domain
 
 
 @dataclass
@@ -161,6 +290,8 @@ class DeviceEntry:
     entry_type: Optional[str] = None
     via_device: Optional[tuple] = None
     via_device_id: Optional[str] = None
+    # Set on a child device (HA 2026.11): the ``DeviceEntry.id`` of its parent.
+    parent_device_id: Optional[str] = None
     configuration_url: Optional[str] = None
     suggested_area: Optional[str] = None
     # The assigned area (upstream ``DeviceEntry.area_id``), as set through
@@ -183,6 +314,17 @@ class DeviceEntry:
     def disabled(self) -> bool:
         """Return whether the device is disabled (HA ``BaseDeviceEntry``)."""
         return self.disabled_by is not None
+
+
+@dataclass
+class ChildDeviceEntry(DeviceEntry):
+    """A child device row: a logical part of a parent device (HA 2026.11).
+
+    Distinct type so ``isinstance(entry, ChildDeviceEntry)`` works the way it
+    does upstream. It carries none of the connectivity or hardware identity of
+    its parent (connections, manufacturer, model, firmware, serial), and follows
+    the parent's lifecycle: removing or disabling the parent cascades down.
+    """
 
 
 def _normalize_connections(connections) -> set:
@@ -235,6 +377,10 @@ class DeviceRegistry:
       dropping it.
     * A new device is not named after its config entry title, so MQTT discovery
       payloads do not gain a ``name`` they never had before.
+    * ``config_entry_id``/``parent_device_id`` are not validated against real
+      config entries or registration order (HA raises ``DeviceInfoError`` for an
+      unknown parent); a child with a missing parent is kept as a row and the
+      link simply does not resolve.
     """
 
     def __init__(self, hass):
@@ -248,9 +394,33 @@ class DeviceRegistry:
     # Lookups
     # ------------------------------------------------------------------
 
-    def async_get(self, device_id):
-        """Get a device by id."""
-        return self._devices.get(device_id)
+    def async_get(self, device_id, include_child_devices=True):
+        """Get a device or child device by id.
+
+        ``include_child_devices`` mirrors upstream's keyword; the shim keeps one
+        row collection, so it only gates child ids.
+        """
+        device = self._devices.get(device_id)
+        if not include_child_devices and isinstance(device, ChildDeviceEntry):
+            return None
+        return device
+
+    def async_entries_for_parent_device(self, parent_device_id):
+        """Return the child devices of a parent device (HA 2026.11)."""
+        return [
+            device
+            for device in self._devices.values()
+            if device.parent_device_id == parent_device_id
+        ]
+
+    def async_child_entries_for_config_entry(self, config_entry_id):
+        """Return the child devices owned by a config entry (HA 2026.11)."""
+        return [
+            device
+            for device in self._devices.values()
+            if isinstance(device, ChildDeviceEntry)
+            and config_entry_id in device.config_entries
+        ]
 
     @property
     def devices(self):
@@ -263,16 +433,28 @@ class DeviceRegistry:
         """
         return self._devices.values()
 
-    def _get_entry(self, identifiers=None, connections=None, *, config_entry_id=None):
+    def _get_entry(
+        self,
+        identifiers=None,
+        connections=None,
+        *,
+        config_entry_id=None,
+        include_child_devices=True,
+    ):
         """Return the first device matching an identifier or connection.
 
         Mirrors HA's ``DeviceRegistryItems.get_entry``: a match on *any*
         identifier (not the whole set) identifies the device, scoped to one
-        config entry when ``config_entry_id`` is given.
+        config entry when ``config_entry_id`` is given. Main-device registration
+        decodes ``include_child_devices=False`` (HA keeps the collections apart).
         """
         want_identifiers = _normalize_identifiers(identifiers)
         want_connections = _normalize_connections(connections)
         for device in self._devices.values():
+            if not include_child_devices and isinstance(
+                device, ChildDeviceEntry
+            ):
+                continue
             if (
                 config_entry_id is not None
                 and config_entry_id not in device.config_entries
@@ -298,11 +480,16 @@ class DeviceRegistry:
         return self._get_entry({identifier}, config_entry_id=config_entry_id)
 
     def async_entries_for_config_entry(self, config_entry_id):
-        """Return the devices owned by a config entry."""
+        """Return the main devices owned by a config entry.
+
+        Children are excluded, like upstream: ``async_child_entries_for_config_entry``
+        returns those.
+        """
         return [
             device
             for device in self._devices.values()
             if config_entry_id in device.config_entries
+            and not isinstance(device, ChildDeviceEntry)
         ]
 
     def async_get_or_create_for_config_entry(self, config_entry_id: str):
@@ -368,8 +555,26 @@ class DeviceRegistry:
         connections = _normalize_connections(connections)
 
         device = self._get_entry(
-            identifiers, connections, config_entry_id=config_entry_id
+            identifiers,
+            connections,
+            config_entry_id=config_entry_id,
+            include_child_devices=False,
         )
+        if device is None:
+            # A live child already owns these identifiers. Upstream raises; the
+            # shim returns the child so a platform setup is not aborted by an
+            # integration that registers a main device before/while migrating.
+            existing_child = self._get_entry(
+                identifiers, connections, config_entry_id=config_entry_id
+            )
+            if isinstance(existing_child, ChildDeviceEntry):
+                _LOGGER.warning(
+                    "device_registry.async_get_or_create() called for %s, which is "
+                    "a child device (parent %s); returning the child",
+                    sorted(identifiers or connections)[:1],
+                    existing_child.parent_device_id,
+                )
+                return existing_child
         created = device is None
         if created:
             device = DeviceEntry(
@@ -437,6 +642,194 @@ class DeviceRegistry:
         if config_entry_id:
             self._live_device_ids.setdefault(config_entry_id, set()).add(device.id)
         return device
+
+    # ------------------------------------------------------------------
+    # Device info / child devices (HA 2026.11)
+    # ------------------------------------------------------------------
+
+    def async_get_or_create_from_info(
+        self, *, config_entry_id, device_info, config_subentry_id=None
+    ):
+        """Get or create a device from a ``DeviceInfo`` (HA 2026.11).
+
+        The replacement for ``async_get_or_create(config_entry_id=..., **device_info)``:
+        only the fields the ``DeviceInfo`` set are passed, so unset fields leave
+        the existing row untouched.
+        """
+        fields = self._device_info_fields(device_info)
+        return self.async_get_or_create(
+            config_entry_id=config_entry_id,
+            config_subentry_id=config_subentry_id,
+            **fields,
+        )
+
+    def async_get_or_create_child(
+        self,
+        *,
+        config_entry_id,
+        parent_device_id,
+        identifiers,
+        config_subentry_id=None,
+        disabled_by=_NOT_SET,
+        name=_NOT_SET,
+        suggested_area=_NOT_SET,
+        translation_key=None,
+        translation_placeholders=None,
+    ):
+        """Get or create a child device (HA 2026.11).
+
+        If ``identifiers`` match an existing device of the same config entry,
+        that device is converted to a child **in place**, keeping its id (the
+        migration path from ``via_device``-linked devices).
+        """
+        return self._async_get_or_create_child_from_info(
+            config_entry_id=config_entry_id,
+            config_subentry_id=config_subentry_id,
+            disabled_by=disabled_by,
+            device_info=ChildDeviceInfo(
+                identifiers=identifiers,
+                parent_device_id=parent_device_id,
+                name=_undefined() if name is _NOT_SET else name,
+                suggested_area=(
+                    _undefined() if suggested_area is _NOT_SET else suggested_area
+                ),
+                translation_key=translation_key,
+                translation_placeholders=translation_placeholders,
+            ),
+        )
+
+    def async_get_or_create_child_from_info(
+        self, *, config_entry_id, device_info, config_subentry_id=None
+    ):
+        """Get or create a child device from a ``ChildDeviceInfo``."""
+        return self._async_get_or_create_child_from_info(
+            config_entry_id=config_entry_id,
+            config_subentry_id=config_subentry_id,
+            device_info=device_info,
+        )
+
+    def _async_get_or_create_child_from_info(
+        self, *, config_entry_id, config_subentry_id, device_info, disabled_by=_NOT_SET
+    ):
+        """Shared implementation for the child-device entry points."""
+        fields = self._device_info_fields(device_info)
+        identifiers = _normalize_identifiers(fields.get("identifiers"))
+        parent_device_id = fields.get("parent_device_id")
+        if _is_undefined(parent_device_id) or not parent_device_id:
+            raise ValueError("a child device requires parent_device_id")
+        if not identifiers:
+            raise ValueError("a child device requires at least one identifier")
+
+        parent = self._devices.get(parent_device_id)
+        if parent is None:
+            _LOGGER.warning(
+                "Child device %s: parent %s is not registered (HA raises here); "
+                "keeping the link unresolved",
+                sorted(identifiers)[:1],
+                parent_device_id,
+            )
+        elif isinstance(parent, ChildDeviceEntry):
+            raise ValueError(
+                f"parent_device_id {parent_device_id} is a child device; a child "
+                "device can't be the parent of another child device"
+            )
+        elif config_entry_id not in parent.config_entries:
+            raise ValueError(
+                f"child device must belong to the same config entry as its parent "
+                f"{parent.id}"
+            )
+
+        existing = self._get_entry(identifiers, config_entry_id=config_entry_id)
+
+        if isinstance(existing, ChildDeviceEntry):
+            if existing.parent_device_id != parent_device_id:
+                raise ValueError(
+                    "the child device is already registered with a different "
+                    f"parent device {existing.parent_device_id}; reparenting is "
+                    "not supported, remove the child device first"
+                )
+            self._apply_child_fields(
+                existing, fields, config_entry_id, config_subentry_id
+            )
+            return existing
+
+        if existing is not None:
+            # The integration split an existing main device into parts. Convert
+            # in place so device ids (and device-targeted automations) survive.
+            child = ChildDeviceEntry(
+                id=existing.id,
+                config_entries=set(existing.config_entries),
+                connections=set(),
+                identifiers=set(existing.identifiers) | identifiers,
+                parent_device_id=parent_device_id,
+                area_id=existing.area_id,
+                config_subentry_id=existing.config_subentry_id,
+                disabled_by=existing.disabled_by
+                or ("device" if parent is not None and parent.disabled else None),
+                name=existing.name,
+                name_by_user=existing.name_by_user,
+            )
+            self._devices[child.id] = child
+            _LOGGER.debug(
+                "Converted device %s to a child of %s (id preserved)",
+                child.id,
+                parent_device_id,
+            )
+            self._apply_child_fields(
+                child, fields, config_entry_id, config_subentry_id
+            )
+            return child
+
+        child = ChildDeviceEntry(
+            id=self._derive_device_id(
+                identifiers,
+                None,
+                config_entry_id,
+                None if _is_undefined(fields.get("name")) else fields.get("name"),
+            ),
+            config_entries={config_entry_id} if config_entry_id else set(),
+            connections=set(),
+            identifiers=identifiers,
+            parent_device_id=parent_device_id,
+            config_subentry_id=config_subentry_id,
+            disabled_by=None if disabled_by is _NOT_SET else disabled_by,
+        )
+        self._devices[child.id] = child
+        self._apply_child_fields(child, fields, config_entry_id, config_subentry_id)
+
+        suggested_area = fields.get("suggested_area")
+        if not _is_undefined(suggested_area) and suggested_area:
+            child.area_id = self._area_id_for_name(suggested_area)
+
+        if config_entry_id:
+            self._live_device_ids.setdefault(config_entry_id, set()).add(child.id)
+        return child
+
+    @staticmethod
+    def _device_info_fields(device_info) -> dict:
+        """Return the fields a ``DeviceInfo``/``ChildDeviceInfo`` set."""
+        if hasattr(device_info, "as_dict"):
+            return dict(device_info.as_dict())
+        return dict(device_info)
+
+    def _apply_child_fields(
+        self, child, fields, config_entry_id, config_subentry_id
+    ) -> None:
+        """Apply the mutable child-device fields (only those that were set)."""
+        if isinstance(fields.get("identifiers"), (set, list, tuple)):
+            child.identifiers |= _normalize_identifiers(fields["identifiers"])
+        for attr in ("name", "translation_key", "translation_placeholders"):
+            value = fields.get(attr, _NOT_SET)
+            if value is _NOT_SET or _is_undefined(value):
+                continue
+            setattr(child, attr, value)
+        suggested_area = fields.get("suggested_area", _NOT_SET)
+        if suggested_area is not _NOT_SET and not _is_undefined(suggested_area):
+            child.suggested_area = suggested_area
+        if config_subentry_id is not None:
+            child.config_subentry_id = config_subentry_id
+        if config_entry_id:
+            child.config_entries.add(config_entry_id)
 
     def _area_id_for_name(self, suggested_area: str) -> Optional[str]:
         """Resolve a ``suggested_area`` name to an area id, creating the area.
@@ -529,9 +922,15 @@ class DeviceRegistry:
         sw_version: str = None,
         hw_version: str = None,
         via_device_id: str = None,
+        disabled_by=_NOT_SET,
         remove_config_entry_id: str = None,
     ):
-        """Update device properties."""
+        """Update device properties.
+
+        ``disabled_by`` uses a sentinel default because ``None`` is meaningful
+        (it enables the device); disabling a parent enables/disables its child
+        devices, like HA 2026.11.
+        """
         device = self._devices.get(device_id)
         if not device:
             return None
@@ -559,6 +958,10 @@ class DeviceRegistry:
         if merge_identifiers is not None:
             device.identifiers |= set(merge_identifiers)
 
+        if disabled_by is not _NOT_SET:
+            device.disabled_by = disabled_by
+            self._cascade_disabled_by(device)
+
         if name_updated and self.hass:
             try:
                 asyncio.create_task(self._republish_device_discovery(device))
@@ -566,6 +969,44 @@ class DeviceRegistry:
                 pass
 
         return device
+
+    def _cascade_disabled_by(self, parent) -> None:
+        """Apply a parent's disabled state to its child devices (HA 2026.11)."""
+        if isinstance(parent, ChildDeviceEntry):
+            return
+        children = self.async_entries_for_parent_device(parent.id)
+        if not children:
+            return
+        if parent.disabled_by is None:
+            for child in children:
+                if child.disabled_by == "device":
+                    child.disabled_by = None
+        elif parent.disabled_by != "config_entry":
+            for child in children:
+                if child.disabled_by is None:
+                    child.disabled_by = "device"
+
+    def async_remove_device(self, device_id: str) -> None:
+        """Remove a device or child device (HA 2026.11 cascade).
+
+        Removing a parent removes its child devices: a child has no meaning
+        without the physical device it was split from. Inbound ``via_device_id``
+        links to the removed device are detached.
+        """
+        device = self._devices.get(device_id)
+        if device is None:
+            return
+
+        if not isinstance(device, ChildDeviceEntry):
+            for child in self.async_entries_for_parent_device(device_id):
+                del self._devices[child.id]
+
+        del self._devices[device_id]
+
+        for other in self._devices.values():
+            if other.via_device_id == device_id:
+                other.via_device_id = None
+        _LOGGER.debug("Removed device %s", device_id)
 
     def async_clear_area_id(self, area_id: str) -> None:
         """Clear an area from every device that has it.
@@ -711,6 +1152,8 @@ from ..restore import (
     ExtraStoredData,
     RestoredExtraData,
     RestoreEntity as _SharedRestoreEntity,
+    RestoreStateData,
+    StoredState,
 )
 
 
@@ -782,8 +1225,11 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     # device_registry
     device_registry = types.ModuleType("homeassistant.helpers.device_registry")
     device_registry.DeviceEntry = DeviceEntry
+    device_registry.ChildDeviceEntry = ChildDeviceEntry
     device_registry.DeviceRegistry = DeviceRegistry
     device_registry.DeviceInfo = DeviceInfo
+    device_registry.ChildDeviceInfo = ChildDeviceInfo
+    device_registry.DeviceInfoError = DeviceInfoError
     device_registry.DeviceEntryType = DeviceEntryType
     device_registry.CONNECTION_NETWORK_MAC = "mac"
     device_registry.CONNECTION_UPNP = "upnp"
@@ -793,11 +1239,12 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     device_registry.format_mac = lambda x: x
 
     def async_entries_for_config_entry(registry, config_entry_id):
-        """Return the devices owned by a config entry.
+        """Return the main devices owned by a config entry.
 
         Mirrors HA's module-level
         ``device_registry.async_entries_for_config_entry(registry, entry_id)``,
-        which takes the registry, not ``hass``.
+        which takes the registry, not ``hass``. Child devices are returned by
+        ``async_child_entries_for_config_entry``, like upstream.
         """
         if registry is None:
             registry = _get_device_registry(None)
@@ -828,6 +1275,38 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
         return device.id
 
     device_registry.async_get_device_id_by_identifier = async_get_device_id_by_identifier
+
+    def async_get_effective_area_id(hass, device):
+        """Return the effective area, inheriting it for a child device (2026.11)."""
+        if device is None:
+            return None
+        if device.area_id is not None:
+            return device.area_id
+        if isinstance(device, ChildDeviceEntry):
+            parent = _get_device_registry(hass).async_get(
+                device.parent_device_id, include_child_devices=False
+            )
+            if parent is not None:
+                return parent.area_id
+        return None
+
+    def async_entries_for_parent_device(registry, parent_device_id):
+        """Return the child devices of a parent device."""
+        if registry is None:
+            registry = _get_device_registry(None)
+        return registry.async_entries_for_parent_device(parent_device_id)
+
+    def async_child_entries_for_config_entry(registry, config_entry_id):
+        """Return the child devices owned by a config entry."""
+        if registry is None:
+            registry = _get_device_registry(None)
+        return registry.async_child_entries_for_config_entry(config_entry_id)
+
+    device_registry.async_get_effective_area_id = async_get_effective_area_id
+    device_registry.async_entries_for_parent_device = async_entries_for_parent_device
+    device_registry.async_child_entries_for_config_entry = (
+        async_child_entries_for_config_entry
+    )
     homeassistant.helpers.device_registry = device_registry
     sys.modules["homeassistant.helpers.device_registry"] = device_registry
 
@@ -956,6 +1435,13 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
         )
 
     entity_registry.async_entries_for_device = async_entries_for_device
+
+    # Event surface the adopted upstream registries listen to. ``area_registry``
+    # subscribes to entity renames in 2026.11 so its temperature/humidity entity
+    # references follow the entity. The event type is an ``EventType`` (a ``str``
+    # subclass) upstream, so a plain string hashes identically on the shim bus.
+    entity_registry.EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
+    entity_registry.EventEntityRegistryUpdatedData = _EventEntityRegistryUpdatedData
     homeassistant.helpers.entity_registry = entity_registry
     sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
 
@@ -1061,7 +1547,9 @@ def create_helpers_stubs(hass, homeassistant, config_entries_module, entity_modu
     restore_state.RestoreEntity = RestoreEntity
     restore_state.ExtraStoredData = ExtraStoredData
     restore_state.RestoredExtraData = RestoredExtraData
-    restore_state.async_get = lambda hass: None
+    restore_state.async_get = RestoreStateData.async_get
+    restore_state.RestoreStateData = RestoreStateData
+    restore_state.StoredState = StoredState
     homeassistant.helpers.restore_state = restore_state
     sys.modules["homeassistant.helpers.restore_state"] = restore_state
 

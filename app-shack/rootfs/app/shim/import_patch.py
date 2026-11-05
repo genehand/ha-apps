@@ -89,6 +89,10 @@ UPSTREAM_HELPER_MODULES = (
     "location",
     "sun",
     "trace",
+    # HA 2026.11 form-field visibility. Pure (stdlib + probatio);
+    # data_entry_flow.Required/Optional store their ``visible`` condition through
+    # it and the shim strips hidden fields before a step sees them.
+    "field_visibility",
 )
 
 
@@ -235,6 +239,11 @@ class ImportPatcher:
         # integrations raise it to abort from inside a step and the flow
         # manager turns it into an abort result.
         data_entry_flow.AbortFlow = config_entries.AbortFlow
+        # HA 2026.11: markers that can be conditionally shown, and form sections.
+        data_entry_flow.Required = config_entries.FlowRequired
+        data_entry_flow.Optional = config_entries.FlowOptional
+        data_entry_flow.section = config_entries.section
+        data_entry_flow.SectionConfig = config_entries.SectionConfig
         homeassistant.data_entry_flow = data_entry_flow
 
         # STEP 3: Create the remaining stub modules

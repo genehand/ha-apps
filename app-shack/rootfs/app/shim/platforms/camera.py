@@ -129,8 +129,7 @@ class Camera(Entity):
         from ..entity import (
             get_entity_name_for_discovery,
             get_mqtt_safe_unique_id,
-            build_entity_mqtt_device_config,
-        )
+                )
         import json
 
         discovery_topic = f"{base_topic}/config"
@@ -145,7 +144,7 @@ class Camera(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_entity_mqtt_device_config(self)
+            self._add_mqtt_device_config(config)
 
         if self.icon:
             config["icon"] = self.icon

@@ -851,3 +851,109 @@ async def test_reload_button_prefers_the_root_device(hass, temp_data_dir):
         build_entity_mqtt_device_config(sub_entity)["via_device"]
         == f"{DOMAIN}-local_gw1"
     )
+
+
+FAKE_CHILD_DEVICE_PLATFORM = '''
+"""Fake platform registering a 2026.11 child device from its entity."""
+
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import ChildDeviceInfo, DeviceInfo
+from shim.platforms.sensor import SensorEntity
+
+DOMAIN = "fake_devices"
+
+
+class _FakeSensor(SensorEntity):
+    _attr_native_value = 1
+
+    def __init__(self, unique_id, name, device_info_factory):
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+        self._device_info_factory = device_info_factory
+
+    @property
+    def device_info(self):
+        return self._device_info_factory()
+
+
+async def async_setup_entry(hass, entry, async_add_entities):
+    def parent_info():
+        return DeviceInfo(
+            identifiers={(DOMAIN, "power_strip")},
+            name="Power strip",
+            manufacturer="Acme",
+        )
+
+    def child_info():
+        parent_id = dr.async_get_device_id_by_identifier(
+            hass, (DOMAIN, "power_strip"), config_entry_id=entry.entry_id
+        )
+        return ChildDeviceInfo(
+            identifiers={(DOMAIN, "power_strip_outlet_1")},
+            name="Outlet 1",
+            parent_device_id=parent_id,
+        )
+
+    async_add_entities(
+        [
+            _FakeSensor("strip_sensor", "Strip sensor", parent_info),
+            _FakeSensor("outlet_sensor", "Outlet sensor", child_info),
+        ]
+    )
+'''
+
+
+@pytest.mark.asyncio
+async def test_child_device_entity_registers_on_its_parent(hass, temp_data_dir):
+    """A ``ChildDeviceInfo`` creates a child row, not a new main device."""
+    from shim.entity import build_entity_mqtt_child_device_config
+
+    shim_dir = temp_data_dir / "shim"
+    integration_manager = IntegrationManager(Storage(shim_dir), shim_dir)
+    integration_loader = IntegrationLoader(hass, integration_manager)
+    hass.data["integration_loader"] = integration_loader
+    _write_fake_integration(shim_dir, FAKE_CHILD_DEVICE_PLATFORM)
+    integration_manager._integrations[DOMAIN] = IntegrationInfo(
+        domain=DOMAIN,
+        name="Fake Devices",
+        version="1.0.0",
+        description="Fake child-device integration",
+        source="local",
+        repository_url="https://example.com/fake_devices",
+        enabled=True,
+    )
+
+    entry = await _add_entry(hass, "fake_child_entry")
+    assert await integration_loader.setup_integration(entry) is True
+
+    dr, registry = _device_registry(hass)
+    parent = registry.async_get_device_by_identifier(
+        (DOMAIN, "power_strip"), entry.entry_id
+    )
+    child = registry.async_get_device_by_identifier(
+        (DOMAIN, "power_strip_outlet_1"), entry.entry_id
+    )
+
+    assert isinstance(child, dr.ChildDeviceEntry)
+    assert child.parent_device_id == parent.id
+    assert child.name == "Outlet 1"
+    assert registry.async_entries_for_parent_device(parent.id) == [child]
+    assert registry.async_entries_for_config_entry(entry.entry_id) == [parent]
+
+    # The entity's device is the child; its MQTT payload is inverted: the
+    # parent is `device`, the child is `child_device`.
+    outlet_entity = next(
+        entity
+        for entity in integration_loader.get_entities()
+        if entity.entity_id == "sensor.outlet_sensor"
+    )
+    assert outlet_entity.device_entry is child
+    child_block, parent_block = build_entity_mqtt_child_device_config(outlet_entity)
+    assert child_block["identifiers"] == ["fake_devices-power_strip_outlet_1"]
+    assert child_block["name"] == "Outlet 1"
+    assert parent_block["identifiers"] == ["fake_devices-power_strip"]
+
+    config = {}
+    outlet_entity._add_mqtt_device_config(config)
+    assert config["device"] == parent_block
+    assert config["child_device"] == child_block

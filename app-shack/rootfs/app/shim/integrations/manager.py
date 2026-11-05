@@ -23,6 +23,8 @@ from awesomeversion import AwesomeVersion, AwesomeVersionStrategy
 from awesomeversion.exceptions import AwesomeVersionException
 from packaging.requirements import InvalidRequirement, Requirement
 
+from ..marketplace import is_newer_version
+
 from ..http import github_session
 from ..logging import get_logger
 from ..storage import Storage
@@ -152,6 +154,7 @@ class IntegrationInfo:
         config_flow: bool = False,
         requirements: Optional[List[str]] = None,
         dependencies: Optional[List[str]] = None,
+        categories: Optional[List[str]] = None,
         full_name: Optional[str] = None,
         installed_requirements: Optional[List[str]] = None,
         _release_notes_cache: Optional[List[Dict[str, Any]]] = None,
@@ -170,6 +173,8 @@ class IntegrationInfo:
         self.config_flow = config_flow
         self.requirements = requirements or []
         self.dependencies = dependencies or []
+        # HA 2026.11: manifests declare categories (lighting, energy, ...).
+        self.categories = categories or []
         self.full_name = full_name  # HACS full_name (owner/repo) for HACS default repos
         # Exact requirement strings known to be satisfied in the venv. Only
         # consulted for requirements ``packaging`` cannot verify (direct URL /
@@ -196,6 +201,7 @@ class IntegrationInfo:
             "config_flow": self.config_flow,
             "requirements": self.requirements,
             "dependencies": self.dependencies,
+            "categories": self.categories,
             "installed_requirements": self.installed_requirements,
             "full_name": self.full_name,
         }
@@ -790,6 +796,7 @@ class IntegrationManager:
             repo_info["config_flow"] = manifest.get("config_flow", False)
             repo_info["requirements"] = manifest.get("requirements", [])
             repo_info["dependencies"] = manifest.get("dependencies", [])
+            repo_info["categories"] = manifest.get("categories", [])
             repo_info["documentation"] = manifest.get("documentation", "")
             repo_info["iot_class"] = manifest.get("iot_class", "")
 
@@ -1091,18 +1098,21 @@ class IntegrationManager:
         )
 
     def _compare_versions(self, current: str, latest: str) -> bool:
-        """Compare two versions using AwesomeVersion.
+        """Return True if ``latest`` is newer than ``current``.
 
-        Returns True if latest is newer than current.
+        Delegates to the Marketplace's ``is_newer_version`` (the renamed HACS
+        helper adopted from HA core in 2026.11), which returns ``None`` for
+        versions it cannot compare.
         """
-        try:
-            current_ver = AwesomeVersion(current)
-            latest_ver = AwesomeVersion(latest)
-            return latest_ver > current_ver
-        except AwesomeVersionException as e:
-            _LOGGER.warning(f"Version comparison failed for {current} vs {latest}: {e}")
-            # Fallback to simple string comparison
-            return latest != current
+        newer = is_newer_version(latest, current)
+        if newer is not None:
+            return newer
+        _LOGGER.debug(
+            "Version comparison failed for %s vs %s; using string comparison",
+            current,
+            latest,
+        )
+        return latest != current
 
     def set_updates_found_callback(self, callback: Optional[callable]) -> None:
         """Set callback to be called when updates are found during periodic check.
@@ -1694,6 +1704,7 @@ class IntegrationManager:
                 config_flow=manifest.get("config_flow", False),
                 requirements=manifest.get("requirements", []),
                 dependencies=manifest.get("dependencies", []),
+                categories=manifest.get("categories", []),
                 full_name=full_name if source == "hacs_default" else None,
             )
 

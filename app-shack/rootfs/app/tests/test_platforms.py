@@ -2214,3 +2214,284 @@ class TestBinarySensorMqttPublishBadState:
             if call[0][0].endswith("/state")
         ]
         assert state_calls[0][0][1] == "ON"
+
+
+class TestUpdateEntityAvailability:
+    """HA 2026.11: update entities can override ``has_update``."""
+
+    def _entity(self, installed, latest, **kwargs):
+        from shim.platforms.update import UpdateEntity
+
+        entity = UpdateEntity()
+        entity._attr_installed_version = installed
+        entity._attr_latest_version = latest
+        for key, value in kwargs.items():
+            setattr(entity, f"_attr_{key}", value)
+        return entity
+
+    def test_default_compares_versions(self):
+        """Without an override, has_update compares the versions."""
+        entity = self._entity("1.0.0", "1.1.0")
+        assert entity.has_update is True
+        assert entity.state == "on"
+
+        entity = self._entity("1.1.0", "1.1.0")
+        assert entity.has_update is False
+        assert entity.state == "off"
+
+    def test_skipped_version_turns_the_state_off(self):
+        """A skipped latest version reports no update."""
+        entity = self._entity("1.0.0", "1.1.0", skipped_version="1.1.0")
+        assert entity.state == "off"
+
+    def test_version_is_newer_can_be_overridden(self):
+        """Existing ``version_is_newer`` overrides keep working."""
+        from shim.platforms.update import UpdateEntity
+
+        class Reversed(UpdateEntity):
+            def version_is_newer(self, latest_version, installed_version):
+                return latest_version != installed_version
+
+        entity = Reversed()
+        entity._attr_installed_version = "2.0"
+        entity._attr_latest_version = "1.0"
+        assert entity.has_update is True
+        assert entity.state == "on"
+
+    def test_has_update_can_be_overridden(self):
+        """Integrations that know availability directly override has_update."""
+        from shim.platforms.update import UpdateEntity
+
+        class Known(UpdateEntity):
+            @property
+            def has_update(self):
+                return False
+
+        entity = Known()
+        entity._attr_installed_version = "1.0"
+        entity._attr_latest_version = "1.1"
+        assert entity.state == "off"
+
+    def test_missing_versions_mean_no_update(self):
+        """No installed or latest version means no update, not a crash."""
+        assert self._entity(None, "1.1.0").has_update is False
+        assert self._entity("1.0.0", None).has_update is False
+
+
+class TestNativeTemperatureEntities:
+    """HA 2026.11 ``native_*`` temperature rename for climate/water heater."""
+
+    def _climate(self, **attrs):
+        from shim.platforms.climate import ClimateEntity
+
+        entity = ClimateEntity()
+        for key, value in attrs.items():
+            setattr(entity, f"_attr_{key}", value)
+        return entity
+
+    def _water_heater(self, **attrs):
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        for key, value in attrs.items():
+            setattr(entity, f"_attr_{key}", value)
+        return entity
+
+    def test_climate_native_names_drive_the_value(self):
+        entity = self._climate(
+            native_current_temperature=21.5,
+            native_target_temperature=22.0,
+            native_target_temperature_high=24.0,
+            native_target_temperature_low=18.0,
+            native_temperature_unit="°C",
+        )
+        assert entity.native_current_temperature == 21.5
+        assert entity.native_target_temperature == 22.0
+        assert entity.native_target_temperature_high == 24.0
+        assert entity.native_target_temperature_low == 18.0
+        assert entity.native_temperature_unit == "°C"
+        assert entity.temperature_unit == "°C"
+        assert entity.state_attributes["temperature_unit"] == "°C"
+
+    def test_climate_legacy_names_still_resolve(self):
+        """Integrations on the old names keep working (deprecated upstream)."""
+        entity = self._climate(
+            current_temperature=19.0,
+            target_temperature=20.0,
+            target_temperature_high=23.0,
+            target_temperature_low=17.0,
+            temperature_unit="°F",
+        )
+        assert entity.native_current_temperature == 19.0
+        assert entity.native_target_temperature == 20.0
+        assert entity.native_target_temperature_high == 23.0
+        assert entity.native_target_temperature_low == 17.0
+        assert entity.native_temperature_unit == "°F"
+
+    def test_climate_legacy_property_override_is_honored(self):
+        """A subclass overriding current_temperature feeds native_current_temperature."""
+
+        from shim.platforms.climate import ClimateEntity
+
+        class Legacy(ClimateEntity):
+            @property
+            def current_temperature(self):
+                return 18.5
+
+        assert Legacy().native_current_temperature == 18.5
+
+    def test_water_heater_native_names_drive_the_value(self):
+        entity = self._water_heater(
+            native_current_temperature=48.0,
+            native_target_temperature=55.0,
+            native_target_temperature_high=60.0,
+            native_target_temperature_low=50.0,
+            native_temperature_unit="°C",
+        )
+        assert entity.native_current_temperature == 48.0
+        assert entity.native_target_temperature == 55.0
+        assert entity.native_target_temperature_high == 60.0
+        assert entity.native_target_temperature_low == 50.0
+        assert entity.native_temperature_unit == "°C"
+        assert entity.temperature_unit == "°C"
+        assert entity.state_attributes["temperature_unit"] == "°C"
+
+    def test_water_heater_default_unit_is_preserved(self):
+        """The existing Fahrenheit default is still the fallback."""
+        entity = self._water_heater()
+        assert entity.native_temperature_unit == "°F"
+        assert entity.temperature_unit == "°F"
+
+
+class TestScannerEntity:
+    """HA 2026.11: ScannerEntity handles devices like any other entity."""
+
+    def _scanner(self, **attrs):
+        from shim.platforms.device_tracker import ScannerEntity
+
+        entity = ScannerEntity()
+        for key, value in attrs.items():
+            setattr(entity, f"_attr_{key}", value)
+        return entity
+
+    def test_trackers_are_disabled_by_default(self):
+        entity = self._scanner(mac_address="AA:BB:CC:DD:EE:FF")
+        assert entity.entity_registry_enabled_default is False
+
+    def test_state_comes_from_connectivity(self):
+        assert self._scanner(is_connected=True).state == "home"
+        assert self._scanner(is_connected=False).state == "not_home"
+        assert self._scanner().state is None
+
+    def test_source_type_is_router_and_unique_id_is_the_mac(self):
+        entity = self._scanner(mac_address="AA:BB:CC:DD:EE:FF")
+        assert entity.source_type == "router"
+        assert entity.unique_id == "AA:BB:CC:DD:EE:FF"
+
+    def test_default_device_info_uses_the_mac_connection(self):
+        """The deprecated default is a device keyed by the MAC connection."""
+        entity = self._scanner(
+            mac_address="AA:BB:CC:DD:EE:FF", hostname="phone", is_connected=True
+        )
+        info = entity.device_info
+        assert info["connections"] == {("mac", "aa:bb:cc:dd:ee:ff")}
+        assert info["name"] == "phone"
+
+    def test_empty_device_info_opts_out_of_a_device(self):
+        """An empty DeviceInfo means "no device", so the default must not apply."""
+        from homeassistant.helpers.device_registry import DeviceInfo
+
+        entity = self._scanner(
+            mac_address="AA:BB:CC:DD:EE:FF", device_info=DeviceInfo()
+        )
+        assert entity.device_info is not None
+        assert entity.device_info.as_dict() == {}
+
+    def test_integration_device_info_wins(self):
+        """device_info is no longer final, so the integration decides."""
+        from homeassistant.helpers.device_registry import DeviceInfo
+
+        info = DeviceInfo(
+            connections={("mac", "aa:bb:cc:dd:ee:ff")}, name="Printer"
+        )
+        entity = self._scanner(
+            mac_address="AA:BB:CC:DD:EE:FF", device_info=info
+        )
+        assert entity.device_info is info
+
+    def test_scanner_is_exported_from_the_config_entry_module(self):
+        from homeassistant.components.device_tracker import ScannerEntity
+        from homeassistant.components.device_tracker.config_entry import (
+            ScannerEntity as ConfigEntryScannerEntity,
+        )
+
+        assert ScannerEntity is ConfigEntryScannerEntity
+
+
+class TestStateAttributesInTheStateMachine:
+    """Platform ``state_attributes`` contribute to ``State.attributes``.
+
+    Before this, the shim built state attributes only from capability metadata
+    and ``extra_state_attributes``, so the HA 2026.11 additions (climate/water
+    heater ``temperature_unit``, scanner ip/mac/hostname) were invisible to the
+    state machine and therefore to MQTT.
+    """
+
+    @pytest.fixture
+    async def hass(self, tmp_path):
+        from shim.core import HomeAssistant
+        from shim.import_patch import setup_import_patching
+
+        instance = HomeAssistant(tmp_path)
+        setup_import_patching(instance).patch()
+        return instance
+
+    @pytest.mark.asyncio
+    async def test_climate_temperature_unit_is_written(self, hass):
+        from shim.platforms.climate import ClimateEntity
+
+        entity = ClimateEntity()
+        entity.hass = hass
+        entity.entity_id = "climate.office"
+        entity._attr_hvac_mode = "heat"
+        entity._attr_native_current_temperature = 21.5
+        entity._attr_native_temperature_unit = "°C"
+        entity.async_write_ha_state()
+
+        state = hass.states.get("climate.office")
+        assert state.attributes["temperature_unit"] == "°C"
+        assert "current_temperature" not in state.attributes
+
+    @pytest.mark.asyncio
+    async def test_water_heater_temperature_unit_is_written(self, hass):
+        from shim.platforms.water_heater import WaterHeaterEntity
+
+        entity = WaterHeaterEntity()
+        entity.hass = hass
+        entity.entity_id = "water_heater.boiler"
+        entity._attr_current_operation = "eco"
+        entity._attr_native_temperature_unit = "°C"
+        entity.async_write_ha_state()
+
+        state = hass.states.get("water_heater.boiler")
+        assert state.attributes["temperature_unit"] == "°C"
+
+    @pytest.mark.asyncio
+    async def test_scanner_attributes_are_written(self, hass):
+        from shim.platforms.device_tracker import ScannerEntity
+
+        entity = ScannerEntity()
+        entity.hass = hass
+        entity.entity_id = "device_tracker.phone"
+        entity._attr_is_connected = True
+        entity._attr_ip_address = "192.0.2.10"
+        entity._attr_mac_address = "AA:BB:CC:DD:EE:FF"
+        entity._attr_hostname = "phone"
+        entity.async_write_ha_state()
+
+        state = hass.states.get("device_tracker.phone")
+        assert state.state == "home"
+        assert state.attributes["ip_address"] == "192.0.2.10"
+        assert state.attributes["mac_address"] == "AA:BB:CC:DD:EE:FF"
+        assert state.attributes["hostname"] == "phone"
+        assert state.attributes["source_type"] == "router"

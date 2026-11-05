@@ -342,3 +342,52 @@ async def test_unload_platforms_or_raise_exists(hass):
 
     with pytest.raises(ConfigEntryError):
         await hass.config_entries.async_unload_platforms_or_raise(entry, ["sensor"])
+
+
+async def test_retry_after_sets_a_longer_delay(hass, temp_data_dir, monkeypatch):
+    """HA 2026.11: ``ConfigEntryNotReady(retry_after=...)`` overrides the backoff.
+
+    The exponential backoff is the floor, so a long ``retry_after`` wins and a
+    short one (or one that already passed) does not retry immediately.
+    """
+    loader = _make_loader(
+        hass,
+        temp_data_dir,
+        setup_body="    raise ConfigEntryNotReady('rate limited', retry_after=3600)",
+    )
+    scheduled = []
+    import homeassistant.helpers.event as ha_event
+
+    monkeypatch.setattr(
+        ha_event,
+        "async_call_later",
+        lambda hass_, delay, action: scheduled.append((delay, action)) or (lambda: None),
+    )
+
+    entry = await _add_entry(hass)
+    assert await loader.setup_integration(entry) is False
+    assert entry.state == "setup_retry"
+    assert [delay for delay, _ in scheduled] == [3600]
+
+
+async def test_retry_after_that_already_passed_keeps_the_backoff(
+    hass, temp_data_dir, monkeypatch
+):
+    """A tiny ``retry_after`` is clamped up to the backoff, not honoured literally."""
+    loader = _make_loader(
+        hass,
+        temp_data_dir,
+        setup_body="    raise ConfigEntryNotReady('offline', retry_after=1)",
+    )
+    scheduled = []
+    import homeassistant.helpers.event as ha_event
+
+    monkeypatch.setattr(
+        ha_event,
+        "async_call_later",
+        lambda hass_, delay, action: scheduled.append((delay, action)) or (lambda: None),
+    )
+
+    entry = await _add_entry(hass)
+    assert await loader.setup_integration(entry) is False
+    assert [delay for delay, _ in scheduled] == [5]

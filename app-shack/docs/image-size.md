@@ -3,9 +3,17 @@
 `homeassistant` installs at ~368 MB, of which `components/` is ~360 MB of
 integrations that cannot import without a running `hass`. Both the Docker build and
 the s6 `run` script call `rootfs/app/scripts/prune_homeassistant.py`, which deletes
-everything outside the keep-list (`KEEP_TOP_LEVEL`, `KEEP_IN_HELPERS`), taking the
-package down to ~1.3 MB. `util` and `generated` are kept whole on purpose;
-`core.py` is kept for the names `shim.core` re-exports.
+everything outside the keep-list (`KEEP_TOP_LEVEL`, `KEEP_IN_HELPERS`,
+`KEEP_IN_COMPONENTS`), taking the package down to ~1.3 MB. `util` and `generated`
+are kept whole on purpose; `core.py` is kept for the names `shim.core` re-exports.
+
+`components/` is pruned wholesale except for leaf data files that are loaded by
+path rather than as packages. Today that is only `sensor/const.py`, the unit
+tables `UnitOfMeasurementSelector` validates against (`shim/selectors.py`). Its
+imports are absolute, so the parent package is not needed — but the file must
+survive, or the selector silently loses its limits in the deployed image while
+staying importable. `tests/test_upstream_modules.py::test_prune_keeps_the_sensor_unit_tables`
+pins it.
 
 The runtime venv is `/data/.venv` (not `/app/.venv`), which is on the user's data
 partition — hence the prune in `rootfs/etc/s6-overlay/s6-rc.d/shack/run` as well.

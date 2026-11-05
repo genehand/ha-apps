@@ -11,7 +11,6 @@ from ..entity import (
     EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
-    build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
 )
@@ -191,7 +190,7 @@ class TextEntity(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_entity_mqtt_device_config(self)
+            self._add_mqtt_device_config(config)
 
         # Add text-specific properties
         if self.pattern:

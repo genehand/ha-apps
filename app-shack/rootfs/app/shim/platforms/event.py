@@ -12,7 +12,6 @@ from ..entity import (
     Entity,
     EntityDescription,
     EntityAttribute,
-    build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
 )
@@ -168,7 +167,7 @@ class EventEntity(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_entity_mqtt_device_config(self)
+            self._add_mqtt_device_config(config)
 
         if self.device_class:
             config["device_class"] = (

@@ -1,4 +1,4 @@
-# AGENTS.md - Coding Guidelines for HACS Shack
+# AGENTS.md - Coding Guidelines for HA Shack
 
 Home Assistant compatibility layer for running integrations outside of HA.
 
@@ -104,6 +104,10 @@ Two rules follow, and they are the ones people get wrong:
 - **Do not copy upstream code into the shim.** Check the tier before writing a stub.
 - **Do not grow the stub layer when the wheel module already works here.** A stub
   that quietly diverges from upstream is the bug class this repo is deleting.
+- **Marketplace code:** Lives in HA core since 2026.11.
+  Keep app-shack's own installer (it runs outside HA); adopt only model-layer-free
+  `components/marketplace/utils/*` leaves through `shim/marketplace.py`, which
+  loads them from the wheel — never by copying upstream code in.
 
 → [`docs/upstream-tier.md`](docs/upstream-tier.md) for the tier table, how to adopt a
 module (`scripts/scan_upstream.py`), known blockers, the 2026.11 status, and pin bump

@@ -1,10 +1,10 @@
-# HACS Shack
+# HA Shack
 
-This app creates a shim environment that lets you run [HACS](https://www.hacs.xyz/) integrations separately from Home Assistant and publishes standalone MQTT entities.
+This app creates a shim environment that lets you run [Marketplace](https://www.home-assistant.io/integrations/marketplace/) integrations separately from Home Assistant and publishes standalone MQTT entities.
 
 ## Features
 
-- **HACS Integration Support**: Install and run HACS integrations from the official repositories
+- **Marketplace Integration Support**: Install and run Marketplace integrations from the official repositories
 - **MQTT Auto-Discovery**: Entities automatically appear in Home Assistant via MQTT discovery
 - **Config Flow Support**: Guided setup for integrations that require configuration
 - **Auto-Updates**: Automatic update checking for installed integrations
@@ -59,9 +59,9 @@ Integration code only ever imports from `homeassistant.components.*`; importing 
 
 ## Adding New Integrations
 
-Several HACS integrations work out of the box, tested ones are marked as `Verified`. To add a new integration:
+Several Marketplace integrations work out of the box, tested ones are marked as `Verified`. To add a new integration:
 
-1. Search for it in the Web UI integration browser
-2. Click Install to download from HACS repository
+1. Search for it in the Web UI
+2. Click Install to download from the Marketplace repository
 3. If the integration requires config flow, complete the setup wizard
 4. Entities should appear in Home Assistant automatically

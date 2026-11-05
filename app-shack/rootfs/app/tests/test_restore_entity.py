@@ -319,3 +319,53 @@ class TestRestoreSensor:
 
         storage = Storage(hass.shim_dir)
         assert storage.load_entity_state("sensor.bad_restore") is None
+
+
+class TestRestoreStateData:
+    """HA 2026.11: ``last_states`` is gone, ``async_get_stored_state`` replaces it."""
+
+    @pytest.mark.asyncio
+    async def test_async_get_stored_state_reads_the_saved_state(self, hass):
+        """A stored state is returned as a ``StoredState`` with a real State."""
+        from homeassistant.helpers import restore_state
+
+        Storage(hass.shim_dir).save_entity_state(
+            "text.airport", "LAX", attributes={"icon": "mdi:plane"}, extra_data={"a": 1}
+        )
+
+        data = restore_state.async_get(hass)
+        stored = data.async_get_stored_state("text.airport")
+
+        assert stored is not None
+        assert stored.state.entity_id == "text.airport"
+        assert stored.state.state == "LAX"
+        assert stored.state.attributes == {"icon": "mdi:plane"}
+        assert stored.extra_data.as_dict() == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_unknown_entity_has_no_stored_state(self, hass):
+        from homeassistant.helpers import restore_state
+
+        assert restore_state.async_get(hass).async_get_stored_state(
+            "text.missing"
+        ) is None
+
+    @pytest.mark.asyncio
+    async def test_last_states_was_removed(self, hass):
+        """The attribute the release notes removed does not exist."""
+        from homeassistant.helpers import restore_state
+
+        assert not hasattr(restore_state.async_get(hass), "last_states")
+
+    @pytest.mark.asyncio
+    async def test_async_get_last_state_accepts_an_entity_or_id(self, hass):
+        from homeassistant.helpers import restore_state
+
+        Storage(hass.shim_dir).save_entity_state("text.airport", "SFO")
+        data = restore_state.async_get(hass)
+
+        class HasEntityId:
+            entity_id = "text.airport"
+
+        assert (await data.async_get_last_state(HasEntityId())).state == "SFO"
+        assert (await data.async_get_last_state("text.airport")).state == "SFO"

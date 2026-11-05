@@ -5,13 +5,12 @@ Provides compatibility for homeassistant.components.water_heater imports.
 
 from dataclasses import field
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..entity import (
     Entity,
     EntityDescription,
     EntityAttribute,
-    build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
 )
@@ -77,11 +76,33 @@ class WaterHeaterEntity(Entity):
     _attr_target_temperature_low: Optional[float] = None
     _attr_target_temperature_step: float = 1.0
     _attr_temperature_unit: str = "°F"  # Default to Fahrenheit for water heaters
+    # HA 2026.11: native_* names for temperatures in the device's unit.
+    _attr_native_current_temperature: Optional[float] = None
+    _attr_native_target_temperature: Optional[float] = None
+    _attr_native_target_temperature_high: Optional[float] = None
+    _attr_native_target_temperature_low: Optional[float] = None
+    _attr_native_temperature_unit: Optional[str] = None
+
+    @property
+    def native_temperature_unit(self) -> Optional[str]:
+        """Return the unit the temperatures are specified in (HA 2026.11)."""
+        return self._attr_native_temperature_unit or self._attr_temperature_unit
 
     @property
     def temperature_unit(self) -> str:
-        """Return the temperature unit."""
-        return self._attr_temperature_unit
+        """Return the unit of the temperatures in the state (HA 2026.11).
+
+        Set by the base class from the user's unit system upstream; the shim has
+        no conversion, so it reports the native unit and falls back to the
+        configured unit system.
+        """
+        native = self.native_temperature_unit
+        if native:
+            return native
+        try:
+            return self.hass.config.units.temperature_unit
+        except Exception:  # noqa: BLE001 - no hass/config in unit tests
+            return "°F"
 
     @property
     def current_operation(self) -> Optional[str]:
@@ -97,6 +118,14 @@ class WaterHeaterEntity(Entity):
     def current_temperature(self) -> Optional[float]:
         """Return the current temperature."""
         return self._attr_current_temperature
+
+    @property
+    def native_current_temperature(self) -> Optional[float]:
+        """Return the current temperature in the device's unit (HA 2026.11)."""
+        value = self._attr_native_current_temperature
+        if value is not None:
+            return value
+        return self.current_temperature
 
     @property
     def is_away_mode_on(self) -> Optional[bool]:
@@ -129,14 +158,46 @@ class WaterHeaterEntity(Entity):
         return self._attr_target_temperature
 
     @property
+    def native_target_temperature(self) -> Optional[float]:
+        """Return the target temperature in the device's unit (HA 2026.11)."""
+        value = self._attr_native_target_temperature
+        if value is not None:
+            return value
+        return self.target_temperature
+
+    @property
     def target_temperature_high(self) -> Optional[float]:
         """Return the high target temperature."""
         return self._attr_target_temperature_high
 
     @property
+    def native_target_temperature_high(self) -> Optional[float]:
+        """Return the high target temperature in the device's unit (2026.11)."""
+        value = self._attr_native_target_temperature_high
+        if value is not None:
+            return value
+        return self.target_temperature_high
+
+    @property
     def target_temperature_low(self) -> Optional[float]:
         """Return the low target temperature."""
         return self._attr_target_temperature_low
+
+    @property
+    def native_target_temperature_low(self) -> Optional[float]:
+        """Return the low target temperature in the device's unit (2026.11)."""
+        value = self._attr_native_target_temperature_low
+        if value is not None:
+            return value
+        return self.target_temperature_low
+
+    @property
+    def state_attributes(self) -> Dict[str, Any]:
+        """Return the state attributes, including ``temperature_unit``."""
+        attributes: Dict[str, Any] = dict(self.extra_state_attributes or {})
+        if self.temperature_unit is not None:
+            attributes["temperature_unit"] = self.temperature_unit
+        return attributes
 
     @property
     def target_temperature_step(self) -> float:
@@ -146,7 +207,6 @@ class WaterHeaterEntity(Entity):
     async def _publish_mqtt_discovery(self) -> None:
         """Publish water heater state to MQTT."""
         from ..entity import (
-            build_entity_mqtt_device_config,
             get_entity_name_for_discovery,
             get_mqtt_safe_unique_id,
         )
@@ -177,7 +237,7 @@ class WaterHeaterEntity(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_entity_mqtt_device_config(self)
+            self._add_mqtt_device_config(config)
 
         if self.min_temp:
             config["min_temp"] = self.min_temp
@@ -223,19 +283,19 @@ class WaterHeaterEntity(Entity):
         # We just need to publish the other temperature topics
 
         # Publish current temperature
-        if self.current_temperature is not None:
+        if self.native_current_temperature is not None:
             mqtt.publish(
                 f"{base_topic}/current_temperature",
-                str(self.current_temperature),
+                str(self.native_current_temperature),
                 qos=0,
                 retain=True,
             )
 
         # Publish target temperature
-        if self.target_temperature is not None:
+        if self.native_target_temperature is not None:
             mqtt.publish(
                 f"{base_topic}/target_temperature",
-                str(self.target_temperature),
+                str(self.native_target_temperature),
                 qos=0,
                 retain=True,
             )
@@ -244,14 +304,14 @@ class WaterHeaterEntity(Entity):
         # Note: inlet/outlet temperatures are handled by separate sensors, not included here
         attributes = {}
 
-        if self.current_temperature is not None:
-            attributes["current_temperature"] = self.current_temperature
-        if self.target_temperature is not None:
-            attributes["temperature"] = self.target_temperature
-        if self.target_temperature_high is not None:
-            attributes["target_temp_high"] = self.target_temperature_high
-        if self.target_temperature_low is not None:
-            attributes["target_temp_low"] = self.target_temperature_low
+        if self.native_current_temperature is not None:
+            attributes["current_temperature"] = self.native_current_temperature
+        if self.native_target_temperature is not None:
+            attributes["temperature"] = self.native_target_temperature
+        if self.native_target_temperature_high is not None:
+            attributes["target_temp_high"] = self.native_target_temperature_high
+        if self.native_target_temperature_low is not None:
+            attributes["target_temp_low"] = self.native_target_temperature_low
         if hasattr(self, "target_temperature_step") and self.target_temperature_step:
             attributes["target_temp_step"] = self.target_temperature_step
         if self.is_away_mode_on is not None:
@@ -310,14 +370,14 @@ class WaterHeaterEntity(Entity):
             mqtt.publish(state_topic, str(state), qos=0, retain=True)
 
         # Publish current temperature
-        if self.current_temperature is not None:
+        if self.native_current_temperature is not None:
             temp_topic = f"{base_topic}/current_temperature"
-            mqtt.publish(temp_topic, str(self.current_temperature), qos=0, retain=True)
+            mqtt.publish(temp_topic, str(self.native_current_temperature), qos=0, retain=True)
 
         # Publish target temperature
-        if self.target_temperature is not None:
+        if self.native_target_temperature is not None:
             target_topic = f"{base_topic}/target_temperature"
-            mqtt.publish(target_topic, str(self.target_temperature), qos=0, retain=True)
+            mqtt.publish(target_topic, str(self.native_target_temperature), qos=0, retain=True)
 
         # Publish attributes using base class helper
         self._publish_mqtt_attributes()

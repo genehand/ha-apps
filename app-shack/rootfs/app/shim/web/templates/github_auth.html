@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}GitHub Sign-in · HACS Shack{% endblock %}
-{% block header_title %}🏚️ HACS Shack{% endblock %}
+{% block title %}GitHub Sign-in · HA Shack{% endblock %}
+{% block header_title %}🏚️ HA Shack{% endblock %}
 
 {% block content %}
 <nav aria-label="breadcrumb">
@@ -16,7 +16,7 @@
   Shack calls the GitHub API (releases, tags, repository trees) to install and
   update integrations. Without a token those calls are rate-limited to
   <strong>60 requests/hour</strong>. Signing in with GitHub raises that to
-  <strong>5,000/hour</strong>, mirroring the device flow HACS uses.
+  <strong>5,000/hour</strong>, mirroring the device flow Marketplace uses.
 </p>
 
 {% if authenticated %}

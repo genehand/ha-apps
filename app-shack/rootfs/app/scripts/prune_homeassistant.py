@@ -34,6 +34,8 @@ from pathlib import Path
 # the real package object to integrations, and so an unknown
 # `homeassistant.util.<anything>` still resolves instead of failing.
 # `generated` holds the tables const.py builds from.
+# `components` is kept only so the targeted `KEEP_IN_COMPONENTS` leaves below can
+# survive; everything else in it is pruned.
 # `core.py` is kept for its *names*, not its model layer: shim/core.py re-exports
 # HassJob/CoreState/callback machinery from it, and the upstream helpers import
 # them through shim.core. It imports only const/exceptions/util/helpers.json.
@@ -47,6 +49,7 @@ KEEP_TOP_LEVEL = frozenset(
         "generated",
         "util",
         "helpers",
+        "components",
     }
 )
 
@@ -84,8 +87,20 @@ KEEP_IN_HELPERS = frozenset(
         "location.py",
         "sun.py",
         "trace.py",
+        "field_visibility.py",
     }
 )
+
+# components/ is removed wholesale -- the shim serves integrations from its own
+# synthetic package. The exception is leaf data modules that are loaded by file
+# path (not as packages), so only the file has to survive:
+#   sensor/const.py -> the unit tables ``UnitOfMeasurementSelector`` validates
+#                      against (shim/selectors.py, HA 2026.11)
+# Its imports are absolute (``homeassistant.const``, ``probatio``), so the parent
+# package ``__init__.py`` is not needed.
+KEEP_IN_COMPONENTS = {
+    "sensor": frozenset({"const.py"}),
+}
 
 
 def _size(path: Path) -> int:
@@ -114,6 +129,15 @@ def prune(site_packages: Path) -> int | None:
     helpers = ha_dir / "helpers"
     if helpers.is_dir():
         victims.extend(e for e in helpers.iterdir() if e.name not in KEEP_IN_HELPERS)
+
+    components = ha_dir / "components"
+    if components.is_dir():
+        for entry in components.iterdir():
+            keep = KEEP_IN_COMPONENTS.get(entry.name)
+            if keep is None:
+                victims.append(entry)
+            elif entry.is_dir():
+                victims.extend(e for e in entry.iterdir() if e.name not in keep)
 
     freed = sum(_size(v) for v in victims)
     for victim in victims:

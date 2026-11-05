@@ -40,6 +40,21 @@ Failure handling: `entity.device_info` is a property on integration entities and
 can raise. One broken entity is logged at error level and skipped — it does not
 abort the rest of the platform setup.
 
+## `DeviceInfo` (HA 2026.11)
+
+`DeviceInfo` and `ChildDeviceInfo` are dataclasses, not `TypedDict`s. A field
+that was never set is `UNDEFINED` (the upstream sentinel from
+`homeassistant.helpers.typing`), not `None`; `None` is a value like any other.
+`as_dict()` returns only the set fields, and `async_get_or_create_from_info()`
+applies exactly those to the existing row (which is why re-registering a
+`DeviceInfo` with only `identifiers` no longer clears the name/manufacturer).
+
+The pre-2026.11 mapping surface still works, because integrations written
+against the `TypedDict` use it: `info["name"]`, `.get`, `.update`, `**info`,
+`"name" in info`. Item access to an *unset* field raises `KeyError`, like
+upstream's compatibility layer. Unknown keys are stored in `_extra` instead of
+raising `TypeError` (see the deviations in `async_get_or_create`).
+
 ## Registry Semantics (`DeviceRegistry.async_get_or_create`)
 
 Faithful to HA where it matters:
@@ -150,27 +165,48 @@ device without a parent (`IntegrationLoader._get_reload_button_device_info`). It
 used to take the first entity it found, which for a channel-based integration meant
 the button lived on "<plug> Channel 1".
 
-### Not supported: registry-level child devices
+### Child devices (supported since 2026.11)
 
-HA 2026.8+ has real child devices (`ChildDeviceEntry.parent_device_id`,
-`async_get_or_create_child_from_info`, `dr.ChildDeviceInfo`, and MQTT's
-`device.child_device` block). The shim does not model them:
+HA models a logical part of one physical product (an outlet of a power strip, a
+gang of a switch) as a **child device**: `ChildDeviceInfo` from an entity's
+`device_info`, or `async_get_or_create_child(_from_info)` on the registry. It is
+distinct from `via_device`, which is *connectivity* between separate products.
 
-- `register_entity_device` drops `parent_device_id` (a `DeviceInfo` carrying it
-  registers a root device), and the stub `device_registry` module exports no
-  `ChildDeviceInfo`, so `DeviceInfo(parent_device_id=...)` / `dr.ChildDeviceInfo(...)`
-  raise in an integration that migrates to them.
-- No bundled integration uses it yet, and meross_lan (the reason this matters) still
-  registers `via_device_id` — its own TODO is to migrate. When it does, the shim
-  needs `ChildDeviceInfo`, `async_get_or_create_child(_from_info)`,
-  `DeviceEntry.parent_device_id`, and the MQTT `device.child_device` block (an
-  inverted payload: the `device` block describes the *parent*, `child_device` the
-  identifiers/name of the entity's device).
+The shim models it end to end:
+
+- `dr.ChildDeviceInfo`, `dr.ChildDeviceEntry`, `dr.DeviceInfoError`,
+  `DeviceEntry.parent_device_id`, `async_get_or_create_child`,
+  `async_get_or_create_child_from_info` and `async_get_or_create_from_info`.
+- `register_entity_device` routes a `device_info` carrying `parent_device_id`
+  through the child path; the entity's `device_entry` is the child row.
+- Lifecycle: removing a parent removes its children, disabling a parent
+  disables them (`disabled_by="device"`) and enabling releases the ones it
+  disabled. `async_entries_for_config_entry` returns main devices only;
+  `async_entries_for_parent_device` / `async_child_entries_for_config_entry`
+  return the children.
+- Area inheritance: `dr.async_get_effective_area_id(hass, child)` returns the
+  child's own area, else its parent's.
+- MQTT discovery uses HA's inverted payload: `device` describes the **parent**
+  and `child_device` the entity's own device. Every platform calls
+  `Entity._add_mqtt_device_config()` (not the raw builder) so this is applied in
+  one place. A child whose parent row is missing is published as a main device
+  with a debug log rather than inventing a parent.
+- Migrating an integration from `via_device` to child devices keeps the device
+  id: registering a child with identifiers that already belong to a main device
+  of the same config entry converts that row in place.
+
+Deliberate deviations: the shim does not reject a child without a registered
+parent (HA raises `DeviceInfoError`), and registering a main device with a live
+child's identifiers returns the child with a warning instead of raising. Both
+keep a platform setup running; the docs' general policy is to log, not abort.
 
 ## Tests
 
 - `tests/test_device_registry.py` — matching/merging, `via_device` resolution,
-  `config_entry_id`, lookups, unload/removal hooks.
+  `config_entry_id`, lookups, unload/removal hooks, and child devices (creation,
+  conversion in place, cascade delete/disable, area inheritance, single-level).
+- `tests/test_device_registration.py` — the entity-add paths, including a
+  `ChildDeviceInfo` entity (child row + inverted MQTT payload).
 - `tests/test_upstream_helpers.py` — the area cascade (create/assign/delete through
   the upstream `helpers.area_registry`) and `suggested_area` → `area_id` (reuse an
   existing area, create a new one, never move an existing device).

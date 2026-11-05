@@ -3,6 +3,8 @@
 Provides base classes for device tracker entities.
 """
 
+from typing import Optional
+
 from ..entity import Entity, EntityAttribute
 from ..logging import get_logger
 
@@ -182,3 +184,126 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 # Set up config_entry exports
 config_entry.TrackerEntity = TrackerEntity
+
+
+class ScannerEntityDescription(EntityDescription):
+    """Description for scanner entities."""
+
+    pass
+
+
+class ScannerEntity(DeviceTrackerEntity):
+    """Base class for a tracked device on a scanned network (HA 2026.11).
+
+    A scanner tracker is a client seen by a router or another network scanner.
+    Since HA 2026.11 it handles devices like any other entity:
+
+    * ``device_info`` is no longer final, so an integration decides which device
+      the tracker belongs to (the MAC of the tracked client as a connection is
+      the recommended shape).
+    * It is **disabled by default**. Override
+      ``_attr_entity_registry_enabled_default`` when tracking is the purpose of
+      the device.
+    * A tracker without device info still gets the deprecated default device
+      (named after the hostname/MAC, matched by connection) until HA 2027.11; an
+      empty ``DeviceInfo()`` opts out.
+    """
+
+    _attr_hostname: Optional[str] = None
+    _attr_ip_address: Optional[str] = None
+    _attr_mac_address: Optional[str] = None
+    _attr_is_connected: Optional[bool] = None
+    # Most scanned network clients are not worth tracking.
+    _attr_entity_registry_enabled_default = False
+    _attr_source_type: str = "router"
+
+    @EntityAttribute
+    def hostname(self) -> Optional[str]:
+        """Return the hostname of the device."""
+        return self._attr_hostname
+
+    @EntityAttribute
+    def ip_address(self) -> Optional[str]:
+        """Return the primary IP address of the device."""
+        return self._attr_ip_address
+
+    @EntityAttribute
+    def mac_address(self) -> Optional[str]:
+        """Return the MAC address of the device."""
+        return self._attr_mac_address
+
+    @EntityAttribute
+    def is_connected(self) -> Optional[bool]:
+        """Return whether the device is connected to the network."""
+        return self._attr_is_connected
+
+    @property
+    def unique_id(self) -> Optional[str]:
+        """Return the MAC address as the unique id."""
+        return self.mac_address or super().unique_id
+
+    @EntityAttribute
+    def source_type(self) -> str:
+        """Return the source type of the device."""
+        return self._attr_source_type or "router"
+
+    @EntityAttribute
+    def state(self):
+        """Return ``home``/``not_home`` from connectivity."""
+        if self.is_connected is None:
+            return None
+        return "home" if self.is_connected else "not_home"
+
+    @EntityAttribute
+    def device_info(self):
+        """Return the device info, with the deprecated MAC default.
+
+        Only applied when the integration set no ``device_info`` at all; an empty
+        ``DeviceInfo()`` means "no device" and is returned as-is.
+        """
+        if self._attr_device_info is not None:
+            return self._attr_device_info
+        mac = self.mac_address
+        if not mac:
+            return None
+        connections = {("mac", mac.lower())}
+        name = self.hostname
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            existing = dr.async_get(getattr(self, "hass", None)).async_get_device(
+                connections=connections
+            )
+        except Exception:  # noqa: BLE001 - no registry means "new device"
+            existing = None
+        if existing is not None:
+            # Do not rename a device another entity already named.
+            name = None
+            identifiers = getattr(existing, "identifiers", None)
+            if identifiers:
+                return {"identifiers": set(identifiers), "connections": connections}
+        return {"connections": connections, "name": name or mac}
+
+    @EntityAttribute
+    def state_attributes(self) -> dict:
+        """Return the device state attributes (ip/mac/hostname)."""
+        return {
+            "source_type": self.source_type,
+            "ip_address": self.ip_address,
+            "mac_address": self.mac_address,
+            "hostname": self.hostname,
+        }
+
+
+config_entry.ScannerEntity = ScannerEntity
+config_entry.ScannerEntityDescription = ScannerEntityDescription
+
+__all__ = [
+    "DeviceTrackerEntity",
+    "ScannerEntity",
+    "ScannerEntityDescription",
+    "TrackerEntity",
+    "TrackerEntityDescription",
+    "config_entry",
+    "const",
+]

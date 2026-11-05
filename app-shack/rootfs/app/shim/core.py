@@ -58,11 +58,13 @@ from homeassistant.core import (  # noqa: E402
     ReleaseChannel,
     async_get_hass,
     async_get_hass_or_none,
+    async_noop,
     get_hassjob_callable_job_type,
     get_release_channel,
     is_callback,
     split_entity_id,
     valid_entity_id,
+    verify_event_loop_thread,
 )
 
 __all__ = [
@@ -76,11 +78,13 @@ __all__ = [
     "ReleaseChannel",
     "async_get_hass",
     "async_get_hass_or_none",
+    "async_noop",
     "get_hassjob_callable_job_type",
     "get_release_channel",
     "is_callback",
     "split_entity_id",
     "valid_entity_id",
+    "verify_event_loop_thread",
     "CALLBACK_TYPE",
     "callback",
     "ConfigEntry",

@@ -4,15 +4,12 @@ Bridges ClimateEntity to MQTT climate discovery.
 """
 
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..entity import (
     Entity,
     EntityDescription,
     EntityAttribute,
-    format_device_identifiers,
-    get_device_info_attr,
-    build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
 )
@@ -158,6 +155,14 @@ class ClimateEntity(Entity):
 
     _attr_current_temperature: Optional[float] = None
     _attr_current_humidity: Optional[int] = None
+    # HA 2026.11: integrations specify temperatures in the device's unit through
+    # the native_* properties. The legacy names stay as aliases below.
+    _attr_native_current_temperature: Optional[float] = None
+    _attr_native_temperature_unit: Any = None
+    _attr_native_target_temperature: Optional[float] = None
+    _attr_native_target_temperature_high: Optional[float] = None
+    _attr_native_target_temperature_low: Optional[float] = None
+    _attr_temperature_unit: Any = None
     _attr_hvac_mode: Optional[str] = None
     _attr_hvac_modes: List[str] = []
     _attr_hvac_action: Optional[str] = None
@@ -181,6 +186,47 @@ class ClimateEntity(Entity):
     def current_temperature(self) -> Optional[float]:
         """Return the current temperature."""
         return self._attr_current_temperature
+
+    @property
+    def native_current_temperature(self) -> Optional[float]:
+        """Return the current temperature in the device's unit (HA 2026.11)."""
+        value = self._attr_native_current_temperature
+        if value is not None:
+            return value
+        # Legacy integrations (and overrides) still report the old name.
+        return self.current_temperature
+
+    @property
+    def native_temperature_unit(self) -> Any:
+        """Return the unit the temperatures are specified in (HA 2026.11)."""
+        value = self._attr_native_temperature_unit
+        if value is not None:
+            return value
+        return self._attr_temperature_unit
+
+    @property
+    def temperature_unit(self) -> Any:
+        """Return the unit of the temperatures in the state (HA 2026.11).
+
+        Set by the base class from the user's unit system upstream; the shim has
+        no conversion, so it reports the native unit and falls back to the
+        configured unit system.
+        """
+        native = self.native_temperature_unit
+        if native is not None:
+            return native
+        try:
+            return self.hass.config.units.temperature_unit
+        except Exception:  # noqa: BLE001 - no hass/config in unit tests
+            return None
+
+    @property
+    def state_attributes(self) -> Dict[str, Any]:
+        """Return the state attributes, including ``temperature_unit``."""
+        attributes: Dict[str, Any] = dict(self.extra_state_attributes or {})
+        if self.temperature_unit is not None:
+            attributes["temperature_unit"] = self.temperature_unit
+        return attributes
 
     @property
     def current_humidity(self) -> Optional[int]:
@@ -238,14 +284,38 @@ class ClimateEntity(Entity):
         return self._attr_target_temperature
 
     @property
+    def native_target_temperature(self) -> Optional[float]:
+        """Return the target temperature in the device's unit (HA 2026.11)."""
+        value = self._attr_native_target_temperature
+        if value is not None:
+            return value
+        return self.target_temperature
+
+    @property
     def target_temperature_high(self) -> Optional[float]:
         """Return the highbound target temperature we try to reach."""
         return self._attr_target_temperature_high
 
     @property
+    def native_target_temperature_high(self) -> Optional[float]:
+        """Return the high target temperature in the device's unit (2026.11)."""
+        value = self._attr_native_target_temperature_high
+        if value is not None:
+            return value
+        return self.target_temperature_high
+
+    @property
     def target_temperature_low(self) -> Optional[float]:
         """Return the lowbound target temperature we try to reach."""
         return self._attr_target_temperature_low
+
+    @property
+    def native_target_temperature_low(self) -> Optional[float]:
+        """Return the low target temperature in the device's unit (2026.11)."""
+        value = self._attr_native_target_temperature_low
+        if value is not None:
+            return value
+        return self.target_temperature_low
 
     @property
     def target_humidity(self) -> Optional[int]:
@@ -381,14 +451,18 @@ class ClimateEntity(Entity):
         mqtt.publish(state_topic, state, qos=0, retain=True)
 
         # Publish current temperature
-        if self.current_temperature is not None:
+        if self.native_current_temperature is not None:
             temp_topic = f"{base_topic}/current_temperature"
-            mqtt.publish(temp_topic, str(self.current_temperature), qos=0, retain=True)
+            mqtt.publish(
+                temp_topic, str(self.native_current_temperature), qos=0, retain=True
+            )
 
         # Publish target temperature
-        if self.target_temperature is not None:
+        if self.native_target_temperature is not None:
             target_topic = f"{base_topic}/target_temperature"
-            mqtt.publish(target_topic, str(self.target_temperature), qos=0, retain=True)
+            mqtt.publish(
+                target_topic, str(self.native_target_temperature), qos=0, retain=True
+            )
 
         # Publish attributes using base class helper
         self._publish_mqtt_attributes()
@@ -446,7 +520,7 @@ class ClimateEntity(Entity):
         }
 
         if self.device_info:
-            config["device"] = build_entity_mqtt_device_config(self)
+            self._add_mqtt_device_config(config)
 
         if self.hvac_modes:
             config["modes"] = self.hvac_modes

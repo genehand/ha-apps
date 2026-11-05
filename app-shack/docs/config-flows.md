@@ -182,7 +182,41 @@ list/add/edit/remove of subentries — and every entity would have to carry its
 fails loudly at import (`cannot import name 'ConfigSubentryFlow'`), which is the
 trade the stub layer makes everywhere else.
 
+## 5. Conditional fields and form sections (HA 2026.11)
+
+Two flow APIs landed in 2026.11 and are part of the import surface:
+
+- `homeassistant.data_entry_flow.Required` / `Optional` — markers that take a
+  `visible=` condition. `homeassistant.data_entry_flow.section` groups fields and
+  takes `collapsed`.
+- `homeassistant.helpers.field_visibility` — the condition evaluation, imported
+  verbatim from the wheel (`get_hidden_fields`, `is_field_visible`,
+  `VISIBLE_SCHEMA`).
+
+The markers are `probatio.Required`/`Optional` subclasses defined in
+`shim/config_entries.py` (`FlowRequired`/`FlowOptional`) and exposed through the
+synthetic `data_entry_flow` module; the condition itself is validated by
+upstream's `VISIBLE_SCHEMA`.
+
+The shim does not validate submitted input against the form schema (the step
+receives raw `user_input`), so the part that matters is stripping: a field whose
+condition no longer matches is dropped before the step sees it, exactly as HA
+does. `IntegrationLoader._finalize_result` stores the last form's `data_schema`
+on the flow, and `strip_hidden_fields()` (`shim/config_entries.py`) removes the
+hidden names on the next `continue_config_flow`. Visibility is resolved with
+schema defaults applied for omitted fields, so a field the client did not send
+resolves the same as one that was submitted. `parse_field` also copies the
+condition onto the serialized field (`field["visible"]`) for the web form.
+
+A `visible` condition is a `{field, operator?, value?}` mapping (operator:
+`eq`/`not_eq`/`in`/`not_in`/`exists`/`not_exists`, default `eq`) or a list of
+them, combined with AND. A hidden field reads as absent to the conditions of the
+other fields.
+
 ## Tests
+
+`tests/test_visible_fields.py`: marker import/behavior, `section`, hidden-field
+stripping, default-driven visibility, and the no-`visible` fast path.
 
 `tests/test_config_flow.py`:
 

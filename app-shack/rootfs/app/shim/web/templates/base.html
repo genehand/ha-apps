@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}HACS Shack{% endblock %}</title>
+    <title>{% block title %}Shack{% endblock %}</title>
     <link rel="stylesheet" href="{{ PICO_CSS_URL }}">
     <link rel="stylesheet" href="{{ PICO_COLORS_URL }}">
     <script src="{{ HTMX_URL }}" integrity="{{ HTMX_SRI }}" crossorigin="anonymous"></script>
@@ -242,7 +242,7 @@
     <header class="container-fluid" style="background: var(--pico-primary); padding: 1rem 0; margin-bottom: 2rem;">
         <div class="container">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h1 style="margin: 0; color: white;">{% block header_title %}HACS Shack{% endblock %}</h1>
+                <h1 style="margin: 0; color: white;">{% block header_title %}Shack{% endblock %}</h1>
                 <div style="display: flex; align-items: center; gap: 1rem;">
                     {% block header_extra %}{% endblock %}
                     <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">

@@ -79,6 +79,35 @@ In real Home Assistant, state restoration is managed by a central `RestoreStateD
 
 The shim trades central batch-saving for simplicity: every state write is persisted immediately. This avoids the complexity of a periodic dump scheduler while achieving the same practical result.
 
+## `RestoreStateData` (HA 2026.11)
+
+HA 2026.11 indexes stored states by the entity registry id and removed
+`RestoreStateData.last_states`. Integrations that read stored states directly
+must use `async_get_stored_state(entity_id)` now:
+
+```python
+from homeassistant.helpers import restore_state
+
+stored = restore_state.async_get(hass).async_get_stored_state(entity_id)
+if stored is not None:
+    value = stored.state.state
+```
+
+`RestoreEntity` subclasses (and therefore `RestoreSensor` / `RestoreNumber`) are
+not affected by the change: `async_get_last_state()` and
+`async_get_last_extra_data()` still work as before.
+
+The shim's `RestoreStateData` (`shim/restore.py`) implements
+`async_get_stored_state` (returning a `StoredState` with `.state`,
+`.extra_data` and `.entity_registry_id`), `async_get_stored_states`,
+`async_get_last_state` and `async_get_last_extra_data`. There is deliberately no
+`last_states` attribute, matching the removal.
+
+Deliberate deviation: the shim keys states by **entity id**, not entity registry
+id, so a state stored before the user renames an entity is not found under the
+new id. HA moves it. The shim's `Storage` API is keyed by entity id everywhere
+else.
+
 ## Code Reference
 
 | Component | File |
@@ -89,5 +118,5 @@ The shim trades central batch-saving for simplicity: every state write is persis
 | Number restore | `shim/platforms/number.py` — `RestoreNumber` |
 | Switch restore | `shim/platforms/switch.py` — `async_write_ha_state()` hook |
 | Text restore | `shim/platforms/text.py` — `async_write_ha_state()` hook |
-| HA helper stub | `shim/stubs/helpers.py` — registers `homeassistant.helpers.restore_state.RestoreEntity` |
-| Tests | `tests/test_restore_entity.py` |
+| HA helper stub | `shim/stubs/helpers.py` — registers `homeassistant.helpers.restore_state.RestoreEntity` / `RestoreStateData` |
+| Tests | `tests/test_restore_entity.py` (state save/restore and the 2026.11 `async_get_stored_state` surface) |

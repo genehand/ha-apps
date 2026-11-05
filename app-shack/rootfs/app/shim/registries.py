@@ -285,6 +285,7 @@ class ConfigEntries:
                     entries.pop(i)
                     self._save_entries()
                     self._clear_devices(entry)
+                    self._clear_issues(entry)
                     _LOGGER.info(f"Removed config entry {entry_id}")
                     return
 
@@ -304,6 +305,19 @@ class ConfigEntries:
             )
         except Exception as e:  # noqa: BLE001
             _LOGGER.debug(f"Could not clear devices for {entry.entry_id}: {e}")
+
+    def _clear_issues(self, entry: ConfigEntry) -> None:
+        """Drop the repair issues that belong to a removed entry (HA 2026.11).
+
+        HA deletes issues created with ``config_entry_id`` when the entry is
+        removed (``ConfigEntries._async_clean_up``), the same as its devices.
+        """
+        try:
+            from homeassistant.helpers import issue_registry as ir
+
+            ir.async_get(self._hass).async_clear_config_entry(entry.entry_id)
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug(f"Could not clear issues for {entry.entry_id}: {e}")
 
     def async_update_entry(self, entry: ConfigEntry, **kwargs) -> bool:
         """Update an entry.

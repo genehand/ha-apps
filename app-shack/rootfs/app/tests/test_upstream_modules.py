@@ -273,3 +273,23 @@ def test_upstream_helpers_share_the_shims_core_classes():
         assert module.HassJobType is core.HassJobType
     for module in (storage, registry):
         assert module.CoreState is core.CoreState
+
+
+def test_prune_keeps_the_sensor_unit_tables():
+    """The unit-of-measurement selector loads components/sensor/const.py by path.
+
+    ``components/`` is pruned wholesale, so that one leaf file has to be
+    exempted or the selector silently loses its device/state class limits in the
+    deployed image (it stays importable, so only the pruned-image check catches
+    it).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("prune_homeassistant", PRUNE_SCRIPT)
+    prune_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prune_module)
+
+    keep = prune_module.KEEP_IN_COMPONENTS
+    assert "const.py" in keep.get("sensor", frozenset())
+    file = HA_PACKAGE_DIR / "components" / "sensor" / "const.py"
+    assert file.is_file(), "the pin moved the sensor unit tables; update the prune keep"

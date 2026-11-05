@@ -104,6 +104,9 @@ def parse_field(key, validator) -> Optional[Dict[str, Any]]:
                 # Extract help text description if present
                 if "description" in description:
                     field["description"] = description["description"]
+        # HA 2026.11: a field shown only while other fields match a condition.
+        if getattr(key, "visible", None) is not None:
+            field["visible"] = key.visible
     else:
         field["name"] = key
 
@@ -262,6 +265,26 @@ def parse_field(key, validator) -> Optional[Dict[str, Any]]:
         elif validator_class == "BooleanSelector":
             # Handle BooleanSelector from homeassistant.helpers.selector
             field["type"] = "checkbox"
+        elif validator_class == "UnitOfMeasurementSelector":
+            # HA 2026.11: a free-text unit, or a list when device/state classes
+            # limit the allowed units to the sensor tables.
+            allowed = (
+                validator.allowed_units()
+                if hasattr(validator, "allowed_units")
+                else None
+            )
+            if allowed:
+                field["type"] = "select"
+                field["options"] = [
+                    {
+                        "value": unit,
+                        "label": unit,
+                        "selected": unit == field.get("default"),
+                    }
+                    for unit in allowed
+                ]
+            else:
+                field["type"] = "text"
 
     # Check for Coerce (type conversion)
     validator_class = validator.__class__.__name__ if hasattr(validator, "__class__") else ""

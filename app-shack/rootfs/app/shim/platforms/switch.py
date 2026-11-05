@@ -14,7 +14,6 @@ from ..entity import (
     EntityAttribute,
     format_device_identifiers,
     get_device_info_attr,
-    build_entity_mqtt_device_config,
     get_entity_name_for_discovery,
     get_mqtt_safe_unique_id,
 )
@@ -144,7 +143,7 @@ class SwitchEntity(ToggleEntity):
         }
 
         if self.device_info:
-            config["device"] = build_entity_mqtt_device_config(self)
+            self._add_mqtt_device_config(config)
 
         if self.icon:
             config["icon"] = self.icon

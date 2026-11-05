@@ -393,3 +393,190 @@ class TestLifecycle:
         registry.async_clear_config_entry("entry1", "d")
         assert registry.async_get(gone.id) is None
         assert registry.async_get(kept.id) is kept
+
+
+class TestChildDevices:
+    """HA 2026.11 child devices: a logical part of one physical product."""
+
+    def _parent(self, registry, identifiers=None):
+        return registry.async_get_or_create(
+            config_entry_id="entry1",
+            identifiers=identifiers or {("d", "strip")},
+            name="Power strip",
+        )
+
+    def test_get_or_create_child_creates_a_child_row(self, devices):
+        """A child carries parent_device_id and none of the parent's identity."""
+        dr, registry = devices
+        parent = self._parent(registry)
+        child = registry.async_get_or_create_child(
+            config_entry_id="entry1",
+            parent_device_id=parent.id,
+            identifiers={("d", "strip_outlet_1")},
+            name="Outlet 1",
+        )
+
+        assert isinstance(child, dr.ChildDeviceEntry)
+        assert child.parent_device_id == parent.id
+        assert child.name == "Outlet 1"
+        assert child.connections == set()
+        assert registry.async_get(child.id) is child
+        assert registry.async_entries_for_parent_device(parent.id) == [child]
+        assert registry.async_child_entries_for_config_entry("entry1") == [child]
+        # Main-device listings do not include children, like upstream.
+        assert registry.async_entries_for_config_entry("entry1") == [parent]
+
+    def test_child_from_info_uses_only_set_fields(self, devices):
+        """``async_get_or_create_child_from_info`` takes a ChildDeviceInfo as-is."""
+        dr, registry = devices
+        parent = self._parent(registry)
+        info = dr.ChildDeviceInfo(
+            identifiers={("d", "strip_outlet_2")},
+            parent_device_id=parent.id,
+            name="Outlet 2",
+        )
+
+        child = registry.async_get_or_create_child_from_info(
+            config_entry_id="entry1", device_info=info
+        )
+        # Re-registering without a name keeps it (UNDEFINED means "unchanged").
+        again = registry.async_get_or_create_child(
+            config_entry_id="entry1",
+            parent_device_id=parent.id,
+            identifiers={("d", "strip_outlet_2")},
+        )
+        assert again.id == child.id
+        assert again.name == "Outlet 2"
+
+    def test_existing_main_device_converts_to_child_in_place(self, devices):
+        """Migration from via_device keeps the device id (automations survive)."""
+        dr, registry = devices
+        parent = self._parent(registry)
+        outlet = registry.async_get_or_create(
+            config_entry_id="entry1",
+            identifiers={("d", "strip_outlet_3")},
+            name="Power strip Outlet 3",
+        )
+
+        child = registry.async_get_or_create_child(
+            config_entry_id="entry1",
+            parent_device_id=parent.id,
+            identifiers={("d", "strip_outlet_3")},
+            name="Outlet 3",
+        )
+
+        assert child.id == outlet.id
+        assert isinstance(child, dr.ChildDeviceEntry)
+        assert child.parent_device_id == parent.id
+        assert child.name == "Outlet 3"
+        assert registry.async_get(outlet.id) is child
+
+    def test_removing_a_parent_removes_its_children(self, devices):
+        """Deletion cascades: a part has no meaning without the product."""
+        dr, registry = devices
+        parent = self._parent(registry)
+        child = registry.async_get_or_create_child(
+            config_entry_id="entry1",
+            parent_device_id=parent.id,
+            identifiers={("d", "strip_outlet_1")},
+        )
+
+        registry.async_remove_device(parent.id)
+        assert registry.async_get(parent.id) is None
+        assert registry.async_get(child.id) is None
+
+    def test_disabling_a_parent_disables_its_children(self, devices):
+        """Disable cascades down, and enabling the parent releases them."""
+        dr, registry = devices
+        parent = self._parent(registry)
+        child = registry.async_get_or_create_child(
+            config_entry_id="entry1",
+            parent_device_id=parent.id,
+            identifiers={("d", "strip_outlet_1")},
+        )
+
+        registry.async_update_device(parent.id, disabled_by="user")
+        assert child.disabled_by == "device"
+        assert child.disabled
+
+        registry.async_update_device(parent.id, disabled_by=None)
+        assert child.disabled_by is None
+
+    def test_child_area_inherits_from_parent(self, devices):
+        """A child with no area of its own reports the parent's area."""
+        dr, registry = devices
+        parent = registry.async_get_or_create(
+            config_entry_id="entry1",
+            identifiers={("d", "strip")},
+            name="Power strip",
+            area_id=None,
+        )
+        parent.area_id = "garage"
+        child = registry.async_get_or_create_child(
+            config_entry_id="entry1",
+            parent_device_id=parent.id,
+            identifiers={("d", "strip_outlet_1")},
+        )
+
+        assert dr.async_get_effective_area_id(registry.hass, child) == "garage"
+        child.area_id = "garden"
+        assert dr.async_get_effective_area_id(registry.hass, child) == "garden"
+
+    def test_child_requires_identifiers_and_parent(self, devices):
+        """Upstream rejects both; the shim raises ``ValueError``."""
+        dr, registry = devices
+        with pytest.raises(ValueError):
+            registry.async_get_or_create_child(
+                config_entry_id="entry1",
+                parent_device_id="missing",
+                identifiers=set(),
+            )
+        with pytest.raises(ValueError):
+            registry.async_get_or_create_child_from_info(
+                config_entry_id="entry1",
+                device_info=dr.ChildDeviceInfo(
+                    identifiers={("d", "x")}, parent_device_id=""
+                ),
+            )
+
+    def test_a_child_cannot_be_a_parent(self, devices):
+        """Child devices are a single level (HA 2026.11)."""
+        dr, registry = devices
+        parent = self._parent(registry)
+        child = registry.async_get_or_create_child(
+            config_entry_id="entry1",
+            parent_device_id=parent.id,
+            identifiers={("d", "strip_outlet_1")},
+        )
+        with pytest.raises(ValueError):
+            registry.async_get_or_create_child(
+                config_entry_id="entry1",
+                parent_device_id=child.id,
+                identifiers={("d", "strip_outlet_1_gang_1")},
+            )
+
+
+class TestGetOrCreateFromInfo:
+    """``async_get_or_create_from_info`` (HA 2026.11)."""
+
+    def test_unset_fields_leave_the_existing_row_alone(self, devices):
+        """Only set fields are applied; ``UNDEFINED`` means "unchanged"."""
+        dr, registry = devices
+        created = registry.async_get_or_create(
+            config_entry_id="entry1",
+            identifiers={("d", "1")},
+            name="Kitchen",
+            manufacturer="Acme",
+        )
+
+        updated = registry.async_get_or_create_from_info(
+            config_entry_id="entry1",
+            device_info=dr.DeviceInfo(
+                identifiers={("d", "1")}, sw_version="2.0"
+            ),
+        )
+
+        assert updated is created
+        assert updated.sw_version == "2.0"
+        assert updated.name == "Kitchen"
+        assert updated.manufacturer == "Acme"
